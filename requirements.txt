@@ -1,0 +1,13 @@
+# Web Automation (RPA)
+playwright
+# The async version is generally preferred for Codespaces/servers
+
+# Secure Credential Handling (for .env file)
+python-dotenv 
+
+# AI/NLP Libraries for later steps (Transcription and Summarization)
+# We include these now for a complete environment setup.
+openai                # Used for OpenAI's GPT models (Summarization) and Whisper (Transcription API)
+google-genai          # Used for Gemini's GPT models
+google-cloud-speech   # Alternative for transcription if using Google Cloud STT
+pydantic              # Often used for structured LLM output
