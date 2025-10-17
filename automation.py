@@ -2,9 +2,11 @@ import os
 import asyncio
 import argparse
 import re
+import time
 import requests # New import for authenticated download
+from typing import Optional
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page
 from openai import OpenAI # For Step 7 (Transcription)
 # from google import genai # For Steps 8 & 9 (Summarization)
 
@@ -26,6 +28,26 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") # Ensure this is set in .env i
 MODAL_HEADER_SELECTOR = '.popupHeader' 
 SVG_CLOSE_SELECTOR = f'{MODAL_HEADER_SELECTOR} svg' 
 
+# ----------------------------------------------------------------------
+# --- Screenshot Utility ---
+# ----------------------------------------------------------------------
+async def safe_screenshot(page: Optional[Page], label: str = "error") -> Optional[str]:
+    """Attempt to capture a full-page screenshot; never raise on failure."""
+    try:
+        timestamp = int(time.time())
+        filename = f"{label}_{timestamp}.png"
+        # Page might be None or closed in some error scenarios
+        if page is None:
+            return None
+        if hasattr(page, "is_closed") and page.is_closed():
+            return None
+        await page.screenshot(path=filename, full_page=True)
+        print(f"🖼️  Screenshot saved: {filename}")
+        return filename
+    except Exception:
+        # Last-resort: do not propagate screenshot failures
+        return None
+
 # --- Helper Function: Session Validation ---
 async def is_session_valid(page):
     """Checks if the saved session can successfully load the dashboard."""
@@ -34,6 +56,43 @@ async def is_session_valid(page):
         await page.wait_for_selector('#gtm-IdDashboard', timeout=5000)
         return True
     except Exception:
+        await safe_screenshot(page, "session_validation_error")
+        return False
+
+# ----------------------------------------------------------------------
+# --- Core Login Function (robust, with screenshots) ---
+# ----------------------------------------------------------------------
+async def perform_login(page):
+    """Handles the initial login process and saves authentication state, with screenshots on errors."""
+    print(f"-> Navigating to: {LOGIN_URL}")
+    try:
+        await page.goto(LOGIN_URL)
+    except Exception as e:
+        print(f"❌ Failed to navigate to login: {e}")
+        await safe_screenshot(page, "login_nav_fail")
+        return False
+
+    print("-> Attempting login...")
+    try:
+        await page.fill('input[name="officialEmail"]', USERNAME)
+        await page.fill('input[name="password"]', PASSWORD)
+        await page.click('#gtmLoginStd')
+
+        try:
+            DASHBOARD_SELECTOR = '#gtm-IdDashboard'
+            await page.wait_for_selector(DASHBOARD_SELECTOR, state="visible", timeout=20000)
+            print("✅ Login Successful! Dashboard found.")
+            await page.context.storage_state(path=AUTH_STATE_FILE)
+            print(f"🔑 Authentication state saved to {AUTH_STATE_FILE}.")
+            return True
+        except Exception:
+            print("❌ Login Failed: Dashboard element not found. Check credentials/network.")
+            await safe_screenshot(page, "login_dashboard_not_found")
+            return False
+
+    except Exception as e:
+        print(f"❌ Initial Login Form Failed (Timeout or Selector Error): {e}")
+        await safe_screenshot(page, "login_form_fail")
         return False
 
 # --- Utility Function: Extract Drive ID ---
@@ -96,7 +155,7 @@ def download_drive_file_with_cookies(file_id: str, cookies: list, local_filename
 # ----------------------------------------------------------------------
 # --- AI PROCESSING LOGIC (Steps 7, 8, 9) ---
 # ----------------------------------------------------------------------
-async def process_recording_file(recording_url: str):
+async def process_recording_file(recording_url: str, page: Optional[Page] = None):
     """
     Handles file download, transcription (Whisper), and summarization (Gemini).
     """
@@ -104,32 +163,24 @@ async def process_recording_file(recording_url: str):
     print("# STARTING AI PROCESS (Steps 7, 8, 9) #")
     print("#####################################################")
     
-    # Check for necessary API keys
-    if not OPENAI_API_KEY:
-        print("🛑 ERROR: OPENAI_API_KEY is not set. Cannot proceed with Whisper transcription.")
-        return
-    if not GEMINI_API_KEY:
-        print("🛑 ERROR: GEMINI_API_KEY is not set. Cannot proceed with Gemini summarization.")
-        return
+    # NOTE: In this version we expect a local MP4 path to be provided.
+    # If a Google Drive URL was mistakenly passed, we will fail gracefully.
 
-    # --- Setup ---
-    # client_gemini = genai.Client(api_key=GEMINI_API_KEY) # Uncomment when using genai
-    client_openai = OpenAI(api_key=OPENAI_API_KEY)
-    file_id = extract_drive_file_id(recording_url)
-    local_video_path = f"lecture_{file_id}.mp4"
     transcript = None
     
-    # 1. Download the file (Step 7 - Part 1)
-    print(f"-> [Step 7] Downloading MP4 from: {recording_url}")
-    
-    # NOTE: The download is handled inside search_and_download_lecture (prior step)
-    
-    # 2. Transcribe the audio (Step 7 - Part 2: OpenAI Whisper)
+    # 1. Transcribe the audio (Step 7 - Part 2: OpenAI Whisper)
     print("-> [Step 7] Generating transcript using OpenAI Whisper...")
     
     try:
-        # IMPORTANT: Whisper API supports MP4 directly, but file size limit is 25MB.
-        # For larger files, you would need to use a dedicated audio extraction library (e.g., moviepy).
+        if not OPENAI_API_KEY:
+            print("🛑 ERROR: OPENAI_API_KEY is not set. Cannot proceed with Whisper transcription.")
+            await safe_screenshot(page, "missing_openai_key")
+            return
+
+        client_openai = OpenAI(api_key=OPENAI_API_KEY)
+        # IMPORTANT: Whisper API supports MP4 directly, but file size limit is ~25MB.
+        # We assume 'recording_url' here is actually the local path passed in by caller.
+        local_video_path = recording_url
         with open(local_video_path, "rb") as audio_file:
             transcript_response = client_openai.audio.transcriptions.create(
                 model="whisper-1",
@@ -140,17 +191,23 @@ async def process_recording_file(recording_url: str):
         print("✅ Transcription complete.")
         
     except FileNotFoundError:
-        print(f"❌ Transcription failed: Local file not found at {local_video_path}. Check download step.")
+        print(f"❌ Transcription failed: Local file not found. Check download step.")
+        await safe_screenshot(page, "transcription_file_not_found")
         return 
     except Exception as e:
         print(f"❌ OpenAI Whisper API call failed: {e}")
+        await safe_screenshot(page, "whisper_api_error")
         return
         
     finally:
         # Clean up the temporary file (CRITICAL for Codespace management)
-        if os.path.exists(local_video_path):
-            os.remove(local_video_path)
-            print(f"🧹 Cleaned up temporary file: {local_video_path}")
+        try:
+            if 'local_video_path' in locals() and os.path.exists(local_video_path):
+                os.remove(local_video_path)
+                print(f"🧹 Cleaned up temporary file: {local_video_path}")
+        except Exception:
+            # Cleanup should never crash the pipeline
+            pass
 
 
     # 3. Summarize (Offline) and Fine-tune (Step 8)
@@ -174,17 +231,24 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
     """
     # 1. Direct Navigation to Courses URL (Step 3)
     print(f"\n-> Directing browser to Subjects page: {COURSES_URL}")
-    await page.goto(COURSES_URL, wait_until="networkidle") 
+    try:
+        await page.goto(COURSES_URL, wait_until="networkidle") 
+    except Exception as e:
+        print(f"❌ Navigation to subjects page failed: {e}")
+        await safe_screenshot(page, "subjects_nav_error")
+        return
     
     # --- Step 4: Expand the Subject Panel ---
     print(f"-> Locating and expanding subject: {course_name}")
     try:
         subject_panel = page.get_by_text(course_name, exact=True).first
+        await subject_panel.wait_for(state="visible", timeout=15000)
         await subject_panel.click()
         await page.wait_for_timeout(1000) 
         print(f"✅ Subject '{course_name}' expanded successfully.")
-    except Exception:
-        print(f"❌ Error in Step 4: Could not find or click subject panel with text '{course_name}'.")
+    except Exception as e:
+        print(f"❌ Error in Step 4: Could not find or click subject panel with text '{course_name}'. Details: {e}")
+        await safe_screenshot(page, "subject_click_error")
         return 
 
     # --- Step 5: Locate and Click the Lecture Card ---
@@ -199,7 +263,7 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
         
     except Exception as e:
         print(f"❌ Error in Step 5: Could not find or click lecture card with title '{lecture_title}': {e}")
-        await page.screenshot(path="lecture_select_error.png")
+        await safe_screenshot(page, "lecture_select_error")
         return
         
     # --- Step 5b: Click the "Sessions" link on the Details Page ---
@@ -214,7 +278,7 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
         
     except Exception as e:
         print(f"❌ Error in Step 5b: Could not find or click the 'Sessions' element: {e}")
-        await page.screenshot(path="sessions_click_error.png")
+        await safe_screenshot(page, "sessions_click_error")
         return
 
     # --- Step 5c/6: Locate Session, Open Modal, Click Download Link ---
@@ -227,6 +291,7 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
     SVG_CLOSE_SELECTOR = f'{MODAL_HEADER_SELECTOR} svg' 
     
     recording_url = None
+    local_video_path = None
     try:
         # 1. Wait for session list to render, find item, and click to expand
         await page.wait_for_selector('li:has-text("PM")', timeout=15000) 
@@ -246,12 +311,6 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
         recording_link_locator = page.get_by_text("Click to View", exact=True).first
         await recording_link_locator.wait_for(state="visible", timeout=10000) 
 
-        # --- CRITICAL STEP: Download Prep ---
-        # Get all cookies from the context *before* the new tab opens
-        google_drive_cookies = await context.cookies(urls=[recording_url])
-        file_id = extract_drive_file_id(recording_url)
-        local_video_path = f"lecture_{file_id}.mp4"
-
         # 4. Execute Click and Get URL
         async with context.expect_page() as new_page_info:
             await recording_link_locator.click(force=True)
@@ -260,6 +319,12 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
         await recording_page.wait_for_load_state("load")
         recording_url = recording_page.url
         print(f"✅ Recording link clicked! New URL (Google Drive): {recording_url}")
+
+        # --- CRITICAL STEP: Download Prep ---
+        # Extract cookies from the context and filter inside the downloader
+        google_drive_cookies = await context.cookies()
+        file_id = extract_drive_file_id(recording_url)
+        local_video_path = f"lecture_{file_id}.mp4"
 
         # 5. Execute Download using the extracted cookies
         download_drive_file_with_cookies(file_id, google_drive_cookies, local_video_path)
@@ -270,11 +335,19 @@ async def search_and_download_lecture(page, context, course_name: str, lecture_t
         
     except Exception as e:
         print(f"❌ Error during navigation or download: {e}")
-        await page.screenshot(path="final_download_error.png")
+        await safe_screenshot(page, "final_download_error")
         return
         
     # --- PROCEED TO AI STEPS (7, 8, 9) ---
-    await process_recording_file(local_video_path)
+    try:
+        if local_video_path and os.path.exists(local_video_path):
+            await process_recording_file(local_video_path, page=page)
+        else:
+            print("❌ Post-download: Local video file not found; skipping AI processing.")
+            await safe_screenshot(page, "missing_local_video_post_download")
+    except Exception as e:
+        print(f"❌ AI processing failed: {e}")
+        await safe_screenshot(page, "ai_processing_error")
 
 
 # ----------------------------------------------------------------------
@@ -308,36 +381,48 @@ async def main():
     print(f"   Date:    {TARGET_LECTURE_DATE}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        context = None
-        
-        # --- Authentication Strategy: Load or Login ---
-        if os.path.exists(AUTH_STATE_FILE):
-            context = await browser.new_context(storage_state=AUTH_STATE_FILE)
-            page = await context.new_page()
-            
-            if await is_session_valid(page):
-                print("🔑 Loaded existing authenticated session. Skipping login.")
+        browser = None
+        page = None
+        try:
+            browser = await p.chromium.launch()
+            context = None
+
+            # --- Authentication Strategy: Load or Login ---
+            if os.path.exists(AUTH_STATE_FILE):
+                context = await browser.new_context(storage_state=AUTH_STATE_FILE)
+                page = await context.new_page()
+                
+                if await is_session_valid(page):
+                    print("🔑 Loaded existing authenticated session. Skipping login.")
+                else:
+                    print("❌ Session expired. Re-authenticating.")
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    if not await perform_login(page):
+                        await safe_screenshot(page, "login_reauth_failed")
+                        return
             else:
-                print("❌ Session expired. Re-authenticating.")
+                # First run scenario
                 context = await browser.new_context()
                 page = await context.new_page()
                 if not await perform_login(page):
-                    await browser.close()
+                    await safe_screenshot(page, "login_first_run_failed")
                     return
-        else:
-            # First run scenario
-            context = await browser.new_context()
-            page = await context.new_page()
-            if not await perform_login(page):
-                await browser.close()
-                return
-        
-        # --- Run the main processing logic (Steps 3, 4, 5, 6) ---
-        # NOTE: Pass the context for cookie extraction
-        await search_and_download_lecture(page, context, TARGET_COURSE, TARGET_LECTURE_TITLE, TARGET_LECTURE_DATE)
-        
-        await browser.close()
+            
+            # --- Run the main processing logic (Steps 3, 4, 5, 6) ---
+            # NOTE: Pass the context for cookie extraction
+            await search_and_download_lecture(page, context, TARGET_COURSE, TARGET_LECTURE_TITLE, TARGET_LECTURE_DATE)
+
+        except Exception as e:
+            print(f"❌ Unhandled error in main flow: {e}")
+            await safe_screenshot(page, "unhandled_main_error")
+            raise
+        finally:
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
     asyncio.run(main())
