@@ -1,10 +1,19 @@
-# --- Core Automation & Infrastructure ---
+# Core Automation
 playwright
 python-dotenv
-requests
-pydantic
 
-# --- AI & Multimodal Clients ---
-openai
-google-genai
-google-cloud-speech
+# Data Processing & AI
+google-generativeai     # Or 'openai'
+langchain
+langchain-google-genai  # Or 'langchain-openai'
+langchain-community     # For text splitters
+
+# Vector Database (example for Supabase)
+supabase-py
+langchain-community     # For SupabaseVectorStore
+
+# Web Application (example)
+streamlit
+
+# Utilities
+beautifulsoup4          # Good for parsing static HTML
