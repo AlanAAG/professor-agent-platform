@@ -9,7 +9,7 @@ langchain-google-genai  # Or 'langchain-openai'
 langchain-community     # For text splitters
 
 # Vector Database (example for Supabase)
-supabase-py
+supabase
 langchain-community     # For SupabaseVectorStore
 
 # Web Application (example)
