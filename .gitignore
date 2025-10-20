@@ -206,11 +206,3 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# --- Add this section for your automation project ---
-# Playwright Authentication State
-auth_state.json
-
-# Environments
-.env
-.envrc
-# ... (rest of the file)
