@@ -88,8 +88,8 @@ def _build_rag_prompt(question: str, context_docs: list[Document], persona: dict
         history_string += "PREVIOUS CONVERSATION HISTORY (for context):\n"
         # Include a limited number of recent turns to manage token count
         for msg in chat_history[-6:]: # Example: Use last 6 messages (3 turns)
-             role = "Student" if msg["role"] == "user" else persona.get('professor_name', 'Professor')
-             history_string += f'{role}: {msg["content"]}\n'
+            role = "Student" if msg["role"] == "user" else persona.get('professor_name', 'Professor')
+            history_string += f'{role}: {msg["content"]}\n'
         history_string += "---\n"
 
     # --- Format Retrieved Context ---
@@ -141,10 +141,10 @@ def _rerank_documents(query: str, documents: list[Document]) -> list[Document]:
     """Re-ranks documents using Cohere Rerank API for better relevance."""
     if not co or not documents: # Check if Cohere client exists and there are docs
         if not documents:
-             logging.info("   No documents to re-rank.")
-             return [] # Return empty list if no docs were passed
+            logging.info("   No documents to re-rank.")
+            return [] # Return empty list if no docs were passed
         if not co:
-             logging.warning("   Cohere client not configured. Skipping re-ranking, using original vector similarity order.")
+            logging.warning("   Cohere client not configured. Skipping re-ranking, using original vector similarity order.")
         return documents # Return original list if Cohere isn't set up
 
     logging.info(f"   Re-ranking {len(documents)} documents with Cohere...")
@@ -223,7 +223,7 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
         # --- 1. Retrieve Syllabus Text ---
         logging.info("   Retrieving syllabus text for topic identification...")
         if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-             raise RuntimeError("Vector store is not available for syllabus retrieval.")
+            raise RuntimeError("Vector store is not available for syllabus retrieval.")
 
         # Retrieve chunks likely containing syllabus/topic info
         syllabus_docs = embedding.vector_store.similarity_search(
@@ -275,7 +275,7 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
         # Combine syllabus text and collect syllabus source(s)
         full_syllabus_text = "\n\n".join([doc.page_content for doc in syllabus_docs])
         for doc in syllabus_docs:
-             sources_used.add(f"{doc.metadata.get('source_file', 'N/A')}") # Add syllabus file as source
+            sources_used.add(f"{doc.metadata.get('source_file', 'N/A')}") # Add syllabus file as source
 
         # --- 2. Identify Topics using LLM ---
         topics = _identify_topics_with_llm(full_syllabus_text, class_name)
@@ -437,9 +437,9 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
                     sources_set.add(source_info)
                 sources_list = sorted(list(sources_set))
             else:
-                 # If re-ranking removed all documents
-                 logging.warning("   No relevant documents remained after re-ranking.")
-                 return "I found some initial potential matches, but none seemed highly relevant to your specific question after closer review. Could you please rephrase or ask about a different aspect?", []
+                # If re-ranking removed all documents
+                logging.warning("   No relevant documents remained after re-ranking.")
+                return "I found some initial potential matches, but none seemed highly relevant to your specific question after closer review. Could you please rephrase or ask about a different aspect?", []
 
         except Exception as e:
             logging.error(f"   Error during Supabase retrieval/re-ranking: {e}")
@@ -532,20 +532,20 @@ if __name__ == "__main__":
 
         # Ensure RAG components are loaded before calling
         if llm and embedding and hasattr(embedding, 'vector_store') and embedding.vector_store is not None:
-             # Pass the dummy history to the test call
-             answer, sources = get_rag_response(TEST_QUESTION, TEST_CLASS, test_persona, test_chat_history) # <<< Pass history
+            # Pass the dummy history to the test call
+            answer, sources = get_rag_response(TEST_QUESTION, TEST_CLASS, test_persona, test_chat_history) # <<< Pass history
 
-             print("\n--- TEST RESULT ---")
-             print("Answer:\n", answer)
-             print("\nSources:\n", "\n".join(f"- {s}" for s in sources))
+            print("\n--- TEST RESULT ---")
+            print("Answer:\n", answer)
+            print("\nSources:\n", "\n".join(f"- {s}" for s in sources))
         else:
             logging.error("RAG components not initialized. Cannot run test.")
 
     except FileNotFoundError as e:
-         logging.error(f"Error loading test data: {e}")
+        logging.error(f"Error loading test data: {e}")
     except ValueError as e:
-         logging.error(f"Error loading test data: {e}")
+        logging.error(f"Error loading test data: {e}")
     except ImportError:
-         logging.error("Error: Could not import dependencies. Ensure refinery modules are correct.")
+        logging.error("Error: Could not import dependencies. Ensure refinery modules are correct.")
     except Exception as e:
-         logging.error(f"An unexpected error occurred during testing: {e}", exc_info=True)
+        logging.error(f"An unexpected error occurred during testing: {e}", exc_info=True)
