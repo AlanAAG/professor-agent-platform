@@ -1,0 +1,1284 @@
+0:01
+But specifically probability and what did we find out? How is probability
+0:06
+useful to us? How is probability useful to us?
+0:20
+the chances of a certain event happening, right? To help us with that.
+0:27
+So, we had ultimately understood that we have probability distributions for
+0:33
+multiple situations, right? Given that you know some
+0:38
+information, right? Let's say for example for your product you do conduct
+0:42
+a pilot survey out out with some college students and you figure out that 60% of
+0:49
+the people are going to like your product. 60% of the people have said
+0:52
+they will buy your product right but you need to prepare better. 60% is not
+0:59
+enough for you. That information that 60% people will uh buy my product does
+1:04
+not tell you exactly how many people will buy a product,
+1:09
+right? It does not tell you what are the chances that on a given day maybe only
+1:13
+100 people buy a product or on any other given day a thousand people buy a
+1:18
+product. Right? Just because the probability is 60% doesn't mean that
+1:22
+that probability will be realized. Right? And therefore to help us with
+1:28
+that we have something called probability distributions.
+1:33
+Probability distributions are nothing but the relative chances of
+1:40
+events happening. Say for example if I was plotting the probability
+1:45
+distribution of whether a person will click on your ad or not right I could
+1:52
+even if say a person is 40% likely to click on your ad right and you push your
+1:59
+ad to 100 customers does not mean that 40% people will click on your ad right
+2:07
+you could have on a given day only 20 people click on your ad on some other
+2:11
+given day you could have 100 people click on your ad, right? And therefore
+2:15
+to help us with that we have something called probability distribution which
+2:20
+could look like anything right and essentially what it is telling
+2:25
+you is that for a very specific point right say n equal to 20
+2:34
+that given that you know that there's a 40% chance that someone clicks on your
+2:39
+ad what are the chances that on a given day 20 people will land on your website.
+2:47
+Right? So this is what we are able to get from probability distributions.
+2:52
+But probability distributions are tough to deal with. Lot of math involved. And
+2:59
+to help us deal with that we have two theorems.
+3:03
+One was law of large numbers. Anybody recap for me what the law of large
+3:09
+numbers was? we get closer to the population mean as
+3:22
+as our sample keeps increasing in size or if we keep repeating repeatedly
+3:28
+choosing samples. Right? So do you want to see how it
+3:32
+actually works? Say for example,
+3:41
+so I have this data. Okay. Can you Okay, I'll make it.
+3:52
+Uh why won't this go bigger?
+4:00
+Okay, so this is my warehouse. I have data from warehouse where I have an item
+4:06
+ID. Okay. I have the supplier from whom I have gotten the data whether that item
+4:14
+that I have is defective or not. Right? And I have some other data on shelf
+4:20
+life. All right. This is usually what your inventory management data will look
+4:24
+like. Okay. you will have now in here I have how many 50,000 rows
+4:34
+right in this particular warehouse 50,000 units but you will almost always
+4:39
+end up dealing with hundreds of thousands of units of goods right
+4:44
+hopefully but now I'm going to try to apply law of
+4:50
+large numbers to this set of data all right so say for example example, this
+4:56
+50,000 is my total population. Total population means all of the data
+5:02
+that I'm going to be concerned with, right? And now my job is to figure out
+5:08
+how many pieces are randomly defective, right? I go on into my warehouse and I
+5:15
+do a quality check. How do you think quality check inspections happen? Right?
+5:20
+When you have a quality control guy coming in in your to your warehouse to
+5:24
+see whether your product is defective or not, do you think they sample
+5:28
+everything? Do you think do you think they they look
+5:31
+at every product? No, they use a sample. Right? So say this is my population
+5:39
+50,000 of which mean
+5:59
+oh average right this is my true
+6:09
+population mean. Okay, true population mean. I hope you
+6:15
+understand what does true population mean mean?
+6:22
+So what what is this point to def uh showing us? Can you even see the board?
+6:29
+Okay. What what does what is this number
+6:32
+telling me? If if I had a variable called defect which was zero or one zero
+6:39
+for non-deective one for defective right and if I took a mean of that what
+6:45
+is this telling me% of your
+6:51
+items are defected right so the mean of the defect
+6:56
+variable is telling me that total 20% of the items are defective in my warehouse
+7:02
+house right this is the true population mean will I ever know the true
+7:07
+population mean this is a data that I have given you
+7:12
+will you ever know the true population mean no right you can't because
+7:19
+this is a data that I have constructed for to show to you that okay this is how
+7:23
+it will work technically you will never have a data like this at best what you
+7:28
+will have data for is maybe you sample 100 products
+7:32
+and you figure out what the probability is. Okay, so true population mean is how
+7:38
+close you how many total number of proportion of products are defective.
+7:44
+Okay, now what we do is we pick out samples from these 50,000.
+7:50
+Okay. Now, how do we pick on random sample from Excel list is through a
+7:57
+command called random. Okay. And what random does for you is it
+8:06
+generates any number between 0 and 1. Okay. It'll just randomly generate a
+8:12
+number from 0 and 1 which then you can use to shuffle your
+8:19
+values. Okay. Say for example I I said random
+8:25
+and every time I click on it, it takes on a different value and then I can
+8:29
+shuffle it. Okay. So I think this is for all my
+8:33
+data, right? Huh? Right. So I pick a sample of 30 units. All right. Say I'm
+8:42
+going to pick these 30.
+8:58
+I put it here. Okay. Now this is the data on the sample
+9:07
+defect whether products are defective or not in the sample of 30 products. Right?
+9:14
+I look at the mean. Oh average how much is the how many products are
+9:26
+defective here? 16%
+9:29
+16%. Right? What is the true population defect rate?
+9:34
+20%. Right? Is this close to that? Maybe not very right. But what if I keep
+9:44
+doing this again and again? All right. So again I
+9:50
+sorry I pick out
+10:03
+sorry 30 units Okay.
+10:21
+Sample rate, uh, defect rate, 13%. Right, we've gotten further away
+10:28
+from what we wanted to do. But if I go Oh, sorry.
+11:11
+What's the issue? What's the sample defect rate?
+11:36
+As I've increase the sample size, I've gotten a little bit closer to the true
+11:40
+population mean. Right? The other way I could do this is to draw out samples of
+11:48
+30, but I draw out those samples maybe 20 times.
+11:53
+Okay? So, say for example here I've got a defect rate of 26%.
+12:03
+Right? But what is the mean defect rate of all three samples?
+12:10
+average 18.
+12:14
+We're a little bit closer to the true population mean, right?
+12:20
+I could go on to do this exercise 10 more times. And if when I calculate the
+12:25
+mean, I will get very close to the true population mean. That is what law of
+12:30
+large numbers is. You keep repeating an experiment and you will ultimately
+12:36
+approach the true population mean. All right? you do as much sampling as
+12:42
+possible. All right. So I had actually already
+12:47
+done this. So I think I created like yeah whatever number of samples
+12:56
+and the mean here is.17. I don't know if you can see it or not. I I'll just
+13:00
+calculate it for you. the mean is 7. If I did this exercise 20
+13:17
+more times, I will approach to closer to the true population mean. Okay. Now next
+13:25
+thing that we had was the central limit theorem because technically all law law
+13:30
+of large numbers have told us is that we have to run an experiment a lot of times
+13:35
+right this hasn't still helped us with figuring out chances of something
+13:39
+happening right for chances to understand the chances of different
+13:44
+events happening we have the central limit theorem what the central limit
+13:48
+theorem says is if I consistently keep drawing samples from a group population
+13:55
+and I plot the means of that they are going to mimic a normal distribution. We
+14:02
+saw the saw a normal distribution yesterday.
+14:10
+This is what it looks like. Okay.
+14:17
+So what essentially I'm doing is again drawing out a lot of samples,
+14:23
+calculating the mean of each of those samples and then I plot the mean. So I
+14:30
+will draw a histogram for all of my means. So this histogram has actually
+14:35
+been drawn for these. Okay. And if I did this enough number of times, I will end
+14:41
+up with a normal curve. Right? Yes. What's the
+14:47
+enough number of times? So
+14:51
+technically 30 n is you. So basically sample size is 30 and then
+14:57
+it is assumed that once you have a sample size of 30, we can represent the
+15:03
+true population through a normal curve. Right? For theoretical purposes, if you
+15:09
+want to know um how many number of times you need to plot the means to get a his
+15:14
+uh to get a normal curve, you will maybe need to do it like 10, 15, 20 times.
+15:20
+All right? But what CLT then eventually has done for us is that even if we have
+15:28
+one sample of 30 units or more, technically I can use the normal curve
+15:35
+to represent the true population distribution.
+15:38
+Right? Because I am making the assumption that each of the points on
+15:42
+the normal curve on the x-axis, right? X-axis is essentially data
+15:49
+points, different data points, right? Each of these points actually represent
+15:53
+a mean from a sample, right? So you don't have to go about
+16:00
+running 100 samples to create a normal curve and then arrive at your test
+16:07
+results. The mathematicians have already done
+16:10
+that aggregation and they're telling you that even if you run one sample of 100
+16:15
+people, 50 people, 150 people, 1200 people, right? Technically because of
+16:21
+some mathematical uh assumptions that they have made, you can use
+16:27
+the normal curve to sort of mean that each of these points is a mean for a
+16:33
+true population sample. Okay. So, technically say if you have
+16:40
+run a sample of 30 people, right? You've surveyed a sample of 30 people for your
+16:45
+product preferences. And of those 30 people, somebody has said uh they're
+16:50
+willing to pay $5. Somebody has said they're willing to pay $10, 12, 6, 7, 8,
+16:58
+15. Right? So the assumption is that each of these points are a mean of a
+17:06
+larger sample even if you are just running this sample.
+17:11
+Okay. So it's technically you have already been given the leeway that you
+17:16
+can work with one sample and assume that this sample each points in this sample
+17:22
+that you've arrived at are a representative of a larger sample in the
+17:26
+true population. Okay.
+17:30
+So that brings us to the normal curve. Now normal curve is a beautiful thing.
+17:40
+So I hope we are clear that irrespective of the true population distribution
+17:46
+I can use the normal curve to model probabilities for all types of events.
+17:53
+Did anybody go back and look at like Bernoli or binomial distribution,
+17:58
+exponential distribution? No. When you have the slides, you can take a look at
+18:02
+them. Most of your phenomena are not normal in nature.
+18:08
+Okay? Some are. Say for example, if I plotted the heights of all the people
+18:12
+histogram of heights of people in this class,
+18:18
+it'll most likely be normal, right? But other than that, it's
+18:24
+possible that there are a lot of phenomena in the world that are not
+18:27
+normal. But we are still going to use the normal curve. When I say not normal,
+18:33
+I don't mean abnormal. I just mean not the normal curve. Okay? In this class,
+18:37
+normal means normal curve. So we will ultimately end up using the
+18:45
+so even if you have a probability distribution looking like this
+18:49
+CLLD allows you to model it like this. Okay
+18:56
+fine. Now how do we actually get the probabilities of individual things in a
+19:01
+normal curve? So for that we first need to understand
+19:07
+what the different parts of the normal curve mean.
+19:11
+Okay. Now normal curve is symmetric about its center.
+19:18
+Okay. Symmetric about its center means that
+19:21
+here at this point you have the mean or median
+19:30
+or mode. So what normal the characteristic of
+19:34
+normal curve is that the mean is equal to the median is equal to the mode.
+19:40
+Right? Again remember for your data these three numbers might be different
+19:45
+but for probability analysis we are going to make the assumption that that
+19:50
+the case is that mean median and mode are all equal.
+19:55
+Okay guys, everybody who's doing other stuff, you're going to miss out on
+20:00
+something very important because all of this you will have to do on your own
+20:03
+when you have the assignment and the exam. So I don't know how you are
+20:09
+thinking of getting through that while working on something else in class.
+20:17
+The other characteristic of a normal curve is that our ends the tails never
+20:23
+meet a zero. What does this mean? The word is
+20:27
+asymptoic. The tails are asymptoic. What asymptoic
+20:33
+means is say for example you have a product for which you have
+20:39
+found out then on an average people in the ages of 28 to 32 like that product.
+20:48
+Does that mean that somebody who is 54 years old will never buy your product?
+20:55
+There's still a possibility that that might happen, right? Somebody who is
+21:00
+really old or really young might suddenly come up and say that actually
+21:04
+want to buy the product. Right? If you have a supplier who says that I will
+21:09
+supply on an average in 8 to 10 days, does that mean that their shipping will
+21:15
+never get delayed by a month? No. Right. It could happen. If you
+21:20
+remember a few years ago, we had a a crisis in the sways, right? The the
+21:26
+channel got blocked and therefore nothing could across like shipping
+21:30
+across the world, shipping times across the world got uh increased by like a
+21:35
+month or so, right? So even though you have a
+21:42
+range which is considered reasonable for if you have an average of 8 days of
+21:47
+delivery time it's pos 20 days is a reasonable amount of delay doesn't mean
+21:53
+that the delay cannot be for like a 100 days
+21:58
+right probability of an event is never going to be zero
+22:04
+the most unlikely situation could still happen and that is what I mean by these
+22:10
+asymtotic tails. The probability for these are always
+22:15
+going to be non zero. So technically these lines never touch the x-axis.
+22:22
+Right? What we have on the yaxis is probability
+22:27
+density. Now remember probability density is not
+22:39
+probability right. So say for example if you have a
+22:47
+normal curve and you see a number like 04 here it doesn't mean that the
+22:52
+probability for this point is 40%. No. Okay. When you have a probability
+23:00
+density function, technically what you have on the x-axis
+23:05
+is probability per unit length because we are plotting this for a continuous
+23:10
+function. Continuous variable. What were continuous variables?
+23:16
+Do you guys remember what were continuous variables?
+23:21
+What were continuous variables? Sorry.
+23:28
+repeating. Yeah. What does that mean? Continuous.
+23:33
+Some if something is continuous. Yeah. So they can your height technically if I
+23:43
+wanted to measure your height, I could measure it to the fifth decimal place if
+23:49
+I had the instruments, right? Your height could be uh 54.62.
+23:56
+6 2 6 3 2 1 9 cm. If I wanted, right? If I had the correct instruments, I could
+24:04
+measure your height to this accuracy,
+24:09
+right? So for continuous variables you will never have
+24:14
+an a specific point that is possible where you can possibly say that you know
+24:19
+the probability of somebody's height being 153 cm is so and so for continuous
+24:26
+variable you can never have a probability of a point because the
+24:30
+question then becomes where do you stop right say for example if I stand facing
+24:36
+this wall and I tell you that every time in every step I'm only going to cover
+24:42
+half the distance there is between me and the wall. Right? So if I'm four 5T
+24:47
+right now I take one step and now I'm 2.5 ft. I take another step. So what is
+24:53
+half of 2.5? Uh 1.25 right? I take another step but now I'm
+25:00
+going to cover half of 1.25. Will I ever reach the wall?
+25:07
+No. Right? Because whatever even if say I am
+25:11
+uh uh 0.32 ft away from the wall
+25:16
+the next step could be 0.16 ft away
+25:21
+right I'm always trying to cover half the distance I'm away from the wall so
+25:25
+technically I would never reach the wall that is the same thing with continuous
+25:29
+variables right if I had a scale that only measures in like 151 152 153 154
+25:37
+something like that and doesn't give me the first decimal point cm that scale
+25:44
+then that is the data I have but I could get a better scale which gives me which
+25:49
+allows me to measure height at this level at this granularity.
+25:53
+So for continuous variables you will never be able to claim that probability
+25:59
+of finding someone whose height is 154 cm.
+26:06
+I can never calculate this right because what does this 154 mean? Does 153.99999
+26:15
+is this 154? Is 154.00001
+26:21
+is this 154 or not? Right? It depends on my level of gran granularity that that I
+26:28
+want to calculate. Right? So whenever we are working with continuous variables,
+26:33
+we will always talk about probability of a range.
+26:38
+All right, probability of a range meaning what is the probability that
+26:43
+somebody's height is between 152 and 154 cm.
+26:48
+Also as people who are interested in understanding data, right? Whatever you
+26:53
+have, say you are interested in ages of people again, right? Somebody could be 2
+26:58
+minutes younger to me. Right? So how do you quantify age as being discreet,
+27:05
+right? Your somebody's age could be three uh sorry 32 years, 4 months, 6
+27:10
+days, 15 hours, right? And therefore age also is a
+27:15
+continuous variable. But as a as a business owner or an entrepreneur, you
+27:20
+are okay to find out say what is the probability that somebody who is between
+27:25
+31 to 33 years of age will buy my product.
+27:29
+You're fine with that, right? You don't need to know what is the probability
+27:34
+that somebody that who's 32 years, 6 months, 15 days and so and so that they
+27:40
+will buy my product. You are okay with ranges, right? And it is fine because
+27:46
+technically a probability density function also never allows me to
+27:50
+calculate probability of a single point. So if someone ever asks you what is the
+27:56
+probability that your shipping will happen in 10 days,
+28:01
+what is it? Zero.
+28:06
+Based on this normal curve, probability of shipping happening in 10 days or
+28:11
+probability that somebody who is 32 years of age exactly will buy your
+28:17
+product is zero. Because what does this 32 mean? Does this 32 mean somebody who
+28:22
+has their birthday in birthday in 6 hours and will turn 32? Does this 32
+28:27
+mean that somebody who has completed 32 years exactly to the minute and then
+28:32
+they're 6 months past it? Right? You can't be sure. Continuous variables have
+28:37
+that trickiness to them. So whenever somebody asks you what is the
+28:41
+probability of a point for a continuous variable, it is zero.
+28:47
+Okay. So that is what probability density functions help you with. So
+28:52
+technically this is not the probability. The way you will calculate the
+28:57
+probability of something will be with ranges. Say for example
+29:03
+if say this was the distribution of shipping times and your mean shipping
+29:07
+time is 10 and you want to know what is the probability that my product will be
+29:13
+delivered in 10 days or less right if whether the supplier will deliver to me
+29:19
+before the mean mean shipping time. You simply sum the area under the curve.
+29:27
+Right? So probability density functions tell you probability allow you to
+29:31
+calculate probability by calculating area under the curve. So this is
+29:36
+essentially probability density on y-axis is probability per unit length.
+29:46
+Right? And so some of you who would have done some math at high school level
+29:50
+technically you would know and if you don't know then take my word for it that
+29:55
+when you have something like that this essentially means probability by
+29:59
+whatever length right so what you then have to do to
+30:04
+calculate probability is multiply length right that's what will give you
+30:09
+probability here right this
+30:14
+is what this is area right this is area under the curve
+30:19
+this into whatever length whatever range I'm interested in whatever range I'm
+30:25
+interested in to look at to calculate the probability right say I'm interested
+30:29
+in finding out if my mean probability of delivery time was 10 days what is the
+30:35
+probability that the product will be shipped to me between 2 to 3 days
+30:40
+right even on your websites when you when you make sales Right to your
+30:45
+customer you will say that your product will be shipped in 3 to five business
+30:49
+days. How are you making that claim 3 to five business days that that is coming
+30:54
+from here? You will look at the spread of the
+30:58
+supply times of your supplier right and then you will look at the
+31:03
+probability of shipping between 3 to 5 days. And if 90% of the times or 95% of
+31:09
+the times your supplier ships between 3 to 5 days, you're comfortable making
+31:14
+that claim, would you make that claim if your
+31:17
+supplier only shipped in 3 to 5 days 50% of the times?
+31:22
+No. Then it's a wrong claim, right? Technically, it's bad customer service,
+31:27
+right? So you will essentially figure out what the average supply time is and
+31:33
+then you will calculate the probabilities of a supply window and
+31:37
+that is what you will tell your customers that please expect your
+31:40
+product to reach you in 8 to 10 business days or please expect your product to be
+31:45
+shipped in 3 to 5 business days. Right? All of that is coming from here.
+31:51
+Now how it happens? How much time do we have?
+31:58
+Okay. Oh, sorry. So, this is what the
+32:04
+probability density function looks like for a
+32:08
+normal curve. Okay. Now, yeah,
+32:20
+you gotus you just
+32:25
+The probability of a continuous variable is always zero.
+32:28
+The probability of a singular point in a continuous variable is zero.
+32:34
+Okay. So say if I if I had the spread of ages of my customers, right? So what is
+32:41
+the probability that my customer is exactly 32 years of age? I can't say
+32:46
+because what does 32 mean? Does 32 mean somebody who has so say for example my
+32:54
+birthday is 3rd March right I don't know I think I was born at like morning 2:00
+32:59
+or something so if it is 3rd March 2 p.m. am I 32 or not
+33:08
+if I was born I was born on 3rd March 2 a.m. Okay. So the moment that I'm born,
+33:15
+right? If I 32 years after I was born, technically I turn 32 on 3rd March 2
+33:22
+a.m., right? So if I wanted to calculate the probability of me buying your
+33:28
+product, right? And you want to see whether I'm 32 years of age or not. What
+33:32
+does 32 years even mean? So say if you are looking at me on 3rd March but at 2
+33:38
+p.m. in the afternoon am I still 32 or have I crossed that age
+33:45
+something point something right so technically for
+33:48
+a continuous variable which is age for a continuous variable you can never be
+33:54
+sure at what point you are measuring
+33:59
+right what does probability of your customer being 32 years of age even mean
+34:04
+who qualifies as being 32 years of age old, right? Is somebody 32.00003
+34:13
+years, 32 years of age or not? Is somebody 31.99996799?
+34:21
+Is this person 32 or not? Can you calculate the somebody's age to
+34:28
+this granularity? Technically, no. But theoretically, yes.
+34:34
+Right? And therefore because you're not sure what is 32 exactly
+34:39
+for any continuous variable any continuous variable you will always have
+34:44
+the probability of this exact point as zero.
+34:52
+said that the probability of variables
+34:58
+because technically we can't calculate it,
+35:02
+right? Probability of an event is never zero. Yes, of course, somebody can say
+35:07
+if your average supply time was 15 days, you could get the product shipped to you
+35:12
+after 30 days. Possible, right? But what does that 30 even mean? Is that 30 mean
+35:19
+uh that you will get the product at 12:00 a.m. sharp? No. You could get it
+35:24
+at maybe uh 12:00 p.m. in the afternoon and then it's 30.05 days. Does that mean
+35:31
+is it is it is it now 30 days or 31 days? Right. So 30 days is technically
+35:37
+an average, right? What you are going to do is calculate the probability of your
+35:43
+supplier maybe delivering in later than 25 days or later than 30 days.
+35:51
+Right? And if this probability turns out to be too high, you know this is not a
+35:55
+reliable supplier. Okay? And if we cannot know like
+36:01
+32 or 36, then why is it? It is relevant to us because technically
+36:07
+when we will calculate probabilities I will never ask you or you will never ask
+36:13
+yourself what is the probability of supplying in 30 days
+36:18
+right you will always be looking at a range
+36:23
+okay because theoretically you can't have this is going to be zero
+36:31
+okay theoretically if I told told you I'm going to show you in a minute how
+36:36
+actually those probabilities are calculated and it's fairly easy but do
+36:40
+not make the mistake of thinking that it is probability of 32 somebody being 32
+36:45
+years of age in your customer pool. No, it is probably going to be something
+36:49
+like you're going to say what is the probability that my customer is between
+36:54
+31 to 33 years of age or even 31 to 32 years of age.
+37:00
+Right? If you want to be really granular in your analysis, right? Say for
+37:05
+example, if your you have a product for which uh shipping on time is really
+37:10
+important, right? Something which is perishable.
+37:13
+Say uh you know there are uh like like boutique chocolates or
+37:19
+something like that which get ruined really quickly, right? And therefore for
+37:23
+you it is really important that it gets shipped in one to two days otherwise it
+37:27
+gets ruined, right? the customer gets a bad product and so you will then look at
+37:32
+the probability of shipping happening in 2 to 3 days
+37:36
+because technically what this number doesn't even mean anything
+37:41
+right be what is 2 days so if say for example I place my order at 9:30 a.m.
+37:48
+today 17th of October does today means that it's on 19th October 9:30 a.m.
+37:55
+Exactly. I'll get my product and got it. So I hope this thing is clear. We will
+38:02
+never talk about specific points. We'll always talk about a range
+38:08
+for continuous variables. Okay. Now
+38:15
+the way to calculate probabilities I told you everybody understands right
+38:19
+probability y-axis is not probability it's probability per unit length or
+38:24
+probability density which means probability comes to us through area
+38:29
+under the curve right now if we were mathematicians
+38:33
+which we are not what we would be doing is anybody knows how to find say if I
+38:38
+gave you a function how would I calculate area under the curve for this
+38:42
+function fun. If I gave you a function like this and I
+38:49
+ask you what is the area under the curve for this function? Anybody knows how we
+38:53
+could do it? Yes.
+38:56
+Integrals. Integrals.
+38:58
+Right. Have you seen these ugly ass stuff?
+39:04
+Yes. Right. Horrifying.
+39:12
+Sorry. Isn't the f(x) there?
+39:18
+No, this is just a function. This is just the probability density function.
+39:24
+Okay. Now, this probability density function
+39:34
+we don't want to have to deal with, right?
+39:39
+we have something I've told by the way this function will lead to this. Okay.
+39:43
+So if you change like values of x and you settled on like mu2 and sigma 1 and
+39:51
+you kept changing values of x you will arrive at this bell curve. Okay. So this
+39:56
+is the functional form of a bell curve. All
+40:01
+right. We are not going to have to deal with it. So how do we calculate
+40:05
+probabilities? we have something called the
+40:11
+zed score. Okay.
+40:15
+Now what a zed score is I told you right in my bell curve
+40:22
+technically which is symmetrical about the center this point
+40:28
+both the halves are identical okay they're mirror images of each other this
+40:33
+point is mean median and mode
+40:40
+please remember 90% of statistical analysis or data Data
+40:45
+analysis is just us making assumptions about what a certain kind of data looks
+40:52
+like. All right? Why we make assumptions? We have to make
+40:55
+assumptions. We have no other option because we don't know what the true data
+40:59
+looks like. Okay? So even though if I gave you a data set today or maybe you
+41:05
+guys have started running your meta ads, right? Right. So in a couple of weeks
+41:09
+from now you will know you will have data on how much time if somebody
+41:13
+clicked on your ad or not. what was their age, what was their gender, how
+41:17
+much time they spend on your landing page. You would have data like that. And
+41:22
+if you calculated the basic means, right, measures of central tendency and
+41:27
+measures of variability, these numbers might be different for you.
+41:32
+But what you have is what? A sample or a population.
+41:39
+If you run meta ads today, you you started running meta ads, right?
+41:44
+Yeah. And when you will have data from those
+41:46
+meta ads on ages of the profile, age profile of the people who have clicked
+41:52
+on your ad, whether somebody clicked on your ad or not, how much time they spent
+41:56
+on your website, the data that you get, is that a sample or a population?
+42:02
+It's a sample, right? So you don't know what the true population looks like,
+42:08
+right? So even if your sample shows you that your mean, mode, median are
+42:13
+different, we're assuming that the true population looks like this.
+42:19
+I have a question about that. Yeah. So in the bell curve, the midpoint is all
+42:25
+three. All three.
+42:27
+Okay, that's our assumption
+42:29
+that the true population looks like this.
+42:33
+Okay. So your sample might have these three values different
+42:38
+but now we are assuming that true population will look like this right
+42:44
+where this is the mean right and we have something called
+42:51
+standard deviation which will be
+42:56
+say standard deviation And
+43:03
+the way your data will look like on a normal curve is 34%
+43:10
+of your values will be on either side of the mean
+43:16
+limited by one standard deviation s. All right. So between your minus one
+43:24
+standard deviation and next standard deviation. Right? So say for example if
+43:27
+for my data xbar was 10 and uh standard deviation was three two
+43:34
+right so then these numbers become x becomes 10 this becomes
+43:39
+for first standard deviation on the negative side becomes what
+43:46
+if my standard deviation is two and I'm going minus s minus 2 right 10 - 2
+43:53
+becomes 8 this becomes 8 this becomes 12
+43:57
+12. So in your data then 34 + 34 this is
+44:03
+almost 69 some something some something something right almost 70% of your data
+44:08
+lies between plus minus one standard deviation remember when we discussed
+44:13
+variability I told you that 70% of your data lies between the range of your
+44:19
+standard deviations one standard deviation right that assumption comes
+44:24
+from bell curve assuming that your data is set along a bell curve curve right
+44:30
+technically then you would see your n 70% of your data fall between the
+44:38
+first standard deviation okay remaining data say from first
+44:44
+standard deviation to second standard deviation so what does this number
+44:48
+becomeus 2s
+44:54
+six similar here
+44:59
+14. So 13.59%
+45:04
+of the data falls between the first and the second standard deviation on either
+45:09
+side and then 2.15 between second and third
+45:15
+standard deviation. Okay.
+45:20
+So this is what the bell curve looks like. Yes.
+45:26
+It doesn't have like Yeah. So
+45:31
+exactly right standard deviation number because we squared rooted remember
+45:35
+right. So technically it can be plus or minus on either side of the mean.
+45:41
+Standard deviation essentially tells me if my standard deviation was two it
+45:45
+could be two units to the left or two units to the right.
+45:49
+Oh so units units.
+45:52
+Got it. So two units to the left or two units to the right and 70% of the data
+45:57
+lies between the four standard deviation plus minus four standard deviation and
+46:02
+the remaining looks like this. Okay. Now how we've arrived at this is
+46:08
+we have integrated that crazy looking equation and calculated the area under
+46:13
+the curve for probabilities. Right? A simple way of doing that is the standard
+46:20
+normal curve. Okay. We have something called the
+46:25
+standard normal
+46:30
+curve. The standard normal curve what it does
+46:35
+is remember this and my mean was 10.
+46:42
+What I'm going to do is shift my mean to zero.
+46:48
+Okay. So a standard normal curve has a mean zero and a standard deviation of
+46:56
+one sorry standard deviation of one one unit.
+47:03
+So in my standard normal curve what I do is all of the points all of the data
+47:08
+points that I have I subtract oh this is X okay sorry this is supposed to be X I
+47:16
+subtract the mean and divide by the standard deviation.
+47:21
+Do you get how this would shift my entire number? All the all the numbers
+47:26
+in my data for every say for example if my data was 1 4 9 10 14 2 3.
+47:36
+Right? Can somebody tell me the standard deviation and the mean here?
+47:42
+Quickly you have the phones. So 1 4 9 10 14 2 3.
+47:49
+What is the standard deviation? for
+47:53
+this. Are you sure? I don't know.
+47:59
+Okay. Assuming that my mean was uh I don't know 10 or eight.
+48:06
+For which for which these these these?
+48:10
+That's an example. Yeah.
+48:12
+Yeah. It's it's an example that I just gave you. I'm giving you an example, but
+48:16
+somebody needs to tell me the mean and standard deviation for these numbers.
+48:28
+uh five uh 19 29 uh 38 42 uh 42 43 1 2 3 4 5 6 7 So it's something
+48:40
+around 6. Yeah. So mean is 6.14
+48:45
+standard deviation 4.8
+48:49
+4.8 88. Okay. So now what I'm going to do is for
+48:54
+each of these numbers I'm going to subtract the mean
+49:00
+and divide by the standard deviation for each of these numbers. So 4 minus uh
+49:07
+6.14 by 4.88. And what this is doing for me is
+49:13
+converting my normal curve into a standard normal curve.
+49:19
+Right? What I've done is from my data I've taken away the mean, subtracted the
+49:25
+mean and divided by the standard deviation. So all my points in the data
+49:30
+now become a ratio of the standard deviation
+49:36
+right. Do you get what I'm doing?
+49:40
+No, I don't get it because
+49:43
+it example on the presentation or not. There is no example on the presentation
+49:48
+right now. Oh no, this this question we'll do. We'll come to this question.
+49:54
+I'm just explaining this formula right now. Okay. This formula allows me to
+50:01
+convert my data into a standard normal curve. A standard normal curve has a
+50:06
+mean of zero and a standard deviation of one. So if I did this exercise for this
+50:14
+distribution right I subtracted mean from every value
+50:18
+and divided by standard deviation subtracted mean divide by standard
+50:22
+deviation for everything I would get and then I calculated the mean and standard
+50:28
+deviation I would get a mean zero and a standard deviation of one. You can try
+50:32
+to do it in Excel. Okay. Now standard normal curves
+50:37
+very easy to deal with and the reason they're very easy to deal
+50:42
+with. So mean zero standard deviation one so
+50:49
+one sorry minus one one how much data here between the two
+50:55
+between minus one and one how much data will be there
+50:59
+70%. And how do we arrive at that? For that
+51:04
+we have something called the Zed table. Zed distribution table or do I have it
+51:11
+open? Do you see the table?
+51:28
+Is the table are the numbers clear? a little bit.
+51:33
+Okay. So when I calculate those numbers
+51:40
+from this formula, right, I'll just change this
+51:47
+X - XR by S. What I get is a Z score. A zed score essentially tells you where
+51:55
+does a data point lie on the standard normal distribution curve.
+52:02
+All right. So for this example at least can you calculate for the first
+52:09
+for this first 100 can you calculate the zed score?
+52:14
+Can you calculate the zed score for 100? If I if so what is the mean value that
+52:18
+I've given? 1.67
+52:24
+1.37 67
+52:27
+So zed is 1.67 for this 80 180
+52:42
+So we have three zed values. Now what the zed score tell us is where does the
+52:50
+data point lie in a standard normal distribution?
+52:56
+Oh minus right now how does the zed score
+53:01
+help us calculate the probability of something happening? I go to the z
+53:06
+table. Yeah. So first first was minus 1.67 67
+53:13
+right so what I do is along the zed table the zed table will have two
+53:18
+components the negative zed scores and the positive zed score so this is the
+53:22
+table for negative zed scores and the second page is positive zed scores why
+53:26
+negative and positive because technically I have made my mean as zero
+53:32
+right so now some data is lying on the left side of zero some data is lying on
+53:37
+the right side of the zero right which means now some some some some
+53:43
+distributions or some data points will have a zed score which is negative right
+53:47
+so I have a zed score of minus 1.67 I go here okay
+53:55
+so 1.6 6 essentially is the beginning. Then I look at the second decimal place.
+54:01
+So every time you will calculate the Z score, you will calculate the Z score
+54:04
+till two decimal places. Right? So if you're getting something like 679, you
+54:10
+can round it up to 68. Okay? That's your choice. So if you get
+54:16
+1.67, I go to 1.6. And then on the first row, I search for 7.
+54:24
+Okay? So I will So that is the third last column right? I scroll down
+54:33
+04. And now what this has told me is that
+54:39
+technically the area to the left of $100
+54:46
+is 4%. The chances of something happening.
+54:53
+So what was the what was the question to begin with? What are the chances that
+54:56
+your Yeah. What are the chances that your
+55:01
+average order value is less than 100? Right? Always remember the zed score is
+55:06
+telling you area to the left of the line. Right? So now I have
+55:15
+the mean value was 150. The standard deviation was 30.
+55:23
+Right? And I am interested in finding out what are the chances that my prob
+55:29
+that my average order value will be less than $100.
+55:33
+And from my table now I found out that in fact the area covered
+55:41
+at this zore minus 1.67 is 04 0.047. meaning that this area
+55:53
+is 0.047. Meaning that the probability the
+55:58
+combined probability of any of these events happening is
+56:04
+uh 4.7%. Okay. So technically the zed table has
+56:12
+area under the curve for all standard deviations all zed scores and
+56:20
+these zed scores are essentially telling you what are the chances of an event
+56:26
+happening. So if my question was what are the chances that your average order
+56:31
+value will be less than 100 the chances of that I found out are
+56:36
+4.7%. If I asked you, what are the chances of
+56:42
+your order value being between $160 and $180?
+56:47
+Can you now calculate from the zed scores?
+56:51
+How would we do that? Always remember zed score is telling you the area to the
+56:56
+left of the score, right? So if
+57:01
+I mean if what will be the zed score for 160?
+57:05
+What will be the zed score? Can somebody do Z score for 160
+57:15
+one 0.33
+57:22
+right so I go to the positive side of the
+57:26
+table now 0.3
+57:32
+and 0.3 62.9%. So 62.9%
+57:38
+of the values lie to the left of $160. 62.9%.
+57:45
+I can make the same calculation for 180. What is the what what is the value for
+57:50
+180? I think we already have it. It's 63, right?
+57:55
+Huh? Oh, it's one.
+57:59
+Can you can you show me what is the um Yeah. So one probability for one is
+58:14
+84 84%.
+58:17
+84.13%. So what are the chances of your average
+58:23
+order value being 160 between 160 and 180?
+58:32
+Right? 84.13 minus 62.9.
+58:39
+This is the probability that you will have an average average order value
+58:43
+between this value these two number between 160 and 180.
+58:49
+What is the probability that your average order value will be
+58:54
+more than 170? Can you now do that for me? So
+59:00
+170 the Z score was 63. Right. So, where do I go on the Z table?
+59:07
+Positive or the negative side? Positive side. Where do I what what's
+59:11
+the number that I search in the first column?
+59:16
+0.6. The first two decimal first decimal
+59:21
+place, right? So, 0.6. And what do I search in the first row?
+59:30
+What number do I search for in the first row?
+59:34
+Seven or three. See three. Sorry. The Z score is 63. You told me that.
+59:44
+So on the first in the first row I look for 6. Then I find that three this the
+59:52
+three at the second decimal place in the first row. And wherever they intersect
+1:00:00
+73 is again 73 is the probability of
+1:00:05
+something on the left. Right? So if
+1:00:15
+you told me the Z score of 637 67. Okay. I'm sorry. I must have heard
+1:00:22
+it wrong. So okay fine. So 67 here. Is that correct?
+1:00:30
+Yeah. So this has told me the probability of
+1:00:36
+what 74 is the probability of what? A value being less than 170 or more than
+1:00:43
+170. Less than 170.
+1:00:48
+Right? So if this was $170, technically
+1:00:55
+74 is the sum of all these probabilities.
+1:01:00
+So what is the probability that your average order value will be more than
+1:01:04
+170? 1 minus 74.
+1:01:14
+Right? So now if I told you you are to choose a supplier
+1:01:20
+right and you okay or maybe you already have a supplier and you have to make a
+1:01:25
+claim on your website that our product will ship in these many days. What do
+1:01:30
+you do now? You calculate the probability of a given
+1:01:37
+range of supply days, shipping days, right? And if that is a good probability
+1:01:43
+then that is the claim you make on your website
+1:01:48
+okay that on an average our product will be supplied say you you choose a number
+1:01:53
+80% of the times I am okay with my sub shipping happening between 3 to 8 days
+1:01:59
+or 3 to 5 days right you calculate what the probability of that happening is and
+1:02:04
+if if that probability is greater than 80%. Then that is the supply you go
+1:02:09
+with, right? Do you understand how the
+1:02:13
+standard normal curve is going to help me calculate probabilities of specific
+1:02:18
+events happening? Yeah. Any doubts about zed score?
+1:02:29
+So if I gave you if I gave you like questions and all in an assignment,
+1:02:33
+you'll be able to do at least work with zed scores. Do you have this table yet?
+1:02:38
+This table is easily available on Google but also I will share it with you.
+1:02:42
+Okay. So this table is like widely used right?
+1:02:45
+Very widely used for just no. So that's the that's the magic of
+1:02:50
+the standard normal curve that technically say for example if your you
+1:02:56
+work with you have your meta ads data and there you find out that the average
+1:03:00
+age of a customer is 25. Somebody else maybe somebody else could have a meta
+1:03:06
+ads data where their average age was 32. Both of you can work with the same zed
+1:03:11
+table because technically you have done this. You've calculated zed scores x -
+1:03:18
+xar by sigma right and so all of you are working with
+1:03:24
+the same zed distribution table which is the standard normal curve. You've
+1:03:28
+standardized that all of your data to this curve.
+1:03:32
+And now once you have that data, once you have the zed scores for your data,
+1:03:36
+you can calculate all the probabilities here, all combinations of all ranges.
+1:03:42
+Okay. Fine.
+1:03:47
+Thank you.
