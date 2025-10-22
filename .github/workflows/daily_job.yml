@@ -1,0 +1,88 @@
+name: Daily Harvester & Refinery Pipeline
+
+# When to run this workflow
+on:
+  # Run automatically every day at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  
+  # Also allow manual triggering from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Pipeline mode (daily or backlog)'
+        required: false
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - backlog
+
+# Define the jobs to run
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      # Step 1: Download your repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      # Step 3: Install Python dependencies
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # Step 4: Install Playwright browsers
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+      
+      # Step 5: Create necessary directories
+      - name: Create data directories
+        run: |
+          mkdir -p logs/error_screenshots
+          mkdir -p data/raw_transcripts
+          mkdir -p data/raw_static
+          mkdir -p data/raw_pdfs
+          mkdir -p /tmp/harvester_downloads
+      
+      # Step 6: Run the pipeline
+      - name: Run Harvester & Refinery Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
+          COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
+          PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
+        run: |
+          python -m src.run_hybrid_pipeline
+      
+      # Step 7: Upload logs if pipeline fails
+      - name: Upload error logs and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_number }}
+          path: |
+            logs/
+          retention-days: 7
+      
+      # Step 8: Clean up sensitive files
+      - name: Clean up sensitive files
+        if: always()
+        run: |
+          rm -f data/auth_state.json
+          echo "✅ Cleaned up authentication files"

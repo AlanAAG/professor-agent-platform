@@ -28,7 +28,7 @@ RECORDING_ITEM_SELECTOR = "div.fileBox" # Container for each recording link/info
 RESOURCE_ITEM_SELECTOR = "div.fileBox" # Example, might be different class
 RESOURCE_TITLE_SELECTOR = "div.fileContentCol p"
 RESOURCE_DATE_SELECTOR = "div.fileContentCol span"
-RESOURCE_LINK_SELECTOR = "div.fileBox > a
+RESOURCE_LINK_SELECTOR = "div.fileBox > a"
 
 # Static Content Selectors (Example - Needs refinement by inspecting page)
 SYLLABUS_CONTAINER_SELECTOR = "div.course-description-container" # Placeholder

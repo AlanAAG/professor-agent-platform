@@ -4,11 +4,7 @@ import streamlit as st
 import json
 import os
 # Use absolute import relative to src if running as module, or adjust as needed
-try:
-    from app import rag_core # Assuming rag_core.py is in the same directory (app)
-except ImportError:
-    # Fallback for running app.py directly from root? Adjust import logic as needed.
-    import rag_core
+from . import rag_core
 
 # --- Configuration & Setup ---
 PERSONA_FILE_PATH = os.path.join(os.path.dirname(__file__), "persona.json") # More robust path

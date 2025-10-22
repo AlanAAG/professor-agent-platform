@@ -2,6 +2,7 @@
 
 import logging
 import time
+import asyncio
 import os # For path joining in download
 import aiohttp # For async HTTP requests
 from bs4 import BeautifulSoup
@@ -17,11 +18,11 @@ async def _scrape_drive_transcript(page: Page) -> str:
     try:
         play_button = page.locator(config.DRIVE_VIDEO_PLAY_BUTTON).first
         if await play_button.is_visible(timeout=10000):
-             logging.info("      Clicking play button...")
-             await play_button.click(timeout=5000)
-             await page.wait_for_timeout(2000)
+            logging.info("      Clicking play button...")
+            await play_button.click(timeout=5000)
+            await page.wait_for_timeout(2000)
         else:
-             logging.info("      Play button not immediately visible or already played, proceeding...")
+            logging.info("      Play button not immediately visible or already played, proceeding...")
 
         settings_button = page.locator(config.DRIVE_SETTINGS_BUTTON).first
         logging.info("      Clicking settings (gear) button...")
@@ -43,7 +44,7 @@ async def _scrape_drive_transcript(page: Page) -> str:
         if raw_transcription:
             logging.info(f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars).")
         else:
-             logging.warning("   Google Drive transcript segments found but were empty.")
+            logging.warning("   Google Drive transcript segments found but were empty.")
 
     except Exception as e:
         logging.error(f"   Failed during Google Drive transcript scraping steps: {e}", exc_info=True)
@@ -102,8 +103,8 @@ async def check_url_content_type(url: str) -> str:
     logging.debug(f"Checking content type for URL: {url}")
     # Handle potential Playwright internal URLs if passed accidentally
     if not url or not url.startswith(('http://', 'https://')):
-         logging.warning(f"Invalid or internal URL passed to check_url_content_type: {url}")
-         return "unknown"
+        logging.warning(f"Invalid or internal URL passed to check_url_content_type: {url}")
+        return "unknown"
     try:
         async with aiohttp.ClientSession() as session:
             # Use HEAD request to avoid downloading the whole file
@@ -116,8 +117,8 @@ async def check_url_content_type(url: str) -> str:
         logging.error(f"   Network error checking content type for {url}: {e}")
         return "error"
     except asyncio.TimeoutError:
-         logging.error(f"   Timeout checking content type for {url}")
-         return "error"
+        logging.error(f"   Timeout checking content type for {url}")
+        return "error"
     except Exception as e:
         logging.error(f"   Unexpected error checking content type for {url}: {e}")
         return "error"
@@ -145,8 +146,8 @@ async def download_file(url: str, save_dir: str, filename: str) -> str | None:
         logging.error(f"   Network error downloading {url}: {e}")
         return None
     except asyncio.TimeoutError:
-         logging.error(f"   Timeout downloading {url}")
-         return None
+        logging.error(f"   Timeout downloading {url}")
+        return None
     except Exception as e:
         logging.error(f"   Unexpected error downloading {url}: {e}")
         return None
@@ -174,8 +175,8 @@ async def scrape_html_content(url: str) -> str | None:
         logging.error(f"   Network error scraping HTML {url}: {e}")
         return None
     except asyncio.TimeoutError:
-         logging.error(f"   Timeout scraping HTML {url}")
-         return None
+        logging.error(f"   Timeout scraping HTML {url}")
+        return None
     except Exception as e:
         logging.error(f"   Unexpected error scraping HTML {url}: {e}")
         return None
