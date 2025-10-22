@@ -1,71 +1,58 @@
 # src/harvester/scraping.py
 
 import logging
-import time # Added for potential short delays
-from playwright.async_api import Page, BrowserContext # Added Page for type hint
-from . import config # Imports selectors from config.py
+import time
+import os # For path joining in download
+import aiohttp # For async HTTP requests
+from bs4 import BeautifulSoup
+from readability import Document as ReadabilityDocument # To extract main content
+from playwright.async_api import Page, BrowserContext
+from . import config
 
-async def _scrape_drive_transcript(page: Page) -> str: # Added Page type hint
-    """
-    Clicks through necessary buttons and scrapes transcript text from a Google Drive page.
-    """
+# --- Existing Transcript Scraping Functions ---
+async def _scrape_drive_transcript(page: Page) -> str:
+    # ... (Keep existing implementation with Play/Settings/Transcript clicks) ...
     logging.info("   Attempting Google Drive transcript scrape...")
     raw_transcription = ""
     try:
-        # --- ADDED STEPS START ---
-        
-        # 1. Click Play Button (if necessary - check if video auto-plays)
-        # It's safer to assume we need to click play.
         play_button = page.locator(config.DRIVE_VIDEO_PLAY_BUTTON).first
-        if await play_button.is_visible(timeout=10000): # Wait up to 10s for play button
-            logging.info("      Clicking play button...")
-            await play_button.click(timeout=5000)
-            await page.wait_for_timeout(2000) # Wait briefly for player controls to likely appear
+        if await play_button.is_visible(timeout=10000):
+             logging.info("      Clicking play button...")
+             await play_button.click(timeout=5000)
+             await page.wait_for_timeout(2000)
         else:
-            logging.info("      Play button not immediately visible or already played, proceeding...")
+             logging.info("      Play button not immediately visible or already played, proceeding...")
 
-        # 2. Click Settings (Gear) Button
         settings_button = page.locator(config.DRIVE_SETTINGS_BUTTON).first
         logging.info("      Clicking settings (gear) button...")
         await settings_button.wait_for(state="visible", timeout=15000)
         await settings_button.click(timeout=5000)
-        
-        # 3. Click Transcript Menu Item
-        # Wait for the menu item itself to become visible after clicking settings
+
         transcript_menu_item = page.locator(config.DRIVE_TRANSCRIPT_MENU_ITEM).first
         logging.info("      Clicking transcript menu item...")
         await transcript_menu_item.wait_for(state="visible", timeout=10000)
         await transcript_menu_item.click(timeout=5000)
-        
-        # --- ADDED STEPS END ---
 
-        # 4. Wait for and Scrape Transcript Segments (Existing Logic)
         logging.info("      Waiting for transcript segments to appear...")
         transcript_segment_selector = config.DRIVE_TRANSCRIPT_SEGMENT_SELECTOR
-        # Wait for the *first* segment to ensure the panel is loaded
-        await page.wait_for_selector(transcript_segment_selector, state="visible", timeout=45000) # Keep increased timeout
+        await page.wait_for_selector(transcript_segment_selector, state="visible", timeout=45000)
 
-        # Get all segments that match
         all_segments = await page.locator(transcript_segment_selector).all_text_contents()
         raw_transcription = " ".join(filter(None, all_segments))
 
         if raw_transcription:
             logging.info(f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars).")
         else:
-            logging.warning("   Google Drive transcript segments found but were empty.")
+             logging.warning("   Google Drive transcript segments found but were empty.")
 
     except Exception as e:
-        # Catch timeout or other errors during the multi-step process
-        logging.error(f"   Failed during Google Drive transcript scraping steps: {e}", exc_info=True) # Log traceback
-        try: # Try to save screenshot even if page reference might be tricky
-            await page.screenshot(path=f"logs/error_screenshots/drive_scrape_error_{int(time.time())}.png")
-        except Exception as screen_err:
-            logging.error(f"      Failed to save error screenshot: {screen_err}")
-    return raw_transcription # Return scraped text or empty string on failure
+        logging.error(f"   Failed during Google Drive transcript scraping steps: {e}", exc_info=True)
+        try: await page.screenshot(path=f"logs/error_screenshots/drive_scrape_error_{int(time.time())}.png")
+        except Exception as screen_err: logging.error(f"      Failed to save error screenshot: {screen_err}")
+    return raw_transcription
 
-# --- (Keep _scrape_zoom_transcript and scrape_transcript_from_url as they were) ---
 async def _scrape_zoom_transcript(page: Page) -> str:
-    """Scrapes transcript text from a Zoom recording page."""
+    # ... (Keep existing implementation) ...
     logging.info("   Attempting Zoom transcript scrape...")
     transcript_container_selector = config.ZOOM_TRANSCRIPT_CONTAINER_SELECTOR
     raw_transcription = ""
@@ -73,49 +60,144 @@ async def _scrape_zoom_transcript(page: Page) -> str:
         container = page.locator(transcript_container_selector).first
         await container.wait_for(state="visible", timeout=30000)
         raw_transcription = await container.text_content(timeout=5000)
-        if raw_transcription:
-            logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
-        else:
-            logging.warning("   Zoom transcript container found but was empty.")
+        if raw_transcription: logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
+        else: logging.warning("   Zoom transcript container found but was empty.")
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
-        # await page.screenshot(path=f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
     return raw_transcription
 
 async def scrape_transcript_from_url(context: BrowserContext, url: str) -> str:
-    """Opens URL in new tab, detects platform, scrapes transcript, closes tab."""
+    # ... (Keep existing implementation) ...
     page = None
     try:
         page = await context.new_page()
-        logging.info(f"   Opening URL: {url}")
-        # Use 'load' or 'domcontentloaded', maybe increase timeout further if pages are slow
-        await page.goto(url, wait_until="load", timeout=90000) # Increased timeout, wait for full load
-
-        # Maybe wait longer for video players to initialize
+        logging.info(f"   Opening transcript URL: {url}")
+        await page.goto(url, wait_until="load", timeout=90000)
         logging.info("      Waiting for page elements to potentially initialize...")
-        await page.wait_for_timeout(7000) # Increased wait
-
-        current_url = page.url # Get URL after potential redirects
-
+        await page.wait_for_timeout(7000)
+        current_url = page.url
         if "drive.google.com" in current_url:
-            return await _scrape_drive_transcript(page) # Call updated function
+            return await _scrape_drive_transcript(page)
         elif "zoom.us" in current_url:
             return await _scrape_zoom_transcript(page)
         else:
-            logging.warning(f"   Unknown recording platform at {current_url}. Skipping scrape.")
+            logging.warning(f"   Unknown recording platform at {current_url}. Skipping transcript scrape.")
             return ""
     except Exception as e:
-        logging.error(f"   Error navigating to or processing URL {url}: {e}", exc_info=True)
+        logging.error(f"   Error navigating to or processing transcript URL {url}: {e}", exc_info=True)
         if page:
-            try:
-                await page.screenshot(path=f"logs/error_screenshots/nav_error_{int(time.time())}.png")
-            except Exception as screen_err:
-                logging.error(f"      Failed to save navigation error screenshot: {screen_err}")
+            try: await page.screenshot(path=f"logs/error_screenshots/nav_error_{int(time.time())}.png")
+            except Exception as screen_err: logging.error(f"      Failed to save navigation error screenshot: {screen_err}")
         return ""
     finally:
         if page:
-            try:
-                await page.close()
-                logging.info(f"   Closed tab for {url}")
-            except Exception as close_err:
-                logging.error(f"   Error closing page for {url}: {close_err}")
+            try: await page.close(); logging.info(f"   Closed tab for {url}")
+            except Exception as close_err: logging.error(f"   Error closing page for {url}: {close_err}")
+
+
+# --- NEW HELPER FUNCTIONS ---
+
+async def check_url_content_type(url: str) -> str:
+    """Sends a HEAD request to determine the content type (PDF, HTML, etc.)."""
+    logging.debug(f"Checking content type for URL: {url}")
+    # Handle potential Playwright internal URLs if passed accidentally
+    if not url or not url.startswith(('http://', 'https://')):
+         logging.warning(f"Invalid or internal URL passed to check_url_content_type: {url}")
+         return "unknown"
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Use HEAD request to avoid downloading the whole file
+            async with session.head(url, timeout=15, allow_redirects=True) as response:
+                response.raise_for_status() # Raise error for bad status (4xx, 5xx)
+                content_type = response.headers.get('Content-Type', '').lower()
+                logging.debug(f"   URL: {url}, Content-Type: {content_type}")
+                return content_type
+    except aiohttp.ClientError as e:
+        logging.error(f"   Network error checking content type for {url}: {e}")
+        return "error"
+    except asyncio.TimeoutError:
+         logging.error(f"   Timeout checking content type for {url}")
+         return "error"
+    except Exception as e:
+        logging.error(f"   Unexpected error checking content type for {url}: {e}")
+        return "error"
+
+async def download_file(url: str, save_dir: str, filename: str) -> str | None:
+    """Downloads a file (e.g., PDF) from a URL asynchronously."""
+    filepath = os.path.join(save_dir, filename)
+    logging.info(f"   Attempting to download file from {url} to {filepath}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=60, allow_redirects=True) as response: # Longer timeout for downloads
+                response.raise_for_status()
+                # Ensure save directory exists
+                os.makedirs(save_dir, exist_ok=True)
+                # Stream the download
+                with open(filepath, 'wb') as f:
+                    while True:
+                        chunk = await response.content.read(8192) # Read in chunks
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                logging.info(f"   Successfully downloaded {filename}")
+                return filepath
+    except aiohttp.ClientError as e:
+        logging.error(f"   Network error downloading {url}: {e}")
+        return None
+    except asyncio.TimeoutError:
+         logging.error(f"   Timeout downloading {url}")
+         return None
+    except Exception as e:
+        logging.error(f"   Unexpected error downloading {url}: {e}")
+        return None
+
+async def scrape_html_content(url: str) -> str | None:
+    """Fetches an HTML page and extracts the main article text."""
+    logging.info(f"   Attempting to scrape HTML content from: {url}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30, allow_redirects=True) as response:
+                response.raise_for_status()
+                html_content = await response.text()
+
+                # Use readability-lxml to extract the main content
+                doc = ReadabilityDocument(html_content)
+                main_content_html = doc.summary() # Gets main content HTML
+                
+                # Convert main content HTML to clean text using BeautifulSoup
+                soup = BeautifulSoup(main_content_html, 'lxml')
+                main_text = soup.get_text(separator='\n', strip=True) # Get text, preserving paragraphs
+
+                logging.info(f"   Successfully scraped HTML content ({len(main_text)} chars).")
+                return main_text
+    except aiohttp.ClientError as e:
+        logging.error(f"   Network error scraping HTML {url}: {e}")
+        return None
+    except asyncio.TimeoutError:
+         logging.error(f"   Timeout scraping HTML {url}")
+         return None
+    except Exception as e:
+        logging.error(f"   Unexpected error scraping HTML {url}: {e}")
+        return None
+
+async def scrape_static_syllabus(page: Page, course_code: str) -> str | None:
+    """Scrapes the static syllabus/description text from the course details page."""
+    logging.info(f"   Attempting to scrape static syllabus for {course_code}")
+    # Use the selector defined in config.py (currently a placeholder)
+    syllabus_selector = config.SYLLABUS_CONTAINER_SELECTOR
+    try:
+        # Ensure the element exists and is visible
+        container = page.locator(syllabus_selector).first
+        await container.wait_for(state="visible", timeout=15000)
+        syllabus_text = await container.text_content(timeout=5000)
+        if syllabus_text:
+            logging.info(f"   Successfully scraped syllabus text ({len(syllabus_text)} chars).")
+            return syllabus_text.strip()
+        else:
+            logging.warning(f"   Syllabus container found but was empty for {course_code}.")
+            return None
+    except Exception as e:
+        logging.error(f"   Failed to scrape syllabus for {course_code} using selector '{syllabus_selector}': {e}")
+        # Optionally take screenshot
+        # await page.screenshot(path=f"logs/error_screenshots/syllabus_scrape_error_{course_code}.png")
+        return None
