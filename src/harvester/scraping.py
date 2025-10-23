@@ -17,11 +17,13 @@ async def _scrape_drive_transcript(page: Page) -> str:
     raw_transcription = ""
     try:
         play_button = page.locator(config.DRIVE_VIDEO_PLAY_BUTTON).first
-        if await play_button.is_visible(timeout=10000):
+        # Ensure we wait for the element before checking visibility; Playwright's is_visible doesn't take timeout
+        try:
+            await play_button.wait_for(state="visible", timeout=10000)
             logging.info("      Clicking play button...")
             await play_button.click(timeout=5000)
             await page.wait_for_timeout(2000)
-        else:
+        except Exception:
             logging.info("      Play button not immediately visible or already played, proceeding...")
 
         settings_button = page.locator(config.DRIVE_SETTINGS_BUTTON).first

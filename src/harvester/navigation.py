@@ -172,8 +172,15 @@ async def get_all_resource_items(page: Page) -> list[Locator]:
     try:
         # Wait briefly to ensure items are rendered if dynamically loaded
         await page.wait_for_timeout(1500)
-        items = await page.locator(config.RESOURCE_ITEM_SELECTOR).all()
-        logging.info(f"Found {len(items)} resource items.")
+        locator = page.locator(config.RESOURCE_ITEM_SELECTOR)
+        count = await locator.count()
+        if count == 0:
+            logging.warning("No resource items found with primary selector. Trying fallback on anchors within fileBox.")
+            # Fallback: return anchors inside fileBox to at least extract URLs
+            locator = page.locator(f"{config.RESOURCE_ITEM_SELECTOR} a")
+            count = await locator.count()
+        items = [locator.nth(i) for i in range(count)]
+        logging.info(f"Found {count} resource items.")
         return items
     except Exception as e:
         logging.error(f"Failed to get resource items: {e}")
