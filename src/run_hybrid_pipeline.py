@@ -168,9 +168,9 @@ async def main_pipeline(mode="daily"):
 
     # Determine cutoff date based on mode
     if mode == "daily":
-        # Get everything from the start of yesterday to be safe
-        cutoff_date = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - datetime.timedelta(days=1)
-        logging.info(f"Processing resources modified since: {cutoff_date.isoformat()}")
+        # Process anything from the last 24 hours (rolling window)
+        cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+        logging.info(f"Processing resources from the last 24 hours (since {cutoff_date.isoformat()})")
     elif mode == "backlog":
         cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc) # Get everything
         logging.info("Processing all historical resources (backlog mode).")
