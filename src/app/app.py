@@ -101,7 +101,9 @@ else:
                             st.write(f"- {source}")
 
             except Exception as e:
-                error_message = f"Sorry, an error occurred: {e}"
-                message_placeholder.error(error_message)
-                # Optionally add error to chat history too
-                st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {error_message}"})
+                # Surface errors directly in the chat flow as the assistant
+                error_summary = "⚠️ Sorry, an error occurred while generating a response."
+                error_details = f"Details: {e}"
+                chat_error_message = f"{error_summary}\n\n{error_details}"
+                message_placeholder.markdown(chat_error_message)
+                st.session_state.messages.append({"role": "assistant", "content": chat_error_message})
