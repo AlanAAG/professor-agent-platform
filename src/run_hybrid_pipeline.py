@@ -89,16 +89,16 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
                 raise ValueError("HTML scraping yielded no content.")
 
         elif "drive.google.com" in url or "zoom.us" in url:
-             content_type_tag = "recording_transcript"
-             logging.info("   Content type: Recording Transcript. Scraping...")
-             # Use the specific transcript scraping logic
-             transcript_text = await scraping.scrape_transcript_from_url(context, url)
-             if transcript_text:
-                 raw_content_data = transcript_text # Store extracted text
-             else:
-                 # Don't raise error, just log warning if transcript empty/failed
-                 logging.warning(f"   No transcript content scraped from {url}")
-                 return # Stop processing this resource if no transcript
+            content_type_tag = "recording_transcript"
+            logging.info("   Content type: Recording Transcript. Scraping...")
+            # Use the specific transcript scraping logic
+            transcript_text = await scraping.scrape_transcript_from_url(context, url)
+            if transcript_text:
+                raw_content_data = transcript_text # Store extracted text
+            else:
+                # Don't raise error, just log warning if transcript empty/failed
+                logging.warning(f"   No transcript content scraped from {url}")
+                return # Stop processing this resource if no transcript
 
         else:
             logging.warning(f"   Skipping unsupported content type: {content_type_header} for {url}")
@@ -152,7 +152,7 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
                 embedding.chunk_and_embed_text(clean_text, metadata)
 
             else:
-                 logging.warning(f"   No processing logic for content_tag: {content_type_tag}")
+                logging.warning(f"   No processing logic for content_tag: {content_type_tag}")
 
 
     except Exception as process_err:
@@ -179,7 +179,7 @@ async def main_pipeline(mode="daily"):
         cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc) # Get everything
         logging.info("Processing all historical resources (backlog mode).")
     else:
-        logging.error(f"Invalid mode specified: {mode}. Use 'daily' or 'backlog'.")
+        if not embedding.check_if_embedded({"class_name": class_name, "content_type": "syllabus"}):
         return
 
     browser = None
@@ -210,55 +210,64 @@ async def main_pipeline(mode="daily"):
                     # --- Scrape Resources Tab ---
                     if await navigation.navigate_to_resources_section(page): # New nav function needed
                         resource_locators = await navigation.get_all_resource_items(page) # New nav function
-
+                                
                         for item_locator in resource_locators:
-                             try:
+                            try:
                                 # Extract URL, Title, and potentially Date from each resource item
-                                # This needs specific selectors based on the 'Resources' tab HTML
-                                link_locator = item_locator.locator("a") # Adjust selector
+                                link_locator = item_locator.locator("a")
                                 url = await link_locator.get_attribute("href", timeout=2000)
-                                title = await item_locator.locator(".resource-title-class").text_content(timeout=2000) # Adjust selector
-                                date_text_element = item_locator.locator(".resource-date-class").first # Adjust selector
+                                # ✅ FIXED: Use config selectors instead of placeholder classes
+                                title = await item_locator.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
+                                date_text_element = item_locator.locator(config.RESOURCE_DATE_SELECTOR).first
                                 date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
 
-                                if not url: continue # Skip if no URL
+                                if not url: continue
 
                                 parsed_date = utils.parse_general_date(date_text) if date_text else None # Flexible date parser needed
 
-                                # Basic check: Process if no date or date is after cutoff
-                                # More advanced: Could check Supabase if URL already processed recently
-                                should_process = True # Default to process
-                                # Add logic here to check against cutoff_date if parsed_date exists
-                                # Add logic here to query Supabase metadata to avoid reprocessing old links if needed
+                                # Determine if resource should be processed based on date
+                                should_process = False  # Default to NOT process
+
+                                if parsed_date:
+                                    # If resource has a date, check if it's after the cutoff
+                                    if parsed_date >= cutoff_date:
+                                        should_process = True
+                                        logging.info(f"   Resource is new/recent (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                    else:
+                                        logging.info(f"   Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')}, cutoff: {cutoff_date.strftime('%Y-%m-%d')})")
+                                else:
+                                    # If no date available, process it (safer to include than miss new content)
+                                    should_process = True
+                                    logging.info(f"   Resource has no date, processing to be safe")
 
                                 if should_process:
-                                    logging.info(f"   Adding resource to process: {title} ({parsed_date.strftime('%Y-%m-%d') if parsed_date else 'No Date'})")
+                                    logging.info(f"   Adding resource to process: {title}")
                                     resources_to_process.append((url, title, parsed_date, class_name))
 
-                             except Exception as item_err:
-                                 logging.warning(f"Could not process one resource item for {class_name}: {item_err}")
-                                 continue # Skip to next item
+                            except Exception as item_err:
+                                logging.warning(f"Could not process one resource item for {class_name}: {item_err}")
+                                continue # Skip to next item
 
                     # --- Scrape Static Content (e.g., Syllabus) ---
                     # Check if syllabus needs processing (e.g., only once or if changed)
                     # Use embedding.check_if_embedded or similar check
                     if not await embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
-                         try:
-                             # Navigate back to main course page if needed, or scrape from current page
-                             await page.goto(current_course_url) # Example: return to course page
-                             static_text = await scraping.scrape_static_syllabus(page, course_code) # Assumes this returns text
-                             if static_text:
-                                 logging.info(f"Processing static syllabus for {class_name}...")
-                                 metadata = {
-                                     "class_name": class_name,
-                                     "content_type": "syllabus",
-                                     "source_file": f"{class_name}_syllabus"
-                                 }
-                                 embedding.chunk_and_embed_text(static_text, metadata) # Directly embed
-                             else:
-                                 logging.warning(f"Could not scrape syllabus for {class_name}")
-                         except Exception as syllabus_err:
-                             logging.error(f"Error processing syllabus for {class_name}: {syllabus_err}")
+                        try:
+                            # Navigate back to main course page if needed, or scrape from current page
+                            await page.goto(current_course_url) # Example: return to course page
+                            static_text = await scraping.scrape_static_syllabus(page, course_code) # Assumes this returns text
+                            if static_text:
+                                logging.info(f"Processing static syllabus for {class_name}...")
+                                metadata = {
+                                    "class_name": class_name,
+                                    "content_type": "syllabus",
+                                    "source_file": f"{class_name}_syllabus"
+                                }
+                                embedding.chunk_and_embed_text(static_text, metadata) # Directly embed
+                            else:
+                                logging.warning(f"Could not scrape syllabus for {class_name}")
+                        except Exception as syllabus_err:
+                            logging.error(f"Error processing syllabus for {class_name}: {syllabus_err}")
 
 
                 except Exception as course_err:
@@ -273,8 +282,8 @@ async def main_pipeline(mode="daily"):
             # --- Processing Phase: Handle collected resource links ---
             logging.info("\n--- Starting Processing Phase ---")
             for url, title, date_obj, class_name in resources_to_process:
-                 # Process each resource - this function handles type detection, download/scrape, refinery, embedding
-                 await process_single_resource(context, url, title, date_obj, class_name)
+                # Process each resource - this function handles type detection, download/scrape, refinery, embedding
+                await process_single_resource(context, url, title, date_obj, class_name)
 
     except Exception as pipeline_err:
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
