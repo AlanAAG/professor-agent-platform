@@ -114,7 +114,7 @@ PARTNER_COURSE_TO_GROUP = {
     "MAST601": "Management Project - I",
 }
 
-# 4) Build partner-derived map: code -> { name, code, group }
+# 4) Build partner-derived map: code -> { full_name, code, group }
 _partner_map: dict[str, dict] = {}
 for subj in _PARTNER_SUBJECTS:
     parts = subj.split(" ", 1)
@@ -123,21 +123,27 @@ for subj in _PARTNER_SUBJECTS:
     code = parts[0]
     friendly_name = parts[1].strip() if len(parts) > 1 else code
     _partner_map[code] = {
-        "name": friendly_name,
+        "full_name": friendly_name,
         "code": code,
         "group": PARTNER_COURSE_TO_GROUP.get(code),
     }
 
-# 5) Merge legacy with partner (prefer partner name/group when available)
+# 5) Merge legacy with partner
+#    CRITICAL: 'name' MUST remain the short alias used throughout the app
+#    (and as keys in persona.json) so Supabase filtering matches correctly.
 COURSE_MAP: dict[str, dict] = {}
 all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys())
 for code in sorted(all_codes):
     partner_entry = _partner_map.get(code)
     legacy_entry = LEGACY_COURSE_MAP.get(code)
     merged = {
-        "name": (partner_entry or {}).get("name") or (legacy_entry or {}).get("name") or code,
+        # Keep the canonical short name (e.g., "AIML", "Excel", "Statistics")
+        "name": (legacy_entry or {}).get("name") or code,
         "code": code,
+        # Prefer partner group when available
         "group": (partner_entry or {}).get("group") if partner_entry and partner_entry.get("group") is not None else (legacy_entry or {}).get("group"),
+        # Preserve the human-friendly title for display/logging when available
+        "full_name": (partner_entry or {}).get("full_name") or (legacy_entry or {}).get("name") or code,
     }
     COURSE_MAP[code] = merged
 
