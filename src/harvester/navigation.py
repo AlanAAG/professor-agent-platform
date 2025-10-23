@@ -24,6 +24,10 @@ async def is_session_valid(page: Page) -> bool:
 
 async def perform_login(page: Page):
     """Handles the initial login process."""
+    # Ensure directories for artifacts exist to avoid I/O errors
+    os.makedirs("logs/error_screenshots", exist_ok=True)
+    os.makedirs(os.path.dirname(config.AUTH_STATE_FILE) or ".", exist_ok=True)
+
     logging.info(f"Navigating to login page: {config.LOGIN_URL}")
     await page.goto(config.LOGIN_URL, wait_until="load")
 
@@ -49,7 +53,10 @@ async def perform_login(page: Page):
         return True
     except Exception as e:
         logging.error(f"Login failed: {e}")
-        await page.screenshot(path="logs/error_screenshots/login_error.png")
+        try:
+            await page.screenshot(path="logs/error_screenshots/login_error.png")
+        except Exception:
+            logging.error("Failed to write login error screenshot.")
         raise # Re-raise error to stop the process if login fails
 
 async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContext | None, Page | None]:
@@ -95,9 +102,15 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
 
     except Exception as e:
         logging.critical(f"Error during browser launch or login process: {e}")
-        if page: await page.screenshot(path="logs/error_screenshots/launch_login_error.png")
-        if context: await context.close()
-        if browser: await browser.close()
+        try:
+            if page:
+                await page.screenshot(path="logs/error_screenshots/launch_login_error.png")
+        except Exception:
+            logging.error("Failed to write launch/login error screenshot.")
+        if context:
+            await context.close()
+        if browser:
+            await browser.close()
         return None, None, None
 
 # --- Course Navigation ---
