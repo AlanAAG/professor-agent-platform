@@ -70,17 +70,40 @@ jobs:
         run: |
           python -m src.run_hybrid_pipeline
       
-      # Step 7: Upload logs if pipeline fails
-      - name: Upload error logs and screenshots
+      # Step 7: Upload logs and screenshots (on failure)
+      - name: Upload logs and screenshots (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-logs-${{ github.run_number }}
+          name: pipeline-logs-failure-${{ github.run_number }}
           path: |
             logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Step 8: Upload logs and screenshots (on success)
+      - name: Upload logs and screenshots (on success)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-success-${{ github.run_number }}
+          path: |
+            logs/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # Step 9: Upload logs and screenshots (on cancellation)
+      - name: Upload logs and screenshots (on cancellation)
+        if: cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-cancelled-${{ github.run_number }}
+          path: |
+            logs/
+          if-no-files-found: ignore
           retention-days: 7
       
-      # Step 8: Clean up sensitive files
+      # Step 10: Clean up sensitive files
       - name: Clean up sensitive files
         if: always()
         run: |
