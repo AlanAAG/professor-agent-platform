@@ -83,7 +83,7 @@ else:
 
             try:
                 # <<< Pass chat history to the RAG core >>>
-                answer, sources = rag_core.get_rag_response(
+                answer = rag_core.get_rag_response(
                     question=user_question,
                     class_name=selected_class,
                     persona=selected_persona,
@@ -94,11 +94,7 @@ else:
                 # Add AI response to session state
                 st.session_state.messages.append({"role": "assistant", "content": answer})
 
-                # Display sources (optional, could be in expander below message)
-                if sources:
-                    with st.expander("Show sources used"):
-                        for source in sources:
-                            st.write(f"- {source}")
+                # Sources display removed
 
             except Exception as e:
                 # Surface errors directly in the chat flow as the assistant

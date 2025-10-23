@@ -103,15 +103,9 @@ def _build_rag_prompt(question: str, context_docs: list[Document], persona: dict
 
     # --- Format Retrieved Context ---
     context_string = ""
-    source_set = set() # To track unique sources used in the answer
     if context_docs:
         for i, doc in enumerate(context_docs):
-            source_file = doc.metadata.get('source_file', 'Unknown Source')
-            page_num = doc.metadata.get('page_number')
-            source_info = f"Source: {source_file}" + (f" (Page {page_num})" if page_num else "")
-            source_set.add(source_info) # Collect unique source information
-
-            context_string += f"--- Context Chunk {i+1} ({source_info}) ---\n"
+            context_string += f"--- Context Chunk {i+1} ---\n"
             context_string += doc.page_content # Assumes image descriptions are merged by refinery
 
             # Include relevant links if present in metadata
@@ -134,7 +128,6 @@ A student has asked the following current question about your {class_name} class
 
 Based *strictly* on the provided course materials below AND the previous conversation history (if any), answer the student's current question.
 Synthesize information across different context chunks and conversation history if needed.
-Quote or reference specific source documents or page numbers when possible (e.g., "According to Lecture5_Slides.pdf, page 3...").
 If the answer cannot be determined from the provided materials and history, explicitly state that the information wasn't found. Do not make up information or use external knowledge outside of the provided context.
 
 --- COURSE MATERIALS ---
@@ -223,11 +216,10 @@ Main Topics (numbered list):
         return []
 
 # --- Function for Map-Reduce ---
-def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat_history: list) -> tuple[str, list[str]]:
+def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat_history: list) -> str:
     """Handles broad queries (e.g., study guides) using Map-Reduce."""
     logging.info("   Intent: Map-Reduce Query (Study Guide / Broad Summary)")
     topics = []
-    sources_used = set() # Track all sources used across map steps
     try:
         # --- 1. Retrieve Syllabus Text ---
         logging.info("   Retrieving syllabus text for topic identification...")
@@ -254,7 +246,7 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
             reranked_fallback_docs = _rerank_documents(question, initial_docs)
             final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2] # Use more context than usual
 
-            if not final_context_docs: return "I couldn't find any relevant information to summarize.", []
+            if not final_context_docs: return "I couldn't find any relevant information to summarize."
 
             # Build context and prompt for simple summary
             context_text = "\n\n---\n\n".join([doc.page_content for doc in final_context_docs])
@@ -272,19 +264,11 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
             # Generate the fallback summary
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
-            # Collect sources for fallback
-            for doc in final_context_docs:
-                source_file = doc.metadata.get('source_file', 'N/A')
-                page_num = doc.metadata.get('page_number')
-                source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                sources_used.add(source_info)
-            return final_summary.strip(), sorted(list(sources_used))
+            return final_summary.strip()
             # --- End Fallback Logic ---
 
-        # Combine syllabus text and collect syllabus source(s)
+        # Combine syllabus text
         full_syllabus_text = "\n\n".join([doc.page_content for doc in syllabus_docs])
-        for doc in syllabus_docs:
-            sources_used.add(f"{doc.metadata.get('source_file', 'N/A')}") # Add syllabus file as source
 
         # --- 2. Identify Topics using LLM ---
         topics = _identify_topics_with_llm(full_syllabus_text, class_name)
@@ -292,11 +276,11 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
         if not topics:
             logging.warning("   LLM topic identification failed or returned no topics. Cannot proceed with Map-Reduce.")
             # Return error message, indicating topics couldn't be found
-            return "I couldn't identify the main topics from the syllabus to create a structured study guide. You could try asking for a summary of specific lectures or concepts.", sorted(list(sources_used))
+            return "I couldn't identify the main topics from the syllabus to create a structured study guide. You could try asking for a summary of specific lectures or concepts."
 
     except Exception as e:
         logging.error(f"   Error retrieving syllabus or identifying topics: {e}")
-        return f"Sorry, I encountered an error trying to structure the study guide: {e}", []
+        return f"Sorry, I encountered an error trying to structure the study guide: {e}"
 
     # --- 3. Map Step: Summarize each identified topic ---
     topic_summaries = []
@@ -330,13 +314,6 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
             topic_summaries.append(f"## {topic_name}\n\n{summary.strip()}") # Add topic name as heading
             logging.info(f"      Generated summary for topic {i+1}.")
 
-            # Collect sources used in this specific map step
-            for doc in reranked_topic_docs[:max(5, MAP_REDUCE_RETRIEVAL_K // 2)]: # Only list sources actually used
-                source_file = doc.metadata.get('source_file', 'N/A')
-                page_num = doc.metadata.get('page_number')
-                source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                sources_used.add(source_info)
-
         except Exception as e:
             logging.error(f"      Error summarizing topic '{topic_name}': {e}")
             topic_summaries.append(f"## {topic_name}\n\n[An error occurred while summarizing this topic.]")
@@ -344,8 +321,8 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
     # --- 4. Reduce Step: Combine topic summaries ---
     if not topic_summaries:
         logging.warning("   Map step produced no valid summaries.")
-        # Return message indicating failure but list syllabus source if found
-        return "I couldn't generate a study guide as no relevant topic summaries could be created from the materials.", sorted(list(sources_used))
+        # Return message indicating failure
+        return "I couldn't generate a study guide as no relevant topic summaries could be created from the materials."
 
     logging.info("   Starting Reduce step to combine topic summaries...")
     combined_summaries = "\n\n".join(topic_summaries) # Join summaries with double newline
@@ -370,30 +347,30 @@ YOUR FINAL STUDY GUIDE (as {persona.get('professor_name', 'Professor')}):
         reduce_chain = ChatPromptTemplate.from_template("{reduce_prompt_text}") | llm | StrOutputParser()
         final_answer = reduce_chain.invoke({"reduce_prompt_text": reduce_prompt})
         logging.info("   Reduce step complete.")
-        # Return the final guide and all unique sources used across map steps
-        return final_answer.strip(), sorted(list(sources_used))
+        # Return the final guide
+        return final_answer.strip()
     except Exception as e:
         logging.error(f"   Error during Reduce step: {e}")
-        # Return error message but include sources identified
-        return f"Sorry, I could generate summaries for individual topics but failed to combine them into a final guide: {e}", sorted(list(sources_used))
+        # Return error message
+        return f"Sorry, I could generate summaries for individual topics but failed to combine them into a final guide: {e}"
 
 
 # --- Main RAG Function (Orchestrator) ---
-def get_rag_response(question: str, class_name: str, persona: dict, chat_history: list | None = None) -> tuple[str, list[str]]:
+def get_rag_response(question: str, class_name: str, persona: dict, chat_history: list | None = None) -> str:
     """
     Handles query, condenses based on history, detects intent, retrieves context
     (using Map-Reduce for broad queries), re-ranks (for specific queries),
-    generates response. Returns answer string and list of unique source identifiers.
+    generates response. Returns only the answer string.
     """
     # --- Initial Checks ---
     if not llm:
         error_msg = "LLM model not initialized. Check configuration and API keys."
         logging.error(f"RAG Core: ERROR - {error_msg}")
-        return error_msg, []
+        return error_msg
     if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
         error_msg = "Vector store not initialized or available. Check Supabase connection and refinery.embedding."
         logging.error(f"RAG Core: ERROR - {error_msg}")
-        return error_msg, []
+        return error_msg
 
     chat_history = chat_history or []
     logging.info(f"RAG Core: Received query for class '{class_name}': '{question}'")
@@ -417,7 +394,6 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
         # --- Standard RAG Flow for Specific Questions ---
         logging.info("   Intent: Specific Question")
         final_context_docs: list[Document] = []
-        sources_list = []
         try:
             # a. Initial Retrieval (using CONDENSED question)
             initial_docs = embedding.vector_store.similarity_search(
@@ -428,7 +404,7 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
             logging.info(f"   Initial retrieval returned {len(initial_docs)} chunks.")
             if not initial_docs:
                 # Provide a helpful message if nothing is found initially
-                return "I couldn't find any documents related to your question in the course materials.", []
+                return "I couldn't find any documents related to your question in the course materials."
 
             # b. Re-ranking Step (using CONDENSED question)
             reranked_docs = _rerank_documents(condensed_question, initial_docs) # Calls Cohere implementation
@@ -438,23 +414,15 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
 
             if final_context_docs:
                 logging.info(f"   Selected {len(final_context_docs)} chunks for final context after re-ranking.")
-                # Prepare unique sources list for this specific answer
-                sources_set = set()
-                for doc in final_context_docs:
-                    source_file = doc.metadata.get('source_file', 'N/A')
-                    page_num = doc.metadata.get('page_number')
-                    source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                    sources_set.add(source_info)
-                sources_list = sorted(list(sources_set))
             else:
                 # If re-ranking removed all documents
                 logging.warning("   No relevant documents remained after re-ranking.")
-                return "I found some initial potential matches, but none seemed highly relevant to your specific question after closer review. Could you please rephrase or ask about a different aspect?", []
+                return "I found some initial potential matches, but none seemed highly relevant to your specific question after closer review. Could you please rephrase or ask about a different aspect?"
 
         except Exception as e:
             logging.error(f"   Error during Supabase retrieval/re-ranking: {e}")
             # Provide a user-friendly error message
-            return f"Sorry, I encountered an error trying to find information for your question. Please try again later.", []
+            return f"Sorry, I encountered an error trying to find information for your question. Please try again later."
 
         # --- 4. Build the Final Prompt (Includes history and final context) ---
         # Pass the ORIGINAL question for the final prompt context, but condensed was used for retrieval
@@ -468,12 +436,12 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
             # Invoke the chain with the constructed prompt
             final_answer = chain.invoke({"rag_prompt_text": final_prompt})
             logging.info("   LLM generation complete.")
-            # Return the generated answer and the list of sources used
-            return final_answer.strip(), sources_list
+            # Return the generated answer
+            return final_answer.strip()
         except Exception as e:
             logging.error(f"   Error during LLM generation: {e}")
-            # Provide error message but still return sources if available
-            return f"Sorry, I encountered an error while generating the response: {e}", sources_list
+            # Provide error message
+            return f"Sorry, I encountered an error while generating the response: {e}"
 
 
 # --- NEW: Query Condensing Function ---
@@ -543,11 +511,11 @@ if __name__ == "__main__":
         # Ensure RAG components are loaded before calling
         if llm and embedding and hasattr(embedding, 'vector_store') and embedding.vector_store is not None:
             # Pass the dummy history to the test call
-            answer, sources = get_rag_response(TEST_QUESTION, TEST_CLASS, test_persona, test_chat_history) # <<< Pass history
+            answer = get_rag_response(TEST_QUESTION, TEST_CLASS, test_persona, test_chat_history) # <<< Pass history
 
             print("\n--- TEST RESULT ---")
             print("Answer:\n", answer)
-            print("\nSources:\n", "\n".join(f"- {s}" for s in sources))
+            # Sources display removed in non-citation mode
         else:
             logging.error("RAG components not initialized. Cannot run test.")
 
