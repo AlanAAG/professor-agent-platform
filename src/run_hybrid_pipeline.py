@@ -35,6 +35,10 @@ RAW_STATIC_DIR = "data/raw_static/"
 RAW_PDF_DIR = "data/raw_pdfs/" # For downloaded PDFs
 TEMP_DIR = "/tmp/harvester_downloads/" # Temp dir for downloads
 
+# Cross-run de-duplication: skip URLs that already exist in DB
+# Set DEDUP_BY_URL=false to allow cross-listed re-embeds per class
+DEDUP_BY_URL = os.environ.get("DEDUP_BY_URL", "true").lower() in ("1", "true", "yes")
+
 # Ensure necessary directories exist
 os.makedirs("logs/error_screenshots", exist_ok=True)
 os.makedirs(RAW_TRANSCRIPT_DIR, exist_ok=True)
@@ -209,6 +213,7 @@ async def main_pipeline(mode="daily"):
             # Caches to avoid redundant checks within a single run
             recent_check_cache: dict[str, bool] = {}
             seen_urls: set[str] = set()
+            db_url_exists_cache: dict[str, bool] = {}
 
             # --- Navigation Phase: Collect all new/relevant resource links ---
             logging.info("\n--- Starting Navigation Phase ---")
@@ -266,6 +271,20 @@ async def main_pipeline(mode="daily"):
                                         logging.info(f"   Skipping undated resource (found in recent DB): {url}")
 
                                 if should_process:
+                                    # Optional cross-run duplicate check
+                                    if DEDUP_BY_URL:
+                                        exists_in_db = db_url_exists_cache.get(url)
+                                        if exists_in_db is None:
+                                            try:
+                                                exists_in_db = await embedding.url_exists_in_db(url)
+                                            except Exception as e:
+                                                logging.warning(f"   URL existence check failed for {url}: {e}. Proceeding.")
+                                                exists_in_db = False
+                                            db_url_exists_cache[url] = exists_in_db
+                                        if exists_in_db:
+                                            logging.info(f"   Duplicate URL already in DB, skipping: {url}")
+                                            continue
+
                                     if url in seen_urls:
                                         logging.info(f"   Duplicate URL already queued, skipping: {url}")
                                     else:
