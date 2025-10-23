@@ -3,9 +3,10 @@
 import fitz  # PyMuPDF
 import os
 import base64
-import google.generativeai as genai
 from dotenv import load_dotenv
-import logging # Use logging instead of print for better tracking
+import logging  # Use logging instead of print for better tracking
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,55 +14,57 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Load Environment Variables ---
 load_dotenv()
 
-# --- Configure Gemini Client (for image descriptions) ---
+# --- Configure Gemini Client via LangChain (for image descriptions) ---
 image_model = None
 try:
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("GEMINI_API_KEY not found in environment variables.")
 
-    # Use the specific model capable of image input
-    # Ensure billing is enabled for multi-modal models like 1.5-flash or pro-vision
-    genai.configure(api_key=gemini_api_key)
-    image_model = genai.GenerativeModel('gemini-1.5-flash') # Recommended model
-    logging.info("Gemini multi-modal model configured for image descriptions.")
+    # Use a multi-modal capable Gemini model
+    image_model = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=gemini_api_key,
+    )
+    logging.info("Gemini multi-modal model configured via LangChain for image descriptions.")
 except Exception as e:
-    logging.warning(f"Could not configure Gemini multi-modal model: {e}. Image descriptions will be unavailable.")
+    logging.warning(
+        f"Could not configure Gemini multi-modal model via LangChain: {e}. Image descriptions will be unavailable."
+    )
 
 # --- Image Description Function ---
 def generate_image_description(image_bytes: bytes) -> str:
-    """Sends image bytes to a multi-modal LLM to get a description."""
+    """Sends image bytes to a multi-modal LLM to get a description using LangChain."""
     if not image_model:
         return "Image description unavailable (Model not configured)."
 
     logging.info("   Generating image description...")
     try:
-        image_part = {
-            "mime_type": "image/png", # Assuming PNG, PyMuPDF often extracts as PNG
-            "data": image_bytes
-        }
-        prompt = "Describe this image in detail, focusing on elements relevant to an academic lecture, presentation slide, or document (e.g., charts, diagrams, key text, formulas, visual concepts)."
+        # Encode image as data URL for LangChain multi-modal message
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        prompt = (
+            "Describe this image in detail, focusing on elements relevant to an academic "
+            "lecture, presentation slide, or document (e.g., charts, diagrams, key text, "
+            "formulas, visual concepts)."
+        )
 
-        # Add safety settings if needed, depending on content
-        # safety_settings=[
-        #     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        #     # ... other categories
-        # ]
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": f"data:image/png;base64,{image_b64}"},
+            ]
+        )
 
-        response = image_model.generate_content(
-            [prompt, image_part],
-            # safety_settings=safety_settings
-            )
-        description = response.text.strip()
+        response = image_model.invoke([message])
+        # LangChain ChatModels typically return an AIMessage with .content
+        description = getattr(response, "content", None)
+        if not description:
+            description = str(response)
+        description = description.strip()
         logging.info(f"      Generated description (length: {len(description)})")
         return description
     except Exception as e:
         logging.error(f"      Error generating image description: {e}")
-        # Check if the error is due to safety settings
-        # try:
-        #     logging.error(f"      Response safety feedback: {response.prompt_feedback}")
-        # except Exception:
-        #     pass # No feedback available
         return "Error generating image description."
 
 # --- Main PDF Processing Function ---
