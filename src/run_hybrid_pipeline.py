@@ -206,8 +206,8 @@ async def main_pipeline(mode="daily"):
                     current_course_url = page.url # Store URL to potentially return later
 
                     # --- Scrape Resources Tab ---
-                    if await navigation.navigate_to_resources_section(page): # New nav function needed
-                        resource_locators = await navigation.get_all_resource_items(page) # New nav function
+                    if await navigation.navigate_to_resources_section(page):
+                        resource_locators = await navigation.get_all_resource_items(page)
                                 
                         for item_locator in resource_locators:
                             try:

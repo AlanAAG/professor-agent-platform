@@ -200,7 +200,3 @@ async def get_all_resource_items(page: Page) -> list[Locator]:
         # Optionally screenshot on error
         # await page.screenshot(path="logs/error_screenshots/get_resources_error.png")
         return [] # Return empty list on failure
-
-# --- Deprecated/Old Navigation Logic (Keep for reference or remove) ---
-# async def navigate_to_recordings_list(page: Page): ... # Replaced by navigate_to_resources_section
-# async def get_all_recording_items(page: Page): ... # Replaced by get_all_resource_items
