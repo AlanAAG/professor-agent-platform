@@ -60,44 +60,45 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
 
     try:
         # 1. Determine Content Type and Fetch Raw Content
-        content_type_header = await scraping.check_url_content_type(url)
-
-        if "application/pdf" in content_type_header:
-            content_type_tag = "pdf"
-            logging.info("   Content type: PDF. Downloading...")
-            # Download PDF to temp file
-            safe_filename_base = utils.create_safe_filename(f"{class_name}_{date_obj.strftime('%Y-%m-%d') if date_obj else 'nodate'}_{title}")
-            temp_pdf_path = await scraping.download_file(url, TEMP_DIR, f"{safe_filename_base}.pdf")
-            if temp_pdf_path:
-                raw_content_data = temp_pdf_path # Store the path
-            else:
-                raise ValueError("PDF download failed.")
-
-        elif "text/html" in content_type_header:
-            content_type_tag = "webpage"
-            logging.info("   Content type: HTML. Scraping text...")
-            # Scrape main text content from HTML page
-            html_text = await scraping.scrape_html_content(url)
-            if html_text:
-                raw_content_data = html_text # Store the extracted text
-            else:
-                raise ValueError("HTML scraping yielded no content.")
-
-        elif "drive.google.com" in url or "zoom.us" in url:
+        # Prioritize known transcript platforms before generic content-type checks
+        if "drive.google.com" in url or "zoom.us" in url:
             content_type_tag = "recording_transcript"
             logging.info("   Content type: Recording Transcript. Scraping...")
-            # Use the specific transcript scraping logic
             transcript_text = await scraping.scrape_transcript_from_url(context, url)
             if transcript_text:
-                raw_content_data = transcript_text # Store extracted text
+                raw_content_data = transcript_text
             else:
-                # Don't raise error, just log warning if transcript empty/failed
                 logging.warning(f"   No transcript content scraped from {url}")
-                return # Stop processing this resource if no transcript
-
+                return
         else:
-            logging.warning(f"   Skipping unsupported content type: {content_type_header} for {url}")
-            return # Stop processing this resource
+            content_type_header = await scraping.check_url_content_type(url)
+
+            if content_type_header and "application/pdf" in content_type_header:
+                content_type_tag = "pdf"
+                logging.info("   Content type: PDF. Downloading...")
+                safe_filename_base = utils.create_safe_filename(
+                    f"{class_name}_{date_obj.strftime('%Y-%m-%d') if date_obj else 'nodate'}_{title}"
+                )
+                temp_pdf_path = await scraping.download_file(url, TEMP_DIR, f"{safe_filename_base}.pdf")
+                if temp_pdf_path:
+                    raw_content_data = temp_pdf_path
+                else:
+                    raise ValueError("PDF download failed.")
+
+            elif content_type_header and "text/html" in content_type_header:
+                content_type_tag = "webpage"
+                logging.info("   Content type: HTML. Scraping text...")
+                html_text = await scraping.scrape_html_content(url)
+                if html_text:
+                    raw_content_data = html_text
+                else:
+                    raise ValueError("HTML scraping yielded no content.")
+
+            else:
+                logging.warning(
+                    f"   Unsupported or unknown content type '{content_type_header}' for {url}. Skipping."
+                )
+                return
 
         # --- Refinery Steps ---
         if raw_content_data:
