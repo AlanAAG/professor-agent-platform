@@ -30,6 +30,12 @@ RESOURCE_TITLE_SELECTOR = "div.fileContentCol p"
 RESOURCE_DATE_SELECTOR = "div.fileContentCol span"
 RESOURCE_LINK_SELECTOR = "div.fileBox > a"
 
+# --- NEW: Resource Section Selectors ---
+# Selectors for the headers of each content section (placeholders; inspect the site and adjust)
+PRE_READ_SECTION_SELECTOR = "h5:has-text('Pre-Read')"     # TODO: Adjust to real selector
+IN_CLASS_SECTION_SELECTOR = "h5:has-text('In-Class')"     # TODO: Adjust to real selector
+POST_CLASS_SECTION_SELECTOR = "h5:has-text('Post-Class')" # TODO: Adjust to real selector
+
 # Static Content Selectors (Example - Needs refinement by inspecting page)
 SYLLABUS_CONTAINER_SELECTOR = "div.course-description-container" # Placeholder
 

@@ -47,7 +47,7 @@ os.makedirs(RAW_PDF_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-async def process_single_resource(context, url: str, title: str, date_obj: datetime.datetime | None, class_name: str):
+async def process_single_resource(context, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
     """
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
     Determines content type and calls appropriate processing functions.
@@ -59,7 +59,8 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
         "class_name": class_name,
         "source_url": url, # Store original URL
         "title": title,
-        "retrieval_date": datetime.datetime.now().isoformat()
+        "retrieval_date": datetime.datetime.now().isoformat(),
+        "section": section_tag,
     }
     content_type_tag = "unknown" # To be determined
 
@@ -209,7 +210,7 @@ async def main_pipeline(mode="daily"):
                 return
 
             # Store resources found during navigation phase
-            resources_to_process = [] # List of tuples: (url, title, date_obj | None, class_name)
+            resources_to_process = [] # List of tuples: (url, title, date_obj | None, class_name, section_tag)
             # Caches to avoid redundant checks within a single run
             recent_check_cache: dict[str, bool] = {}
             seen_urls: set[str] = set()
@@ -227,74 +228,97 @@ async def main_pipeline(mode="daily"):
                     await navigation.find_and_click_course_link(page, course_code, group_name)
                     current_course_url = page.url # Store URL to potentially return later
 
-                    # --- Scrape Resources Tab ---
+                    # --- Scrape Resources Tab (NEW LOGIC) ---
                     if await navigation.navigate_to_resources_section(page):
-                        resource_locators = await navigation.get_all_resource_items(page)
-                                
-                        for item_locator in resource_locators:
+                        # Define the sections you want to scrape using your new config selectors
+                        sections_to_scrape = [
+                            ("pre_read", config.PRE_READ_SECTION_SELECTOR),
+                            ("in_class", config.IN_CLASS_SECTION_SELECTOR),
+                            ("post_class", config.POST_CLASS_SECTION_SELECTOR),
+                            ("sessions", config.RECORDINGS_LINK_SELECTOR), # Re-use existing selector for sessions
+                        ]
+
+                        for section_tag, header_selector in sections_to_scrape:
+                            logging.info(f"--- Scraping Section: {section_tag} ---")
                             try:
-                                # Extract URL, Title, and potentially Date from each resource item
-                                link_locator = item_locator.locator("a")
-                                url = await link_locator.get_attribute("href", timeout=2000)
-                                # ✅ FIXED: Use config selectors instead of placeholder classes
-                                title = await item_locator.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
-                                date_text_element = item_locator.locator(config.RESOURCE_DATE_SELECTOR).first
-                                date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
+                                section_header = page.locator(header_selector).first
+                                await section_header.wait_for(state="visible", timeout=7000)
 
-                                if not url: continue
+                                # If sections are accordions, they may need clicking to expand
+                                # await section_header.click(timeout=3000)
+                                # await page.wait_for_timeout(1000)
 
-                                parsed_date = utils.parse_general_date(date_text) if date_text else None # Flexible date parser needed
+                                # Heuristic: container near the header; adjust after inspecting actual DOM
+                                section_container = section_header.locator("xpath=./following-sibling::div[1]")
 
-                                # Determine if resource should be processed based on date
-                                should_process = False  # Default to NOT process
+                                item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
+                                count = await item_locators.count()
+                                logging.info(f"   Found {count} items in section '{section_tag}'.")
 
-                                if parsed_date:
-                                    # If resource has a date, check if it's after the cutoff
-                                    if parsed_date >= cutoff_date:
-                                        should_process = True
-                                        logging.info(f"   Resource is new/recent (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                    else:
-                                        logging.info(f"   Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')}, cutoff: {cutoff_date.strftime('%Y-%m-%d')})")
-                                else:
-                                    # No date: only process if not found in recent embeddings (last 2 days)
-                                    exists_recently = recent_check_cache.get(url)
-                                    if exists_recently is None:
-                                        exists_recently = await embedding.check_if_embedded_recently(
-                                            filter={"source_url": url},
-                                            days=2
-                                        )
-                                        recent_check_cache[url] = exists_recently
-                                    should_process = not exists_recently
-                                    if should_process:
-                                        logging.info("   Resource has no date, processing (not found in recent DB).")
-                                    else:
-                                        logging.info(f"   Skipping undated resource (found in recent DB): {url}")
+                                for i in range(count):
+                                    item = item_locators.nth(i)
+                                    url, title, date_text = None, None, None
+                                    try:
+                                        link_locator = item.locator("a").first
+                                        url = await link_locator.get_attribute("href", timeout=2000)
+                                        if url and not url.startswith("http"):
+                                            url = config.BASE_URL + url.lstrip('/')
 
-                                if should_process:
-                                    # Optional cross-run duplicate check
-                                    if DEDUP_BY_URL:
-                                        exists_in_db = db_url_exists_cache.get(url)
-                                        if exists_in_db is None:
-                                            try:
-                                                exists_in_db = await embedding.url_exists_in_db(url)
-                                            except Exception as e:
-                                                logging.warning(f"   URL existence check failed for {url}: {e}. Proceeding.")
-                                                exists_in_db = False
-                                            db_url_exists_cache[url] = exists_in_db
-                                        if exists_in_db:
-                                            logging.info(f"   Duplicate URL already in DB, skipping: {url}")
+                                        title = await item.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
+                                        date_text_element = item.locator(config.RESOURCE_DATE_SELECTOR).first
+                                        date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
+
+                                        if not url or not title:
+                                            logging.warning("      Skipping item (missing URL or Title)")
                                             continue
 
-                                    if url in seen_urls:
-                                        logging.info(f"   Duplicate URL already queued, skipping: {url}")
-                                    else:
-                                        logging.info(f"   Adding resource to process: {title}")
-                                        resources_to_process.append((url, title, parsed_date, class_name))
-                                        seen_urls.add(url)
+                                        # Skip YouTube links
+                                        if "youtube.com" in url or "youtu.be" in url:
+                                            logging.info(f"      Skipping YouTube video: {title}")
+                                            continue
 
-                            except Exception as item_err:
-                                logging.warning(f"Could not process one resource item for {class_name}: {item_err}")
-                                continue # Skip to next item
+                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
+
+                                        # Run date/dupe checks
+                                        should_process = False
+                                        if parsed_date:
+                                            if parsed_date >= cutoff_date:
+                                                should_process = True
+                                            else:
+                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                        else:
+                                            exists_recently = recent_check_cache.get(url)
+                                            if exists_recently is None:
+                                                exists_recently = await embedding.check_if_embedded_recently(filter={"source_url": url}, days=2)
+                                                recent_check_cache[url] = exists_recently
+                                            should_process = not exists_recently
+                                            if not should_process:
+                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+
+                                        if should_process:
+                                            if DEDUP_BY_URL:
+                                                exists_in_db = db_url_exists_cache.get(url)
+                                                if exists_in_db is None:
+                                                    exists_in_db = await embedding.url_exists_in_db(url)
+                                                    db_url_exists_cache[url] = exists_in_db
+                                                if exists_in_db:
+                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                    continue
+
+                                            if url in seen_urls:
+                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                            else:
+                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                seen_urls.add(url)
+
+                                    except Exception as item_err:
+                                        logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                        continue
+
+                            except Exception as section_err:
+                                logging.warning(f"   Skipping section '{section_tag}'. Could not find header or items. (Error: {section_err})")
+                                continue
 
                     # --- Scrape Static Content (e.g., Syllabus) ---
                     # Check if syllabus needs processing (e.g., only once or if changed)
@@ -329,9 +353,9 @@ async def main_pipeline(mode="daily"):
 
             # --- Processing Phase: Handle collected resource links ---
             logging.info("\n--- Starting Processing Phase ---")
-            for url, title, date_obj, class_name in resources_to_process:
+            for url, title, date_obj, class_name, section_tag in resources_to_process:
                 # Process each resource - this function handles type detection, download/scrape, refinery, embedding
-                await process_single_resource(context, url, title, date_obj, class_name)
+                await process_single_resource(context, url, title, date_obj, class_name, section_tag)
 
     except Exception as pipeline_err:
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
