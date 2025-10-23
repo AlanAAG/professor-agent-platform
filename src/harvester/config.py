@@ -28,7 +28,7 @@ COURSE_LINK_SELECTOR = "a[href*='courseCode={course_code}']"
 
 # Course Details Page (Resources Tab Navigation)
 # Partner script targets a container then an h4 with 'Resources'. Keep a robust fallback to bare h4.
-RESOURCES_TAB_SELECTOR = "div.sc-Rbkqr h4:has-text('Resources'), h4:has-text('Resources')"
+RESOURCES_TAB_SELECTOR = "div.sc-ckEbSK:has(h4:text-is('Resources'))"
 
 # Resource Section Headers (ensure div.dlvLeftHeader:has-text(...) pattern)
 RECORDINGS_LINK_SELECTOR = "div.dlvLeftHeader:has-text('Session Recordings')"
