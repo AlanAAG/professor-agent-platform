@@ -47,25 +47,25 @@ ZOOM_TRANSCRIPT_CONTAINER_SELECTOR = "div.transcript-container" # Adjust if need
 # None for group means it's likely visible by default or we don't need group expansion for it
 COURSE_MAP = {
     # Quantitative Tools for Business
-    "AIML101": {"name": "How do machines see, hear or speak", "group": "Quantitative Tools for Business"},
-    "PRTC301": {"name": "How to use statistics to build a better business", "group": "Quantitative Tools for Business"},
-    "PRTC201": {"name": "How to get comfortable with excel", "group": "Quantitative Tools for Business"},
-    #Mathematics for Engineers
-    "CAL101": {"name": "How to use calculus for real world problem solving", "group": "Mathematics for Engineers"},
-    # Management Project -I
-    "MAST401": {"name": "How to validate, shape, and launch a startup", "group": "Management Project - I"},
-    "CAP101": {"name": "How to build a Dropshipping business", "group": "Management Project - I"}, # Added from video
-    "COMM101": {"name": "How to own a stage", "group": "Management Project - I"},
-    "MAST601": {"name": "How to network effortlessly","group": "Management Project - I"},
-    #Computer Science
-    "CS101": {"name": "How do software developers use OOP to design intelligent systems for startups", "group": "Computer Science"},
+    "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
+    "PRTC301": {"name": "Statistics", "group": "Quantitative Tools for Business"},
+    "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
+    # Mathematics for Engineers
+    "CAL101": {"name": "Calculus", "group": "Mathematics for Engineers"},
+    # Management Project - I
+    "MAST401": {"name": "Startup", "group": "Management Project - I"},
+    "CAP101": {"name": "Dropshipping", "group": "Management Project - I"}, # Added from video
+    "COMM101": {"name": "PublicSpeaking", "group": "Management Project - I"},
+    "MAST601": {"name": "Networking", "group": "Management Project - I"},
+    # Computer Science
+    "CS101": {"name": "OOP", "group": "Computer Science"},
     # Management Accounting
-    "FIFI101": {"name": "How to understand basic financial terminology", "group": "Management Accounting"},
-    "MAST102": {"name": "How to read market for better decision making", "group": "Management Accounting"},
+    "FIFI101": {"name": "FinanceBasics", "group": "Management Accounting"},
+    "MAST102": {"name": "MarketAnalysis", "group": "Management Accounting"},
     # Marketing Strategies
-    "SAMA101": {"name": "How to identify gaps in the market", "group": "Marketing Strategies"},
-    "SAMA401": {"name": "How to execute digital marketing on Meta", "group": "Marketing Strategies"},
-    "SAMA502": {"name": "How to execute CRO and increase AOV", "group": "Marketing Strategies"},
+    "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
+    "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
+    "SAMA502": {"name": "CRO", "group": "Marketing Strategies"},
     # Add other courses as needed
 }
 
