@@ -6,52 +6,58 @@ BASE_URL = "https://coach.tetr.com/"
 COURSES_URL = BASE_URL + "courses"
 AUTH_STATE_FILE = "data/auth_state.json" # Relative to project root
 
+"""
+Selectors and course mappings adapted to match the partner Selenium script,
+converted to Playwright-friendly CSS/XPath where appropriate.
+"""
+
 # --- Navigation Selectors ---
 # Login Page
 USERNAME_SELECTOR = 'input[name="officialEmail"]'
 PASSWORD_SELECTOR = 'input[name="password"]'
 LOGIN_BUTTON_SELECTOR = '#gtmLoginStd'
-DASHBOARD_INDICATOR = '#gtm-IdDashboard' # Selector to confirm login success
+DASHBOARD_INDICATOR = '#gtm-IdDashboard'  # Selector to confirm login success
 
 # Courses Page
-# Group header (XPath based on previous Selenium script)
-GROUP_HEADER_XPATH = "//div[contains(@class, 'domainHeader')]//p[contains(@class, 'title') and normalize-space()='{group_name}']"
-# Course link (XPath based on previous Selenium script)
+# Group header: partner script uses an XPath searching for div.domainHeader with a nested p.title == group_name
+# Playwright equivalent using :has and :has-text
+GROUP_HEADER_SELECTOR = "div.domainHeader:has(p.title:has-text('{group_name}'))"
+
+# Course link: same logic as partner (href contains courseCode=<code>)
 COURSE_LINK_SELECTOR = "a[href*='courseCode={course_code}']"
 
 # Course Details Page (Resources Tab Navigation)
-# Using more specific selectors if possible is better, these are based on text/structure
-RESOURCES_TAB_SELECTOR = "button:has-text('Resources'), h4:has-text('Resources')" # Broad selector for tab
-RECORDINGS_LINK_SELECTOR = "p:has-text('Session Recordings')" # Specific text within resources
-RECORDING_ITEM_SELECTOR = "div.fileBox" # Container for each recording link/info (adjust if needed)
-# Add selectors for resource items (PDFs, links) within Resources tab if different from recordings
-RESOURCE_ITEM_SELECTOR = "div.fileBox" # Example, might be different class
+# Partner script targets a container then an h4 with 'Resources'. Keep a robust fallback to bare h4.
+RESOURCES_TAB_SELECTOR = "div.sc-Rbkqr h4:has-text('Resources'), h4:has-text('Resources')"
+
+# Resource Section Headers (ensure div.dlvLeftHeader:has-text(...) pattern)
+RECORDINGS_LINK_SELECTOR = "div.dlvLeftHeader:has-text('Session Recordings')"
+PRE_READ_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('Pre-Read Materials')"
+IN_CLASS_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('In Class Materials')"
+POST_CLASS_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('Post Class Materials')"
+
+# Resource items and sub-elements
+RECORDING_ITEM_SELECTOR = "div.fileBox"  # Container for each recording link/info
+RESOURCE_ITEM_SELECTOR = "div.fileBox"
 RESOURCE_TITLE_SELECTOR = "div.fileContentCol p"
 RESOURCE_DATE_SELECTOR = "div.fileContentCol span"
 RESOURCE_LINK_SELECTOR = "div.fileBox > a"
 
-# --- NEW: Resource Section Selectors ---
-# Selectors for the headers of each content section (placeholders; inspect the site and adjust)
-PRE_READ_SECTION_SELECTOR = "h5:has-text('Pre-Read')"     # TODO: Adjust to real selector
-IN_CLASS_SECTION_SELECTOR = "h5:has-text('In-Class')"     # TODO: Adjust to real selector
-POST_CLASS_SECTION_SELECTOR = "h5:has-text('Post-Class')" # TODO: Adjust to real selector
+# Static Content Selectors (left as-is; refine if needed later)
+SYLLABUS_CONTAINER_SELECTOR = "div.course-description-container"
 
-# Static Content Selectors (Example - Needs refinement by inspecting page)
-SYLLABUS_CONTAINER_SELECTOR = "div.course-description-container" # Placeholder
-
-# --- Transcript Scraping Selectors ---
+# --- Transcript Scraping Selectors (kept; used by scraping module) ---
 # Google Drive Web Viewer
 DRIVE_VIDEO_PLAY_BUTTON = 'button[jsname="dW8tsb"]'
 DRIVE_TRANSCRIPT_SEGMENT_SELECTOR = "div[jsname='h7hTqc'] div.wyBDIb"
 DRIVE_SETTINGS_BUTTON = 'button[jsname="J7HKb"]'
-DRIVE_TRANSCRIPT_MENU_ITEM =  'div[role^="menuitem"]:has-text("Transcript")'
+DRIVE_TRANSCRIPT_MENU_ITEM = 'div[role^="menuitem"]:has-text("Transcript")'
 # Zoom Web Viewer
-ZOOM_TRANSCRIPT_CONTAINER_SELECTOR = "div.transcript-container" # Adjust if needed
+ZOOM_TRANSCRIPT_CONTAINER_SELECTOR = "div.transcript-container"
 
 # --- Course Mappings ---
-# Mapping course codes to their display name and group (if needed for expansion)
-# None for group means it's likely visible by default or we don't need group expansion for it
-COURSE_MAP = {
+# 1) Existing map from this project (renamed to LEGACY for merge step)
+LEGACY_COURSE_MAP = {
     # Quantitative Tools for Business
     "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
     "PRTC301": {"name": "Statistics", "group": "Quantitative Tools for Business"},
@@ -60,7 +66,7 @@ COURSE_MAP = {
     "CAL101": {"name": "Calculus", "group": "Mathematics for Engineers"},
     # Management Project - I
     "MAST401": {"name": "Startup", "group": "Management Project - I"},
-    "CAP101": {"name": "Dropshipping", "group": "Management Project - I"}, # Added from video
+    "CAP101": {"name": "Dropshipping", "group": "Management Project - I"},
     "COMM101": {"name": "PublicSpeaking", "group": "Management Project - I"},
     "MAST601": {"name": "Networking", "group": "Management Project - I"},
     # Computer Science
@@ -72,12 +78,71 @@ COURSE_MAP = {
     "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
     "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
     "SAMA502": {"name": "CRO", "group": "Marketing Strategies"},
-    # Add other courses as needed
 }
 
-# Optional: List of courses that are known to be visible without expanding a group
-# This can simplify navigation logic slightly if reliable
-DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"} # Example, verify
+# 2) Partner course subjects (from SUBJECT_TO_DOC_ID keys)
+_PARTNER_SUBJECTS = [
+    "AIML101 How do machines see, hear or speak",
+    "PRTC301 How to use statistics to build a better business",
+    "PRTC201 How to get comfortable with excel",
+    "FIFI101 How to understand basic financial terminology",
+    "LA101 How to decode global trends and navigate economic transformations",
+    "MAST102 How to read market for better decision making",
+    "SAMA101 How to identify gaps in the market",
+    "SAMA401 How to execute digital marketing on Meta",
+    "SAMA502 How to execute CRO and increase AOV",
+    "MAST401 How to validate, shape, and launch a startup",
+    "COMM101 How to own a stage",
+    "DRP101 How to build a dropshipping business",
+    "MAST601 How to network effortlessly",
+]
+
+# 3) Partner group mapping (from COURSE_TO_GROUP)
+PARTNER_COURSE_TO_GROUP = {
+    "AIML101": "Quantitative Tools for Business",
+    "PRTC301": "Quantitative Tools for Business",
+    "PRTC201": "Quantitative Tools for Business",
+    "MAST401": "Management Project - I",
+    "FIFI101": "Management Accounting",
+    "LA101": "Microeconomics",
+    "MAST102": "Microeconomics",
+    "SAMA101": "Marketing Strategies",
+    "SAMA401": "Marketing Strategies",
+    "SAMA502": "Marketing Strategies",
+    "COMM101": "Management Project - I",
+    "DRP101": "Management Project - I",
+    "MAST601": "Management Project - I",
+}
+
+# 4) Build partner-derived map: code -> { name, code, group }
+_partner_map: dict[str, dict] = {}
+for subj in _PARTNER_SUBJECTS:
+    parts = subj.split(" ", 1)
+    if not parts:
+        continue
+    code = parts[0]
+    friendly_name = parts[1].strip() if len(parts) > 1 else code
+    _partner_map[code] = {
+        "name": friendly_name,
+        "code": code,
+        "group": PARTNER_COURSE_TO_GROUP.get(code),
+    }
+
+# 5) Merge legacy with partner (prefer partner name/group when available)
+COURSE_MAP: dict[str, dict] = {}
+all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys())
+for code in sorted(all_codes):
+    partner_entry = _partner_map.get(code)
+    legacy_entry = LEGACY_COURSE_MAP.get(code)
+    merged = {
+        "name": (partner_entry or {}).get("name") or (legacy_entry or {}).get("name") or code,
+        "code": code,
+        "group": (partner_entry or {}).get("group") if partner_entry and partner_entry.get("group") is not None else (legacy_entry or {}).get("group"),
+    }
+    COURSE_MAP[code] = merged
+
+# 6) Default visible courses (from partner script)
+DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline script (mode='daily'/'backlog')

@@ -116,49 +116,61 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
 # --- Course Navigation ---
 
 async def find_and_click_course_link(page: Page, course_code: str, group_name: str | None):
-    """Navigates courses page, expands group if needed, clicks specific course link."""
-    logging.info(f"Attempting to navigate to course: {course_code} (Group: {group_name or 'None'})")
-    await page.goto(config.COURSES_URL, wait_until="domcontentloaded") # Faster wait
+    """Navigates courses page and clicks the target course link.
+    Mirrors partner Selenium logic: if course is default-visible, click directly;
+    otherwise expand the owning group first, then click the course link.
+    """
+    logging.info(f"Attempting to navigate to course: {course_code} (Group hint: {group_name or 'None'})")
+    await page.goto(config.COURSES_URL, wait_until="domcontentloaded")
 
-    # Handle group expansion
-    if group_name:
-        # Use format string for XPath from config
-        group_header_xpath = config.GROUP_HEADER_XPATH.format(group_name=group_name)
-        try:
-            group_header = page.locator(group_header_xpath).first
-            await group_header.scroll_into_view_if_needed() # Ensure it's clickable
-            await group_header.wait_for(state="visible", timeout=20000) # Increased timeout
-
-            # Optional: Check if already expanded to avoid unnecessary click
-            # is_expanded = await group_header.evaluate("el => el.parentElement.parentElement.classList.contains('expanded')") # Example check, adjust based on actual HTML
-            # if not is_expanded:
-
-            logging.info(f"Clicking to expand group: {group_name}")
-            # Use force=True cautiously, maybe try without first
-            await group_header.click(timeout=10000) # Give more time for click
-            logging.info(f"Expanded group: {group_name}")
-            # Wait for content within the group to potentially load/become visible
-            await page.wait_for_timeout(3000) # Pause for potential dynamic loading
-
-        except Exception as e:
-            logging.error(f"Failed to find or expand group '{group_name}' for {course_code}: {e}", exc_info=True)
-            await page.screenshot(path=f"logs/error_screenshots/group_error_{course_code}.png")
-            raise # Re-raise error to indicate failure for this course
-
-    # Click the specific course link using selector from config
-    course_link_selector = config.COURSE_LINK_SELECTOR.format(course_code=course_code)
     try:
-        course_link = page.locator(course_link_selector).first
-        await course_link.wait_for(state="visible", timeout=20000) # Wait for link itself
+        if course_code in config.DEFAULT_VISIBLE_COURSES:
+            logging.info(f"Course {course_code} is default-visible. Searching directly...")
+            target_selector = config.COURSE_LINK_SELECTOR.format(course_code=course_code)
+            course_link = page.locator(target_selector).first
+            await course_link.wait_for(state="visible", timeout=20000)
+            await course_link.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+            await course_link.click(timeout=15000)
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            logging.info(f"Successfully opened course {course_code}")
+            return
+
+        # Non-default visible: expand group then click
+        effective_group = group_name or (config.COURSE_MAP.get(course_code, {}).get("group"))
+        if not effective_group:
+            logging.warning(f"Group for course {course_code} is not defined. Attempting direct link click anyway.")
+            target_selector = config.COURSE_LINK_SELECTOR.format(course_code=course_code)
+            course_link = page.locator(target_selector).first
+            await course_link.wait_for(state="visible", timeout=20000)
+            await course_link.scroll_into_view_if_needed()
+            await course_link.click(timeout=15000)
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            logging.info(f"Successfully opened course {course_code}")
+            return
+
+        logging.info(f"Expanding group '{effective_group}' for course {course_code}...")
+        group_header_selector = config.GROUP_HEADER_SELECTOR.format(group_name=effective_group)
+        group_header = page.locator(group_header_selector).first
+        await group_header.wait_for(state="visible", timeout=20000)
+        await group_header.scroll_into_view_if_needed()
+        await page.wait_for_timeout(500)
+        await group_header.click(timeout=10000)
+        logging.info(f"Clicked group '{effective_group}'. Waiting for courses to load...")
+        await page.wait_for_timeout(5000)
+
+        target_selector = config.COURSE_LINK_SELECTOR.format(course_code=course_code)
+        course_link = page.locator(target_selector).first
+        await course_link.wait_for(state="visible", timeout=20000)
         await course_link.scroll_into_view_if_needed()
-        await course_link.click(timeout=15000) # Click the course link
-        # Wait for the next page to indicate navigation started
+        await course_link.click(timeout=15000)
         await page.wait_for_load_state("domcontentloaded", timeout=30000)
-        logging.info(f"Successfully clicked course link for {course_code}")
+        logging.info(f"Successfully opened course {course_code}")
+
     except Exception as e:
-        logging.error(f"Failed to find or click course link for {course_code}: {e}", exc_info=True)
-        await page.screenshot(path=f"logs/error_screenshots/course_link_error_{course_code}.png")
-        raise # Re-raise error
+        logging.error(f"Course navigation failed for {course_code}: {e}", exc_info=True)
+        await page.screenshot(path=f"logs/error_screenshots/course_nav_error_{course_code}.png")
+        raise
 
 # --- Resource Navigation (within a course page) ---
 
