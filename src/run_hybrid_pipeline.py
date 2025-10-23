@@ -4,6 +4,7 @@ import os
 import asyncio
 import datetime
 import logging
+import tempfile
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 
@@ -33,7 +34,8 @@ load_dotenv()
 RAW_TRANSCRIPT_DIR = "data/raw_transcripts/"
 RAW_STATIC_DIR = "data/raw_static/"
 RAW_PDF_DIR = "data/raw_pdfs/" # For downloaded PDFs
-TEMP_DIR = "/tmp/harvester_downloads/" # Temp dir for downloads
+# Use system temp directory for portability (still /tmp on Linux)
+TEMP_DIR = os.path.join(tempfile.gettempdir(), "harvester_downloads")
 
 # Cross-run de-duplication: skip URLs that already exist in DB
 # Set DEDUP_BY_URL=false to allow cross-listed re-embeds per class
@@ -250,11 +252,21 @@ async def main_pipeline(mode="daily"):
                                 # await section_header.click(timeout=3000)
                                 # await page.wait_for_timeout(1000)
 
-                                # Adapted from partner flow: scope to the immediate container following the header
-                                section_container = section_header.locator("xpath=./following-sibling::div[1]")
-
-                                item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
+                                # Prefer the immediate container following the header; fallback to parent if needed
+                                section_container_primary = section_header.locator("xpath=./following-sibling::div[1]")
+                                item_locators = section_container_primary.locator(config.RESOURCE_ITEM_SELECTOR)
                                 count = await item_locators.count()
+
+                                if count == 0:
+                                    # Fallback: sometimes items are direct siblings of the header within the same parent
+                                    section_container_fallback = section_header.locator("xpath=..")
+                                    fallback_items = section_container_fallback.locator(config.RESOURCE_ITEM_SELECTOR)
+                                    fallback_count = await fallback_items.count()
+                                    if fallback_count > 0:
+                                        logging.info("   Primary container empty; using parent container as fallback.")
+                                        item_locators = fallback_items
+                                        count = fallback_count
+
                                 logging.info(f"   Found {count} items in section '{section_tag}'.")
 
                                 for i in range(count):
