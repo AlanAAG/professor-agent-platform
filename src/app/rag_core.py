@@ -176,22 +176,20 @@ def _rerank_documents(query: str, documents: list[Document]) -> list[Document]:
         return documents # Fallback to original order on API error
 
 # --- Function to Identify Topics using LLM ---
-def _identify_topics_with_llm(syllabus_text: str, class_name: str) -> list[str]:
-    """Uses an LLM to extract key topics or units from syllabus text."""
-    logging.info("   Attempting to identify topics using LLM...")
-    if not llm or not syllabus_text:
-        logging.warning("   LLM or syllabus text missing for topic identification.")
+def _identify_topics_with_llm(context_text: str, class_name: str) -> list[str]:
+    """Uses an LLM to extract key topics or themes from general course materials."""
+    logging.info("   Attempting to identify topics using LLM from general materials...")
+    if not llm or not context_text:
+        logging.warning("   LLM or context text missing for topic identification.")
         return []
 
     topic_prompt = f"""
-Analyze the following syllabus or course description text for the class '{class_name}'.
-Identify the main topics, units, or modules covered in the course.
-List them clearly as a numbered list, with each topic on a new line, starting from 1.
-Be concise and capture the core subject of each topic.
+Analyze the following collection of course materials (excerpts from lectures, readings, etc.) for the class '{class_name}'.
+Identify the main topics or recurring themes covered. List them clearly as a numbered list, with each topic on a new line, starting from 1. Be concise and capture the core subject of each topic.
 
-Syllabus Text:
+Course Materials (excerpts):
 ---
-{syllabus_text}
+{context_text}
 ---
 
 Main Topics (numbered list):
@@ -217,38 +215,35 @@ Main Topics (numbered list):
 
 # --- Function for Map-Reduce ---
 def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat_history: list) -> str:
-    """Handles broad queries (e.g., study guides) using Map-Reduce."""
+    """Handles broad queries (e.g., study guides) using Map-Reduce without requiring a dedicated syllabus."""
     logging.info("   Intent: Map-Reduce Query (Study Guide / Broad Summary)")
     topics = []
     try:
-        # --- 1. Retrieve Syllabus Text ---
-        logging.info("   Retrieving syllabus text for topic identification...")
+        # --- 1. Retrieve General Course Materials for Topic Identification ---
+        logging.info("   Retrieving general course materials for topic identification...")
         if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-            raise RuntimeError("Vector store is not available for syllabus retrieval.")
+            raise RuntimeError("Vector store is not available for retrieval.")
 
-        # Retrieve chunks likely containing syllabus/topic info
-        syllabus_docs = embedding.vector_store.similarity_search(
-            query="course structure syllabus overview topics schedule modules objectives",
-            k=15, # Fetch a decent number of potential syllabus chunks
-            filter={"class_name": class_name, "content_type": "syllabus"}
+        broad_query = f"Overall course content and key concepts for {class_name}"
+        general_docs = embedding.vector_store.similarity_search(
+            query=broad_query,
+            k=30,  # Fetch a larger set of diverse course materials
+            filter={"class_name": class_name}
         )
 
-        if not syllabus_docs:
-            logging.warning("   No syllabus documents found in database. Cannot reliably identify topics for Map-Reduce.")
-            # --- Fallback Logic: Simple Broad Summary (if no syllabus) ---
-            logging.warning("   Falling back to simple broad retrieval and summary.")
+        # If no general materials found, fallback to a broad summary flow
+        if not general_docs:
+            logging.warning("   No general course materials found. Falling back to broad summary.")
             initial_docs = embedding.vector_store.similarity_search(
-                query=question, # Use original question for broad retrieval
-                k=INITIAL_RETRIEVAL_K * 2, # Retrieve more documents
+                query=question,  # Use original question for broad retrieval
+                k=INITIAL_RETRIEVAL_K * 2,  # Retrieve more documents
                 filter={"class_name": class_name}
             )
-            # Re-rank even for fallback to get somewhat relevant context
             reranked_fallback_docs = _rerank_documents(question, initial_docs)
-            final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2] # Use more context than usual
+            final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2]
+            if not final_context_docs:
+                return "I couldn't find any relevant information to summarize."
 
-            if not final_context_docs: return "I couldn't find any relevant information to summarize."
-
-            # Build context and prompt for simple summary
             context_text = "\n\n---\n\n".join([doc.page_content for doc in final_context_docs])
             fallback_prompt = f"""
                 You are role-playing as {persona.get('professor_name', 'the professor')} for the class: {class_name}. {persona.get('style_prompt', '')}
@@ -261,25 +256,46 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
 
                 YOUR COMPREHENSIVE SUMMARY (as {persona.get('professor_name', 'Professor')}):
                 """
-            # Generate the fallback summary
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
             return final_summary.strip()
-            # --- End Fallback Logic ---
 
-        # Combine syllabus text
-        full_syllabus_text = "\n\n".join([doc.page_content for doc in syllabus_docs])
+        # Combine general materials text into a single context
+        context_for_topics = "\n\n".join([doc.page_content for doc in general_docs])
 
-        # --- 2. Identify Topics using LLM ---
-        topics = _identify_topics_with_llm(full_syllabus_text, class_name)
+        # --- 2. Identify Topics using LLM from general context ---
+        topics = _identify_topics_with_llm(context_for_topics, class_name)
 
         if not topics:
-            logging.warning("   LLM topic identification failed or returned no topics. Cannot proceed with Map-Reduce.")
-            # Return error message, indicating topics couldn't be found
-            return "I couldn't identify the main topics from the syllabus to create a structured study guide. You could try asking for a summary of specific lectures or concepts."
+            logging.warning("   LLM topic identification returned no topics. Falling back to broad summary.")
+            initial_docs = embedding.vector_store.similarity_search(
+                query=question,
+                k=INITIAL_RETRIEVAL_K * 2,
+                filter={"class_name": class_name}
+            )
+            reranked_fallback_docs = _rerank_documents(question, initial_docs)
+            final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2]
+            if not final_context_docs:
+                return "I couldn't find any relevant information to summarize."
+
+            context_text = "\n\n---\n\n".join([doc.page_content for doc in final_context_docs])
+            fallback_prompt = f"""
+                You are role-playing as {persona.get('professor_name', 'the professor')} for the class: {class_name}. {persona.get('style_prompt', '')}
+                A student asked for a broad summary or study guide: "{question}"
+                Based *only* on the extensive course materials provided below, generate a comprehensive summary covering the main points mentioned. Structure it clearly. If possible, organize by potential themes found in the text.
+
+                --- COURSE MATERIALS ---
+                {context_text}
+                ---
+
+                YOUR COMPREHENSIVE SUMMARY (as {persona.get('professor_name', 'Professor')}):
+                """
+            chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
+            final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
+            return final_summary.strip()
 
     except Exception as e:
-        logging.error(f"   Error retrieving syllabus or identifying topics: {e}")
+        logging.error(f"   Error retrieving materials or identifying topics: {e}")
         return f"Sorry, I encountered an error trying to structure the study guide: {e}"
 
     # --- 3. Map Step: Summarize each identified topic ---

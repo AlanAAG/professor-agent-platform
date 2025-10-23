@@ -183,24 +183,4 @@ async def scrape_html_content(url: str) -> str | None:
         logging.error(f"   Unexpected error scraping HTML {url}: {e}")
         return None
 
-async def scrape_static_syllabus(page: Page, course_code: str) -> str | None:
-    """Scrapes the static syllabus/description text from the course details page."""
-    logging.info(f"   Attempting to scrape static syllabus for {course_code}")
-    # Use the selector defined in config.py (currently a placeholder)
-    syllabus_selector = config.SYLLABUS_CONTAINER_SELECTOR
-    try:
-        # Ensure the element exists and is visible
-        container = page.locator(syllabus_selector).first
-        await container.wait_for(state="visible", timeout=15000)
-        syllabus_text = await container.text_content(timeout=5000)
-        if syllabus_text:
-            logging.info(f"   Successfully scraped syllabus text ({len(syllabus_text)} chars).")
-            return syllabus_text.strip()
-        else:
-            logging.warning(f"   Syllabus container found but was empty for {course_code}.")
-            return None
-    except Exception as e:
-        logging.error(f"   Failed to scrape syllabus for {course_code} using selector '{syllabus_selector}': {e}")
-        # Optionally take screenshot
-        # await page.screenshot(path=f"logs/error_screenshots/syllabus_scrape_error_{course_code}.png")
-        return None
+    
