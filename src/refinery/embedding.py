@@ -164,46 +164,50 @@ def check_if_embedded(filter: dict) -> bool:
     return False
 
 
-async def check_if_embedded_recently(filter: dict, max_age_days: int = 90, days: int | None = None) -> bool:
-    """Asynchronously checks if a document exists matching the filter and was embedded recently.
-
-    Uses vector_store.similarity_search with a minimal query and provided metadata
-    filter. If any results are returned, assumes the content exists. If a
-    retrieval_date metadata is present, enforces max_age_days (or days alias).
-    """
-    # Support alias 'days' for convenience
-    if days is not None:
-        max_age_days = days
-
-    if not vector_store:
+async def check_if_embedded_recently(filter: dict, days: int = 7) -> bool:
+    """Checks Supabase metadata to see if content matching the filter was processed recently."""
+    if not supabase:
+        # Default to re-processing if Supabase is not configured
         return False
 
-    if not isinstance(filter, dict) or not filter:
-        logging.warning("check_if_embedded_recently called with empty/invalid filter.")
+    if not isinstance(filter, dict):
+        logging.warning("check_if_embedded_recently called with invalid filter (expected dict).")
         return False
 
     try:
-        # Run the blocking similarity_search in a thread to avoid blocking the event loop
-        def _search():
-            return vector_store.similarity_search(query="recent existence check", k=1, filter=filter)
+        # Use naive ISO timestamps to match how metadata['retrieval_date'] is stored
+        cutoff_dt = datetime.datetime.now() - datetime.timedelta(days=days)
+        cutoff_iso = cutoff_dt.isoformat()
 
-        results = await asyncio.to_thread(_search)
+        def _execute_query():
+            # Base query: restrict by recent retrieval_date
+            query = supabase.table("documents").select("metadata", count="exact")
 
-        if results and len(results) > 0:
-            # If timestamps are stored in metadata (e.g., retrieval_date), enforce max_age_days when possible
-            ts_str = getattr(results[0], "metadata", {}).get("retrieval_date")
-            if ts_str:
-                try:
-                    ts = datetime.datetime.fromisoformat(ts_str)
-                    age_days = (datetime.datetime.now() - ts).days
-                    return age_days <= max_age_days
-                except Exception:
-                    # If parsing fails, fall back to existence check
-                    return True
+            # Prefer strict URL identity when available
+            if "source_url" in filter and filter["source_url"]:
+                query = query.eq("metadata->>source_url", filter["source_url"])
+            elif filter:
+                # Fall back to JSON contains on metadata for provided keys
+                # Example: {"class_name": "...", "content_type": "..."}
+                query = query.contains("metadata", filter)
+
+            query = query.gt("metadata->>retrieval_date", cutoff_iso).limit(1)
+            return query.execute()
+
+        response = await asyncio.to_thread(_execute_query)
+
+        # supabase-py may return an object with attribute or dict with 'count'
+        count = getattr(response, "count", None)
+        if count is None and isinstance(response, dict):
+            count = response.get("count")
+
+        if count and count > 0:
+            logging.info(f"Content matching filter {filter} found recently. Skipping.")
             return True
         return False
     except Exception as e:
-        logging.error(f"Error checking if document exists: {e}")
+        logging.error(f"Error checking Supabase for recent embedding: {e}")
+        # Default to re-processing on error
         return False
 
 # --- Optional: Test Initialization ---
