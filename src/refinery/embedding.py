@@ -210,6 +210,42 @@ async def check_if_embedded_recently(filter: dict, days: int = 7) -> bool:
         # Default to re-processing on error
         return False
 
+
+async def url_exists_in_db(url: str) -> bool:
+    """Checks if any document with the given source URL already exists.
+
+    This is a cross-run de-duplication helper. If a resource with the exact
+    same `metadata.source_url` is present in the `documents` table, return True.
+    """
+    if not supabase:
+        # If Supabase isn't configured, avoid blocking the pipeline
+        return False
+    if not url:
+        return False
+
+    try:
+        def _execute_query():
+            return (
+                supabase
+                .table("documents")
+                .select("id", count="exact")
+                .eq("metadata->>source_url", url)
+                .limit(1)
+                .execute()
+            )
+
+        response = await asyncio.to_thread(_execute_query)
+
+        count = getattr(response, "count", None)
+        if count is None and isinstance(response, dict):
+            count = response.get("count")
+
+        return bool(count and count > 0)
+    except Exception as e:
+        logging.error(f"Error checking Supabase for existing URL '{url}': {e}")
+        # Fail-open: if the check fails, allow processing rather than silently skipping
+        return False
+
 # --- Optional: Test Initialization ---
 # You can run this file directly (`python src/refinery/embedding.py`)
 # to check if the clients initialize correctly without errors.
