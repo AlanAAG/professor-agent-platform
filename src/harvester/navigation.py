@@ -156,10 +156,11 @@ async def find_and_click_course_link(page: Page, course_code: str, group_name: s
         await group_header.scroll_into_view_if_needed()
         await page.wait_for_timeout(500)
         await group_header.click(timeout=10000)
-        logging.info(f"Clicked group '{effective_group}'. Waiting for courses to load...")
-        await page.wait_for_timeout(5000)
+        logging.info(f"Clicked group '{effective_group}'. Waiting for course link to appear...")
 
         target_selector = config.COURSE_LINK_SELECTOR.format(course_code=course_code)
+        # Wait for the course link to be present in the DOM, then visible (expanded)
+        await page.wait_for_selector(target_selector, state="attached", timeout=20000)
         course_link = page.locator(target_selector).first
         await course_link.wait_for(state="visible", timeout=20000)
         await course_link.scroll_into_view_if_needed()
