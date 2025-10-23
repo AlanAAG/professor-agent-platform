@@ -5,6 +5,7 @@ import datetime
 import logging
 from typing import Optional
 from dateutil import parser # Use dateutil for flexible parsing
+from dateutil import tz
 
 # --- Setup Logging ---
 # Ensure logging is configured if run directly or imported early
@@ -26,7 +27,7 @@ def parse_session_date(date_str: str) -> Optional[datetime.datetime]:
         return None
 
 # --- NEW: Flexible Date Parser ---
-def parse_general_date(date_str: str) -> Optional[datetime.datetime]:
+def parse_general_date(date_str: str, local_tz: tz.tzfile = tz.gettz('Asia/Dubai')) -> Optional[datetime.datetime]:
     """
     Attempts to parse various common date formats using dateutil.parser.
     Returns a datetime object (UTC) or None if parsing fails.
@@ -42,13 +43,14 @@ def parse_general_date(date_str: str) -> Optional[datetime.datetime]:
         # dateutil.parser.parse is very flexible
         # dayfirst=True helps interpret DD/MM vs MM/DD correctly in ambiguous cases
         dt_obj = parser.parse(date_part, dayfirst=True)
-        # Convert to UTC for consistency (assuming local time if no timezone info)
+
+        # If the parsed datetime is naive, assume local timezone (Dubai by default)
         if dt_obj.tzinfo is None:
-            # If naive, assume local and convert to UTC - this might need adjustment
-            # Or just return as naive: return dt_obj
-            return dt_obj.replace(tzinfo=datetime.timezone.utc) # Simplest for now
-        else:
-            return dt_obj.astimezone(datetime.timezone.utc)
+            assumed_tz = local_tz or tz.gettz('Asia/Dubai')
+            dt_obj = dt_obj.replace(tzinfo=assumed_tz)
+
+        # Always convert to UTC for consistency
+        return dt_obj.astimezone(datetime.timezone.utc)
 
     except (ValueError, OverflowError, TypeError) as e:
         logging.warning(f"Could not parse general date string: '{date_str}'. Error: {e}")
