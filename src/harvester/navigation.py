@@ -5,7 +5,7 @@ import os # Added for AUTH_STATE_FILE path
 from playwright.async_api import Page, Locator, Playwright, Browser, BrowserContext
 from . import config # Imports selectors and URLs from config.py
 # Assuming utils.py is in src/shared/
-from shared import utils # For utility functions if needed later
+from src.shared import utils # For utility functions if needed later
 
 # --- Authentication & Initialization ---
 

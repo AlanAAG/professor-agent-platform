@@ -4,7 +4,6 @@ aiosignal==1.4.0
 altair==5.5.0
 annotated-types==0.7.0
 anyio==4.11.0
-asyncio==4.0.0
 attrs==25.4.0
 beautifulsoup4==4.14.2
 blinker==1.9.0
@@ -34,7 +33,7 @@ google-api-python-client==2.185.0
 google-auth==2.41.1
 google-auth-httplib2==0.2.0
 google-cloud-speech==2.33.0
-google-genai==1.45.0
+google-generativeai==1.45.0
 googleapis-common-protos==1.70.0
 greenlet==3.2.4
 grpcio==1.75.1

@@ -1,5 +1,6 @@
 # in src/refinery/cleaning.py
 import os
+import logging
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -15,9 +16,9 @@ try:
         model="gemini-2.5-pro", 
         google_api_key=os.environ.get("GEMINI_API_KEY")
     )
-    print("Gemini model configured successfully (via LangChain).")
+    logging.info("Gemini model configured successfully (via LangChain).")
 except Exception as e:
-    print(f"Error configuring Gemini via LangChain: {e}")
+    logging.error(f"Error configuring Gemini via LangChain: {e}")
     model = None
 
 def _get_cleaning_prompt() -> ChatPromptTemplate:
@@ -61,10 +62,10 @@ def clean_transcript_with_llm(raw_text: str) -> str:
         raise EnvironmentError("Gemini model is not configured. Check API key.")
 
     if not raw_text or len(raw_text) < 50:
-        print("-> Skipping cleaning: No significant text found.")
+        logging.info("-> Skipping cleaning: No significant text found.")
         return ""
 
-    print(f"-> Sending {len(raw_text)} characters to LLM for cleaning (via LangChain)...")
+    logging.info(f"-> Sending {len(raw_text)} characters to LLM for cleaning (via LangChain)...")
     
     try:
         # Create the prompt and the "chain"
@@ -78,23 +79,23 @@ def clean_transcript_with_llm(raw_text: str) -> str:
         return clean_text.strip()
         
     except Exception as e:
-        print(f"❌ LLM Cleaning Error: {e}")
+        logging.error(f"❌ LLM Cleaning Error: {e}")
         return ""
 
 # --- Local Test ---
 # (This test block remains the same)
 if __name__ == "__main__":
-    print("Running local test for cleaning.py...")
+    logging.info("Running local test for cleaning.py...")
     
     TEST_FILE_PATH = "data/raw_transcripts/test.txt" 
     
     if not os.path.exists(TEST_FILE_PATH):
-        print(f"Test file not found at {TEST_FILE_PATH}")
+        logging.error(f"Test file not found at {TEST_FILE_PATH}")
     else:
         with open(TEST_FILE_PATH, "r") as f:
             sample_text = f.read()
             
         clean_text = clean_transcript_with_llm(sample_text)
         
-        print("\n--- CLEANING COMPLETE ---")
+        logging.info("\n--- CLEANING COMPLETE ---")
         print(clean_text)

@@ -5,7 +5,7 @@ import json
 import re # Needed for parsing topic list
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder # Added MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document # For type hinting
 from langchain_core.messages import HumanMessage, AIMessage # Added message types
@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Attempt to import necessary components from refinery ---
 # This assumes refinery.embedding correctly initializes and exposes 'vector_store'
 try:
-    # Use absolute import relative to the 'src' directory if running as a module
-    from refinery import embedding
+    # Import embedding from package-qualified path for module execution
+    from src.refinery import embedding
     if not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
         raise ImportError("vector_store not initialized in embedding module.")
     logging.info("RAG Core: Successfully imported vector_store from refinery.embedding.")
@@ -370,7 +370,7 @@ YOUR FINAL STUDY GUIDE (as {persona.get('professor_name', 'Professor')}):
 
 
 # --- Main RAG Function (Orchestrator) ---
-def get_rag_response(question: str, class_name: str, persona: dict, chat_history: list = []) -> tuple[str, list[str]]:
+def get_rag_response(question: str, class_name: str, persona: dict, chat_history: list | None = None) -> tuple[str, list[str]]:
     """
     Handles query, condenses based on history, detects intent, retrieves context
     (using Map-Reduce for broad queries), re-ranks (for specific queries),
@@ -386,6 +386,7 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
         logging.error(f"RAG Core: ERROR - {error_msg}")
         return error_msg, []
 
+    chat_history = chat_history or []
     logging.info(f"RAG Core: Received query for class '{class_name}': '{question}'")
     logging.info(f"   Chat history length: {len(chat_history)}")
 

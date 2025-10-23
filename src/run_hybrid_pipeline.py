@@ -7,18 +7,13 @@ import logging
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 
-# --- Import project modules ---
-# Assuming execution from the root directory or PYTHONPATH configured
-try:
-    from harvester import navigation, scraping, config
-    from refinery import cleaning, embedding, pdf_processing # Added pdf_processing
-    from shared import utils
-except ImportError as e:
-    print(f"Error importing modules: {e}")
-    print("Ensure the script is run from the project root or PYTHONPATH is set.")
-    exit(1)
+# --- Import project modules (package-qualified for -m execution) ---
+from src.harvester import navigation, scraping, config
+from src.refinery import cleaning, embedding, pdf_processing  # Added pdf_processing
+from src.shared import utils
 
 # --- Setup Logging ---
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(module)s - %(message)s',
@@ -179,8 +174,7 @@ async def main_pipeline(mode="daily"):
         cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc) # Get everything
         logging.info("Processing all historical resources (backlog mode).")
     else:
-        if not embedding.check_if_embedded({"class_name": class_name, "content_type": "syllabus"}):
-        return
+        raise ValueError(f"Unsupported pipeline mode: {mode}")
 
     browser = None
     context = None
@@ -250,8 +244,8 @@ async def main_pipeline(mode="daily"):
 
                     # --- Scrape Static Content (e.g., Syllabus) ---
                     # Check if syllabus needs processing (e.g., only once or if changed)
-                    # Use embedding.check_if_embedded or similar check
-                    if not await embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
+                    # Use embedding.check_if_embedded or similar check (synchronous)
+                    if not embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
                         try:
                             # Navigate back to main course page if needed, or scrape from current page
                             await page.goto(current_course_url) # Example: return to course page
