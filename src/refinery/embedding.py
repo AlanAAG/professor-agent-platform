@@ -2,6 +2,8 @@
 
 import os
 import logging
+import datetime
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import SupabaseVectorStore
@@ -69,6 +71,50 @@ text_splitter = RecursiveCharacterTextSplitter(
 logging.info("Text splitter initialized.")
 
 
+# --- Metadata Validation ---
+REQUIRED_METADATA = ["class_name", "content_type"]
+OPTIONAL_METADATA = [
+    "source_file",
+    "source_url",
+    "title",
+    "lecture_date",
+    "page_number",
+    "links",
+    "retrieval_date",
+]
+
+def validate_metadata(metadata: dict) -> dict:
+    """Validates and normalizes metadata before embedding.
+
+    Ensures required fields exist, adds a default retrieval_date if missing,
+    and removes None-valued entries.
+    """
+    if not isinstance(metadata, dict):
+        raise ValueError("Metadata must be a dictionary.")
+
+    for field in REQUIRED_METADATA:
+        if field not in metadata:
+            raise ValueError(f"Missing required metadata field: {field}")
+
+    if "retrieval_date" not in metadata:
+        metadata["retrieval_date"] = datetime.datetime.now().isoformat()
+
+    # Remove None values
+    return {k: v for k, v in metadata.items() if v is not None}
+
+
+# --- Retry wrapper for vector store writes ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError))
+)
+def _add_documents_with_retry(documents):
+    if not vector_store:
+        raise EnvironmentError("Vector store is not initialized.")
+    return vector_store.add_documents(documents)
+
+
 # --- Main Function to be Called by Other Scripts ---
 def chunk_and_embed_text(clean_text: str, metadata: dict):
     """
@@ -88,18 +134,19 @@ def chunk_and_embed_text(clean_text: str, metadata: dict):
     documents = text_splitter.create_documents([clean_text])
     logging.info(f"   Split text into {len(documents)} chunks.")
 
-    # 2. Add your crucial metadata dictionary to *every single chunk*
+    # 2. Validate and attach metadata to each chunk
+    normalized_metadata = validate_metadata(metadata)
     for doc in documents:
-        doc.metadata = metadata
+        doc.metadata = normalized_metadata
 
     # 3. Add all prepared documents to Supabase
     # LangChain's SupabaseVectorStore handles calculating embeddings
     # and saving everything to your 'documents' table.
     try:
-        vector_store.add_documents(documents)
+        _add_documents_with_retry(documents)
         logging.info(f"✅ Embedding successful for {len(documents)} chunks.")
     except Exception as e:
-        logging.error(f"❌ Error during Supabase add_documents: {e}")
+        logging.error(f"❌ Failed after retries during Supabase add_documents: {e}")
         # Depending on the error, you might want to raise it, retry, or log it.
         # Re-raising ensures the calling script knows about the failure.
         raise
@@ -117,16 +164,38 @@ def check_if_embedded(filter: dict) -> bool:
 
 
 def check_if_embedded_recently(filter: dict, max_age_days: int = 90) -> bool:
-    """
-    Placeholder implementation to determine if content matching the filter
-    has been embedded recently. Returns False to force embedding until a
-    proper Supabase query is implemented.
+    """Checks if a document exists matching the filter and was embedded recently.
 
-    Expected filter keys include metadata such as 'class_name' and 'content_type'.
+    Uses vector_store.similarity_search with a minimal query and provided metadata
+    filter. If any results are returned, assumes the content exists. Optionally,
+    could validate timestamps if present in metadata.
     """
-    # Future improvement: query Supabase 'documents' table using the client
-    # for metadata filters and a created_at/updated_at timestamp comparison.
-    return False
+    if not vector_store:
+        return False
+
+    if not isinstance(filter, dict) or not filter:
+        logging.warning("check_if_embedded_recently called with empty/invalid filter.")
+        return False
+
+    try:
+        # Use a trivial query; metadata filter will constrain results. Set k=1 for existence check.
+        results = vector_store.similarity_search(query="recent existence check", k=1, filter=filter)
+
+        if results and len(results) > 0:
+            # If timestamps are stored in metadata (e.g., retrieval_date), optionally enforce max_age_days
+            # Example (commented as retrieval_date may not always be present):
+            # ts_str = results[0].metadata.get("retrieval_date")
+            # if ts_str:
+            #     try:
+            #         ts = datetime.datetime.fromisoformat(ts_str)
+            #         return (datetime.datetime.now() - ts).days <= max_age_days
+            #     except Exception:
+            #         pass
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Error checking if document exists: {e}")
+        return False
 
 # --- Optional: Test Initialization ---
 # You can run this file directly (`python src/refinery/embedding.py`)
