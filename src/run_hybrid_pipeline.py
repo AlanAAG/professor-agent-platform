@@ -189,6 +189,9 @@ async def main_pipeline(mode="daily"):
 
             # Store resources found during navigation phase
             resources_to_process = [] # List of tuples: (url, title, date_obj | None, class_name)
+            # Caches to avoid redundant checks within a single run
+            recent_check_cache: dict[str, bool] = {}
+            seen_urls: set[str] = set()
 
             # --- Navigation Phase: Collect all new/relevant resource links ---
             logging.info("\n--- Starting Navigation Phase ---")
@@ -231,13 +234,27 @@ async def main_pipeline(mode="daily"):
                                     else:
                                         logging.info(f"   Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')}, cutoff: {cutoff_date.strftime('%Y-%m-%d')})")
                                 else:
-                                    # If no date available, process it (safer to include than miss new content)
-                                    should_process = True
-                                    logging.info(f"   Resource has no date, processing to be safe")
+                                    # No date: only process if not found in recent embeddings (last 2 days)
+                                    exists_recently = recent_check_cache.get(url)
+                                    if exists_recently is None:
+                                        exists_recently = await embedding.check_if_embedded_recently(
+                                            filter={"source_url": url},
+                                            days=2
+                                        )
+                                        recent_check_cache[url] = exists_recently
+                                    should_process = not exists_recently
+                                    if should_process:
+                                        logging.info("   Resource has no date, processing (not found in recent DB).")
+                                    else:
+                                        logging.info(f"   Skipping undated resource (found in recent DB): {url}")
 
                                 if should_process:
-                                    logging.info(f"   Adding resource to process: {title}")
-                                    resources_to_process.append((url, title, parsed_date, class_name))
+                                    if url in seen_urls:
+                                        logging.info(f"   Duplicate URL already queued, skipping: {url}")
+                                    else:
+                                        logging.info(f"   Adding resource to process: {title}")
+                                        resources_to_process.append((url, title, parsed_date, class_name))
+                                        seen_urls.add(url)
 
                             except Exception as item_err:
                                 logging.warning(f"Could not process one resource item for {class_name}: {item_err}")
@@ -245,8 +262,8 @@ async def main_pipeline(mode="daily"):
 
                     # --- Scrape Static Content (e.g., Syllabus) ---
                     # Check if syllabus needs processing (e.g., only once or if changed)
-                    # Use embedding.check_if_embedded or similar check (synchronous)
-                    if not embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
+                    # Use async existence check to avoid re-embedding unchanged syllabi
+                    if not await embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
                         try:
                             # Navigate back to main course page if needed, or scrape from current page
                             await page.goto(current_course_url) # Example: return to course page
