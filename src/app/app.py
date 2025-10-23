@@ -50,9 +50,17 @@ else:
             st.session_state.messages = []
             st.rerun() # Rerun to clear display
 
-    # --- Initialize Chat History in Session State ---
+    # --- Initialize Session State & Clear on Class Change ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    # Track previously selected class to clear history on change
+    if "prev_selected_class" not in st.session_state:
+        st.session_state.prev_selected_class = selected_class
+    elif st.session_state.prev_selected_class != selected_class:
+        # Auto-clear chat history when switching classes to avoid cross-class context leakage
+        st.session_state.messages = []
+        st.session_state.prev_selected_class = selected_class
+        st.rerun()
 
     # --- Display Previous Chat Messages ---
     st.header(f"Chat with the {selected_class} Agent")
@@ -96,4 +104,4 @@ else:
                 error_message = f"Sorry, an error occurred: {e}"
                 message_placeholder.error(error_message)
                 # Optionally add error to chat history too
-                # st.session_state.messages.append({"role": "assistant", "content": error_message})
+                st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {error_message}"})
