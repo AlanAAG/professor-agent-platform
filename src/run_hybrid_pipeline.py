@@ -50,6 +50,7 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
     """
     logging.info(f"Processing resource: {title} ({url})")
     raw_content_data = None # Store path (PDF) or text (HTML/Transcript)
+    temp_pdf_path: str | None = None  # Track temp PDF path for reliable cleanup
     metadata_base = {
         "class_name": class_name,
         "source_url": url, # Store original URL
@@ -103,32 +104,48 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
         # --- Refinery Steps ---
         if raw_content_data:
             if content_type_tag == "pdf":
-                # Process PDF page by page
-                logging.info(f"   Processing PDF content from: {raw_content_data}")
-                pages_data = pdf_processing.process_pdf(raw_content_data) # Takes path
-                for page_data in pages_data:
-                    # Combine text & image descriptions
-                    combined_text = page_data.get("text", "")
-                    image_descriptions = [img.get("description", "") for img in page_data.get("images", []) if img.get("description") and "unavailable" not in img.get("description", "").lower() and "error" not in img.get("description", "").lower()]
-                    if image_descriptions: combined_text += "\n\n[Image Descriptions:]\n" + "\n".join(f"- {desc}" for desc in image_descriptions)
+                # Process PDF page by page with guaranteed cleanup
+                target_pdf_path = temp_pdf_path or (raw_content_data if isinstance(raw_content_data, str) else None)
+                if not target_pdf_path:
+                    raise ValueError("No PDF path available for processing.")
 
-                    if len(combined_text) < 50: continue # Skip empty pages
+                logging.info(f"   Processing PDF content from: {target_pdf_path}")
+                try:
+                    pages_data = pdf_processing.process_pdf(target_pdf_path)  # Takes path
+                    for page_data in pages_data:
+                        # Combine text & image descriptions
+                        combined_text = page_data.get("text", "")
+                        image_descriptions = [
+                            img.get("description", "")
+                            for img in page_data.get("images", [])
+                            if img.get("description")
+                            and "unavailable" not in img.get("description", "").lower()
+                            and "error" not in img.get("description", "").lower()
+                        ]
+                        if image_descriptions:
+                            combined_text += "\n\n[Image Descriptions:]\n" + "\n".join(f"- {desc}" for desc in image_descriptions)
 
-                    metadata = {
-                        **metadata_base,
-                        "content_type": "pdf_page",
-                        "source_file": os.path.basename(raw_content_data),
-                        "page_number": page_data.get("page_number"),
-                        "links": page_data.get("links", [])
-                    }
-                    metadata = {k: v for k, v in metadata.items() if v is not None}
+                        if len(combined_text) < 50:
+                            continue  # Skip empty pages
 
-                    logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
-                    embedding.chunk_and_embed_text(combined_text, metadata)
+                        metadata = {
+                            **metadata_base,
+                            "content_type": "pdf_page",
+                            "source_file": os.path.basename(target_pdf_path),
+                            "page_number": page_data.get("page_number"),
+                            "links": page_data.get("links", []),
+                        }
+                        metadata = {k: v for k, v in metadata.items() if v is not None}
 
-                # Clean up the temporary PDF file
-                try: os.remove(raw_content_data)
-                except OSError as e: logging.warning(f"   Could not delete temp PDF {raw_content_data}: {e}")
+                        logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
+                        embedding.chunk_and_embed_text(combined_text, metadata)
+                finally:
+                    # Ensure temp PDF is deleted regardless of success/failure
+                    if target_pdf_path and os.path.exists(target_pdf_path):
+                        try:
+                            os.remove(target_pdf_path)
+                        except OSError as e:
+                            logging.warning(f"   Could not delete temp PDF {target_pdf_path}: {e}")
 
             elif content_type_tag in ["webpage", "recording_transcript"]:
                 # Process extracted text (HTML or Transcript)
