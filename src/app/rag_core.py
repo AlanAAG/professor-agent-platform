@@ -18,18 +18,27 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Attempt to import necessary components from refinery ---
 # This assumes refinery.embedding correctly initializes and exposes 'vector_store'
+embedding = None
 try:
-    # Import embedding from package-qualified path for module execution
-    from src.refinery import embedding
-    if not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-        raise ImportError("vector_store not initialized in embedding module.")
-    logging.info("RAG Core: Successfully imported vector_store from refinery.embedding.")
-except ImportError as e:
-    logging.error(f"RAG Core: Error importing from refinery.embedding: {e}. Ensure embedding.py is runnable and initializes vector_store.")
-    embedding = None # Set to None to handle failure gracefully
-except Exception as e:
-    logging.error(f"RAG Core: An unexpected error occurred during import: {e}")
-    embedding = None
+    # Try absolute import first (execution via `-m src.app.app`)
+    from src.refinery import embedding as _embedding
+    embedding = _embedding
+except Exception as e_abs:
+    logging.warning(f"RAG Core: Absolute import failed: {e_abs}. Trying relative import.")
+    try:
+        # Fallback to relative import (execution from project root)
+        from ..refinery import embedding as _embedding_rel  # type: ignore
+        embedding = _embedding_rel
+    except Exception as e_rel:
+        logging.error(f"RAG Core: Failed to import refinery.embedding via both paths: abs={e_abs}; rel={e_rel}")
+        embedding = None
+
+if embedding is not None:
+    if not hasattr(embedding, 'vector_store') or getattr(embedding, 'vector_store', None) is None:
+        logging.error("RAG Core: vector_store not initialized in embedding module.")
+        embedding = None
+    else:
+        logging.info("RAG Core: Successfully imported vector_store from refinery.embedding.")
 
 # --- Load Environment Variables ---
 # Loads variables from .env file for local development

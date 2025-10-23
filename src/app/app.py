@@ -6,16 +6,20 @@ import os
 # Use absolute import relative to src if running as module, or adjust as needed
 from . import rag_core
 
+# Ensure page config is the first Streamlit call
+st.set_page_config(layout="wide")
+
 # --- Configuration & Setup ---
 PERSONA_FILE_PATH = os.path.join(os.path.dirname(__file__), "persona.json") # More robust path
 
-def load_personas():
+@st.cache_data(show_spinner=False)
+def load_personas() -> dict:
     """Loads professor persona data from the JSON file."""
     if not os.path.exists(PERSONA_FILE_PATH):
         st.error(f"Persona file not found at {PERSONA_FILE_PATH}")
         return {}
     try:
-        with open(PERSONA_FILE_PATH, "r") as f:
+        with open(PERSONA_FILE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         st.error(f"Error loading persona file: {e}")
@@ -25,7 +29,6 @@ PERSONAS = load_personas()
 AVAILABLE_CLASSES = list(PERSONAS.keys())
 
 # --- Streamlit App UI ---
-st.set_page_config(layout="wide")
 st.title("🎓 Professor AI Tutor")
 
 if not AVAILABLE_CLASSES:
