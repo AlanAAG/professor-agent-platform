@@ -3,6 +3,7 @@
 import os
 import logging
 import datetime
+import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -163,13 +164,17 @@ def check_if_embedded(filter: dict) -> bool:
     return False
 
 
-def check_if_embedded_recently(filter: dict, max_age_days: int = 90) -> bool:
-    """Checks if a document exists matching the filter and was embedded recently.
+async def check_if_embedded_recently(filter: dict, max_age_days: int = 90, days: int | None = None) -> bool:
+    """Asynchronously checks if a document exists matching the filter and was embedded recently.
 
     Uses vector_store.similarity_search with a minimal query and provided metadata
-    filter. If any results are returned, assumes the content exists. Optionally,
-    could validate timestamps if present in metadata.
+    filter. If any results are returned, assumes the content exists. If a
+    retrieval_date metadata is present, enforces max_age_days (or days alias).
     """
+    # Support alias 'days' for convenience
+    if days is not None:
+        max_age_days = days
+
     if not vector_store:
         return False
 
@@ -178,19 +183,23 @@ def check_if_embedded_recently(filter: dict, max_age_days: int = 90) -> bool:
         return False
 
     try:
-        # Use a trivial query; metadata filter will constrain results. Set k=1 for existence check.
-        results = vector_store.similarity_search(query="recent existence check", k=1, filter=filter)
+        # Run the blocking similarity_search in a thread to avoid blocking the event loop
+        def _search():
+            return vector_store.similarity_search(query="recent existence check", k=1, filter=filter)
+
+        results = await asyncio.to_thread(_search)
 
         if results and len(results) > 0:
-            # If timestamps are stored in metadata (e.g., retrieval_date), optionally enforce max_age_days
-            # Example (commented as retrieval_date may not always be present):
-            # ts_str = results[0].metadata.get("retrieval_date")
-            # if ts_str:
-            #     try:
-            #         ts = datetime.datetime.fromisoformat(ts_str)
-            #         return (datetime.datetime.now() - ts).days <= max_age_days
-            #     except Exception:
-            #         pass
+            # If timestamps are stored in metadata (e.g., retrieval_date), enforce max_age_days when possible
+            ts_str = getattr(results[0], "metadata", {}).get("retrieval_date")
+            if ts_str:
+                try:
+                    ts = datetime.datetime.fromisoformat(ts_str)
+                    age_days = (datetime.datetime.now() - ts).days
+                    return age_days <= max_age_days
+                except Exception:
+                    # If parsing fails, fall back to existence check
+                    return True
             return True
         return False
     except Exception as e:
