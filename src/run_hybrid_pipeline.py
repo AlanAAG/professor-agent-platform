@@ -231,6 +231,8 @@ async def main_pipeline(mode="daily"):
                     # --- Scrape Resources Tab (NEW LOGIC) ---
                     if await navigation.navigate_to_resources_section(page):
                         # Define the sections you want to scrape using your new config selectors
+                        # Section headers follow partner script pattern: div.dlvLeftHeader:has-text(...)
+                        # Item containers remain div.fileBox under the nearest following sibling container
                         sections_to_scrape = [
                             ("pre_read", config.PRE_READ_SECTION_SELECTOR),
                             ("in_class", config.IN_CLASS_SECTION_SELECTOR),
@@ -248,7 +250,7 @@ async def main_pipeline(mode="daily"):
                                 # await section_header.click(timeout=3000)
                                 # await page.wait_for_timeout(1000)
 
-                                # Heuristic: container near the header; adjust after inspecting actual DOM
+                                # Adapted from partner flow: scope to the immediate container following the header
                                 section_container = section_header.locator("xpath=./following-sibling::div[1]")
 
                                 item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
