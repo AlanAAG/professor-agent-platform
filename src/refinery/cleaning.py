@@ -11,15 +11,73 @@ load_dotenv()
 
 # --- Configure the LLM Client (using LangChain) ---
 try:
-    # We use the LangChain wrapper now
+    # Prefer a broadly available, cost-effective model
     model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro", 
+        model="gemini-1.5-flash",
         google_api_key=os.environ.get("GEMINI_API_KEY")
     )
     logging.info("Gemini model configured successfully (via LangChain).")
 except Exception as e:
     logging.error(f"Error configuring Gemini via LangChain: {e}")
     model = None
+
+def _clean_transcript_locally(raw_text: str) -> str:
+    """
+    Heuristic, offline cleaner for transcripts when no LLM is available.
+    - Removes standalone timestamps like "0:01" or "1:03:45" on their own lines
+    - Removes inline timestamps of the form HH:MM(:SS)? when surrounded by whitespace
+    - Normalizes whitespace and creates readable paragraphs
+    - Adds terminal punctuation where obviously missing
+    """
+    if not raw_text:
+        return ""
+
+    import re
+
+    text = raw_text
+
+    # Remove standalone timestamp lines
+    text = re.sub(r"(?m)^\s*\d{1,2}:\d{2}(?::\d{2})?\s*$", "", text)
+
+    # Remove inline timestamps that appear as isolated tokens
+    text = re.sub(r"(?<!\d)(\b\d{1,2}:\d{2}(?::\d{2})?\b)(?!\d)", " ", text)
+
+    # Collapse excessive whitespace
+    text = re.sub(r"\r\n|\r", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]  # drop empties
+
+    # Join short lines into paragraphs
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for ln in lines:
+        if len(ln.split()) <= 2:  # likely leftover fragment, treat as break
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+        else:
+            current.append(ln)
+    if current:
+        paragraphs.append(" ".join(current))
+
+    # Add terminal punctuation if clearly missing
+    def ensure_punct(p: str) -> str:
+        if not p:
+            return p
+        if p[-1] in ".!?":
+            return p
+        return p + "."
+
+    paragraphs = [ensure_punct(p) for p in paragraphs]
+
+    # Basic capitalization for sentence starts (conservative)
+    def cap_sentence_start(p: str) -> str:
+        return re.sub(r"(^|[\.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), p)
+
+    paragraphs = [cap_sentence_start(p) for p in paragraphs]
+
+    return "\n\n".join(paragraphs).strip()
 
 def _get_cleaning_prompt() -> ChatPromptTemplate:
     """
@@ -58,9 +116,6 @@ def clean_transcript_with_llm(raw_text: str) -> str:
     """
     Sends the raw transcript to an LLM for cleaning using LangChain.
     """
-    if not model:
-        raise EnvironmentError("Gemini model is not configured. Check API key.")
-
     if not raw_text or len(raw_text) < 50:
         logging.info("-> Skipping cleaning: No significant text found.")
         return ""
@@ -68,19 +123,22 @@ def clean_transcript_with_llm(raw_text: str) -> str:
     logging.info(f"-> Sending {len(raw_text)} characters to LLM for cleaning (via LangChain)...")
     
     try:
+        if not model:
+            raise RuntimeError("LLM not configured")
+
         # Create the prompt and the "chain"
         prompt = _get_cleaning_prompt()
         output_parser = StrOutputParser()
         chain = prompt | model | output_parser
-        
+
         # Invoke the chain with the raw text
         clean_text = chain.invoke({"raw_text": raw_text})
-        
+
         return clean_text.strip()
         
     except Exception as e:
-        logging.error(f"❌ LLM Cleaning Error: {e}")
-        return ""
+        logging.warning(f"LLM unavailable or failed ({e}). Falling back to local cleaning.")
+        return _clean_transcript_locally(raw_text)
 
 # --- Local Test ---
 # (This test block remains the same)
