@@ -322,26 +322,7 @@ async def main_pipeline(mode="daily"):
                                 logging.warning(f"   Skipping section '{section_tag}'. Could not find header or items. (Error: {section_err})")
                                 continue
 
-                    # --- Scrape Static Content (e.g., Syllabus) ---
-                    # Check if syllabus needs processing (e.g., only once or if changed)
-                    # Use async existence check to avoid re-embedding unchanged syllabi
-                    if not await embedding.check_if_embedded_recently(filter={"class_name": class_name, "content_type": "syllabus"}):
-                        try:
-                            # Navigate back to main course page if needed, or scrape from current page
-                            await page.goto(current_course_url) # Example: return to course page
-                            static_text = await scraping.scrape_static_syllabus(page, course_code) # Assumes this returns text
-                            if static_text:
-                                logging.info(f"Processing static syllabus for {class_name}...")
-                                metadata = {
-                                    "class_name": class_name,
-                                    "content_type": "syllabus",
-                                    "source_file": f"{class_name}_syllabus"
-                                }
-                                embedding.chunk_and_embed_text(static_text, metadata) # Directly embed
-                            else:
-                                logging.warning(f"Could not scrape syllabus for {class_name}")
-                        except Exception as syllabus_err:
-                            logging.error(f"Error processing syllabus for {class_name}: {syllabus_err}")
+                    # Static syllabus scraping and embedding removed; topics inferred from general materials
 
 
                 except Exception as course_err:
