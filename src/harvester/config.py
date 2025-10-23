@@ -43,8 +43,7 @@ RESOURCE_TITLE_SELECTOR = "div.fileContentCol p"
 RESOURCE_DATE_SELECTOR = "div.fileContentCol span"
 RESOURCE_LINK_SELECTOR = "div.fileBox > a"
 
-# Static Content Selectors (left as-is; refine if needed later)
-SYLLABUS_CONTAINER_SELECTOR = "div.course-description-container"
+# Static Content Selectors (reserved for future static content scraping)
 
 # --- Transcript Scraping Selectors (kept; used by scraping module) ---
 # Google Drive Web Viewer

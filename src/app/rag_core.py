@@ -2,7 +2,6 @@
 
 import os
 import json
-import re # Needed for parsing topic list
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -78,7 +77,6 @@ except Exception as e:
 # --- Constants ---
 INITIAL_RETRIEVAL_K = 20 # Number of chunks to fetch initially from vector store
 FINAL_CONTEXT_K = 7    # Number of chunks to send to LLM after re-ranking (for specific questions)
-MAP_REDUCE_RETRIEVAL_K = 10 # Number of chunks to retrieve per topic in Map step
 
 # --- Helper Function: Build Prompt (for standard RAG) ---
 def _build_rag_prompt(question: str, context_docs: list[Document], persona: dict, class_name: str, chat_history: list) -> str:
@@ -182,208 +180,13 @@ def _rerank_documents(query: str, documents: list[Document]) -> list[Document]:
         logging.error(f"   Error during Cohere re-ranking: {e}. Falling back to original order.")
         return documents # Fallback to original order on API error
 
-# --- Function to Identify Topics using LLM ---
-def _identify_topics_with_llm(syllabus_text: str, class_name: str) -> list[str]:
-    """Uses an LLM to extract key topics or units from syllabus text."""
-    logging.info("   Attempting to identify topics using LLM...")
-    if not llm or not syllabus_text:
-        logging.warning("   LLM or syllabus text missing for topic identification.")
-        return []
-
-    topic_prompt = f"""
-Analyze the following syllabus or course description text for the class '{class_name}'.
-Identify the main topics, units, or modules covered in the course.
-List them clearly as a numbered list, with each topic on a new line, starting from 1.
-Be concise and capture the core subject of each topic.
-
-Syllabus Text:
----
-{syllabus_text}
----
-
-Main Topics (numbered list):
-"""
-    try:
-        # Simple LangChain chain for the LLM call
-        chain = ChatPromptTemplate.from_template("{prompt_text}") | llm | StrOutputParser()
-        response = chain.invoke({"prompt_text": topic_prompt})
-
-        # Parse the numbered list from the LLM response using regex
-        topics = re.findall(r"^\s*\d+\.\s*(.+)", response, re.MULTILINE)
-        topics = [topic.strip() for topic in topics if topic.strip()] # Clean whitespace
-
-        if topics:
-            logging.info(f"   LLM identified {len(topics)} topics: {topics}")
-            return topics
-        else:
-            logging.warning("   LLM did not return topics in the expected numbered list format.")
-            return [] # Return empty list if parsing fails
-    except Exception as e:
-        logging.error(f"   Error during LLM topic identification: {e}")
-        return []
-
-# --- Function for Map-Reduce ---
-def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat_history: list) -> tuple[str, list[str]]:
-    """Handles broad queries (e.g., study guides) using Map-Reduce."""
-    logging.info("   Intent: Map-Reduce Query (Study Guide / Broad Summary)")
-    topics = []
-    sources_used = set() # Track all sources used across map steps
-    try:
-        # --- 1. Retrieve Syllabus Text ---
-        logging.info("   Retrieving syllabus text for topic identification...")
-        if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-            raise RuntimeError("Vector store is not available for syllabus retrieval.")
-
-        # Retrieve chunks likely containing syllabus/topic info
-        syllabus_docs = embedding.vector_store.similarity_search(
-            query="course structure syllabus overview topics schedule modules objectives",
-            k=15, # Fetch a decent number of potential syllabus chunks
-            filter={"class_name": class_name, "content_type": "syllabus"}
-        )
-
-        if not syllabus_docs:
-            logging.warning("   No syllabus documents found in database. Cannot reliably identify topics for Map-Reduce.")
-            # --- Fallback Logic: Simple Broad Summary (if no syllabus) ---
-            logging.warning("   Falling back to simple broad retrieval and summary.")
-            initial_docs = embedding.vector_store.similarity_search(
-                query=question, # Use original question for broad retrieval
-                k=INITIAL_RETRIEVAL_K * 2, # Retrieve more documents
-                filter={"class_name": class_name}
-            )
-            # Re-rank even for fallback to get somewhat relevant context
-            reranked_fallback_docs = _rerank_documents(question, initial_docs)
-            final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2] # Use more context than usual
-
-            if not final_context_docs: return "I couldn't find any relevant information to summarize.", []
-
-            # Build context and prompt for simple summary
-            context_text = "\n\n---\n\n".join([doc.page_content for doc in final_context_docs])
-            fallback_prompt = f"""
-                You are role-playing as {persona.get('professor_name', 'the professor')} for the class: {class_name}. {persona.get('style_prompt', '')}
-                A student asked for a broad summary or study guide: "{question}"
-                Based *only* on the extensive course materials provided below, generate a comprehensive summary covering the main points mentioned. Structure it clearly. If possible, organize by potential themes found in the text.
-
-                --- COURSE MATERIALS ---
-                {context_text}
-                ---
-
-                YOUR COMPREHENSIVE SUMMARY (as {persona.get('professor_name', 'Professor')}):
-                """
-            # Generate the fallback summary
-            chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
-            final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
-            # Collect sources for fallback
-            for doc in final_context_docs:
-                source_file = doc.metadata.get('source_file', 'N/A')
-                page_num = doc.metadata.get('page_number')
-                source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                sources_used.add(source_info)
-            return final_summary.strip(), sorted(list(sources_used))
-            # --- End Fallback Logic ---
-
-        # Combine syllabus text and collect syllabus source(s)
-        full_syllabus_text = "\n\n".join([doc.page_content for doc in syllabus_docs])
-        for doc in syllabus_docs:
-            sources_used.add(f"{doc.metadata.get('source_file', 'N/A')}") # Add syllabus file as source
-
-        # --- 2. Identify Topics using LLM ---
-        topics = _identify_topics_with_llm(full_syllabus_text, class_name)
-
-        if not topics:
-            logging.warning("   LLM topic identification failed or returned no topics. Cannot proceed with Map-Reduce.")
-            # Return error message, indicating topics couldn't be found
-            return "I couldn't identify the main topics from the syllabus to create a structured study guide. You could try asking for a summary of specific lectures or concepts.", sorted(list(sources_used))
-
-    except Exception as e:
-        logging.error(f"   Error retrieving syllabus or identifying topics: {e}")
-        return f"Sorry, I encountered an error trying to structure the study guide: {e}", []
-
-    # --- 3. Map Step: Summarize each identified topic ---
-    topic_summaries = []
-    # Define LangChain chain for summarizing individual topics
-    map_chain = ChatPromptTemplate.from_template(
-        "Summarize the key points, concepts, definitions, and important examples related to the specific topic '{topic}' based *only* on the following context retrieved from {class_name} course materials. Be concise yet thorough for this topic.\n\nContext:\n{context}\n\nKey Points Summary for {topic}:"
-        ) | llm | StrOutputParser()
-
-    logging.info(f"   Starting Map step for {len(topics)} identified topics...")
-    for i, topic_name in enumerate(topics):
-        logging.info(f"      Mapping topic {i+1}/{len(topics)}: '{topic_name}'")
-        try:
-            # Retrieve chunks specifically relevant to this topic name
-            topic_docs = embedding.vector_store.similarity_search(
-                query=f"Detailed explanation, examples, formulas, and key concepts related to {topic_name} in {class_name}", # More specific query
-                k=MAP_REDUCE_RETRIEVAL_K,
-                filter={"class_name": class_name} # Search all relevant content types
-            )
-            # Re-rank the retrieved docs for the topic summary for better focus
-            reranked_topic_docs = _rerank_documents(topic_name, topic_docs)
-
-            if not reranked_topic_docs:
-                logging.warning(f"      No relevant documents found for topic: '{topic_name}' after re-ranking. Skipping summary.")
-                continue # Skip if no relevant docs found for this topic
-
-            # Use a subset of re-ranked docs for context to manage token limits
-            topic_context = "\n\n---\n\n".join([doc.page_content for doc in reranked_topic_docs[:max(5, MAP_REDUCE_RETRIEVAL_K // 2)]]) # Use top half or 5
-
-            # Generate summary for the topic
-            summary = map_chain.invoke({"topic": topic_name, "context": topic_context, "class_name": class_name})
-            topic_summaries.append(f"## {topic_name}\n\n{summary.strip()}") # Add topic name as heading
-            logging.info(f"      Generated summary for topic {i+1}.")
-
-            # Collect sources used in this specific map step
-            for doc in reranked_topic_docs[:max(5, MAP_REDUCE_RETRIEVAL_K // 2)]: # Only list sources actually used
-                source_file = doc.metadata.get('source_file', 'N/A')
-                page_num = doc.metadata.get('page_number')
-                source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                sources_used.add(source_info)
-
-        except Exception as e:
-            logging.error(f"      Error summarizing topic '{topic_name}': {e}")
-            topic_summaries.append(f"## {topic_name}\n\n[An error occurred while summarizing this topic.]")
-
-    # --- 4. Reduce Step: Combine topic summaries ---
-    if not topic_summaries:
-        logging.warning("   Map step produced no valid summaries.")
-        # Return message indicating failure but list syllabus source if found
-        return "I couldn't generate a study guide as no relevant topic summaries could be created from the materials.", sorted(list(sources_used))
-
-    logging.info("   Starting Reduce step to combine topic summaries...")
-    combined_summaries = "\n\n".join(topic_summaries) # Join summaries with double newline
-
-    # Define prompt for the final combination step
-    reduce_prompt = f"""
-You are role-playing as {persona.get('professor_name', 'the professor')} for the class: {class_name}. {persona.get('style_prompt', '')}
-A student asked for a study guide or summary covering the main topics ("{question}").
-
-Combine the following individual topic summaries into a single, coherent, well-structured study guide for the {class_name} course.
-Base the guide *only* on the provided summaries. Ensure a logical flow using the headings provided for each topic.
-Add a brief introductory sentence setting the context of the course and a brief concluding sentence.
-
---- INDIVIDUAL TOPIC SUMMARIES ---
-{combined_summaries}
----
-
-YOUR FINAL STUDY GUIDE (as {persona.get('professor_name', 'Professor')}):
-"""
-    try:
-        # Generate the final study guide
-        reduce_chain = ChatPromptTemplate.from_template("{reduce_prompt_text}") | llm | StrOutputParser()
-        final_answer = reduce_chain.invoke({"reduce_prompt_text": reduce_prompt})
-        logging.info("   Reduce step complete.")
-        # Return the final guide and all unique sources used across map steps
-        return final_answer.strip(), sorted(list(sources_used))
-    except Exception as e:
-        logging.error(f"   Error during Reduce step: {e}")
-        # Return error message but include sources identified
-        return f"Sorry, I could generate summaries for individual topics but failed to combine them into a final guide: {e}", sorted(list(sources_used))
 
 
 # --- Main RAG Function (Orchestrator) ---
 def get_rag_response(question: str, class_name: str, persona: dict, chat_history: list | None = None) -> tuple[str, list[str]]:
     """
-    Handles query, condenses based on history, detects intent, retrieves context
-    (using Map-Reduce for broad queries), re-ranks (for specific queries),
-    generates response. Returns answer string and list of unique source identifiers.
+    Handles query: condenses based on history, retrieves context via vector search,
+    re-ranks, and generates a response. Returns answer string and list of unique source identifiers.
     """
     # --- Initial Checks ---
     if not llm:
@@ -399,81 +202,67 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
     logging.info(f"RAG Core: Received query for class '{class_name}': '{question}'")
     logging.info(f"   Chat history length: {len(chat_history)}")
 
-    # --- 1. Condense Query using Chat History (NEW STEP) ---
+    # --- 1. Condense Query using Chat History ---
     condensed_question = _condense_query_with_history(question, chat_history)
+    # --- Standard RAG Flow (default for all queries) ---
+    final_context_docs: list[Document] = []
+    sources_list: list[str] = []
+    try:
+        # a. Initial Retrieval (using CONDENSED question)
+        initial_docs = embedding.vector_store.similarity_search(
+            query=condensed_question, # Use condensed query for better semantic match
+            k=INITIAL_RETRIEVAL_K,
+            filter={"class_name": class_name} # CRUCIAL filter
+        )
+        logging.info(f"   Initial retrieval returned {len(initial_docs)} chunks.")
+        if not initial_docs:
+            # Provide a helpful message if nothing is found initially
+            return "I couldn't find any documents related to your question in the course materials.", []
 
-    # --- 2. Intent Detection ---
-    # Determine if the user is asking for a broad summary/study guide
-    map_reduce_keywords = ["summary", "overview", "study guide", "all topics", "whole course", "everything so far", "comprehensive review", "main points"]
-    # Use original question for keyword check as condensing might lose keywords
-    is_map_reduce_request = any(keyword in question.lower() for keyword in map_reduce_keywords)
+        # b. Re-ranking Step (using CONDENSED question)
+        reranked_docs = _rerank_documents(condensed_question, initial_docs) # Calls Cohere implementation
 
-    # --- 3. Handle based on Intent ---
-    if is_map_reduce_request:
-        # --- Route to Map-Reduce Flow ---
-        # Pass condensed question for relevance, but original question might be useful in prompts
-        return _handle_map_reduce_query(condensed_question, class_name, persona, chat_history)
-    else:
-        # --- Standard RAG Flow for Specific Questions ---
-        logging.info("   Intent: Specific Question")
-        final_context_docs: list[Document] = []
-        sources_list = []
-        try:
-            # a. Initial Retrieval (using CONDENSED question)
-            initial_docs = embedding.vector_store.similarity_search(
-                query=condensed_question, # Use condensed query for better semantic match
-                k=INITIAL_RETRIEVAL_K,
-                filter={"class_name": class_name} # CRUCIAL filter
-            )
-            logging.info(f"   Initial retrieval returned {len(initial_docs)} chunks.")
-            if not initial_docs:
-                # Provide a helpful message if nothing is found initially
-                return "I couldn't find any documents related to your question in the course materials.", []
+        # c. Select Final Context based on re-ranking
+        final_context_docs = reranked_docs[:FINAL_CONTEXT_K] # Take top N after re-ranking
 
-            # b. Re-ranking Step (using CONDENSED question)
-            reranked_docs = _rerank_documents(condensed_question, initial_docs) # Calls Cohere implementation
+        if final_context_docs:
+            logging.info(f"   Selected {len(final_context_docs)} chunks for final context after re-ranking.")
+            # Prepare unique sources list for this specific answer
+            sources_set = set()
+            for doc in final_context_docs:
+                source_file = doc.metadata.get('source_file', 'N/A')
+                page_num = doc.metadata.get('page_number')
+                source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
+                sources_set.add(source_info)
+            sources_list = sorted(list(sources_set))
+        else:
+            # If re-ranking removed all documents
+            logging.warning("   No relevant documents remained after re-ranking.")
+            return "I found some initial potential matches, but none seemed highly relevant after closer review. Could you please rephrase or ask about a different aspect?", []
 
-            # c. Select Final Context based on re-ranking
-            final_context_docs = reranked_docs[:FINAL_CONTEXT_K] # Take top N after re-ranking
+    except Exception as e:
+        logging.error(f"   Error during Supabase retrieval/re-ranking: {e}")
+        # Provide a user-friendly error message
+        return f"Sorry, I encountered an error trying to find information for your question. Please try again later.", []
 
-            if final_context_docs:
-                logging.info(f"   Selected {len(final_context_docs)} chunks for final context after re-ranking.")
-                # Prepare unique sources list for this specific answer
-                sources_set = set()
-                for doc in final_context_docs:
-                    source_file = doc.metadata.get('source_file', 'N/A')
-                    page_num = doc.metadata.get('page_number')
-                    source_info = f"{source_file}" + (f", Page {page_num}" if page_num else "")
-                    sources_set.add(source_info)
-                sources_list = sorted(list(sources_set))
-            else:
-                # If re-ranking removed all documents
-                logging.warning("   No relevant documents remained after re-ranking.")
-                return "I found some initial potential matches, but none seemed highly relevant to your specific question after closer review. Could you please rephrase or ask about a different aspect?", []
+    # --- Build the Final Prompt (Includes history and final context) ---
+    # Pass the ORIGINAL question for the final prompt context, but condensed was used for retrieval
+    final_prompt = _build_rag_prompt(question, final_context_docs, persona, class_name, chat_history)
 
-        except Exception as e:
-            logging.error(f"   Error during Supabase retrieval/re-ranking: {e}")
-            # Provide a user-friendly error message
-            return f"Sorry, I encountered an error trying to find information for your question. Please try again later.", []
-
-        # --- 4. Build the Final Prompt (Includes history and final context) ---
-        # Pass the ORIGINAL question for the final prompt context, but condensed was used for retrieval
-        final_prompt = _build_rag_prompt(question, final_context_docs, persona, class_name, chat_history)
-
-        # --- 5. Generate Standard Response ---
-        try:
-            logging.info("   Generating final answer with LLM...")
-            # Simple chain definition for generation
-            chain = ChatPromptTemplate.from_template("{rag_prompt_text}") | llm | StrOutputParser()
-            # Invoke the chain with the constructed prompt
-            final_answer = chain.invoke({"rag_prompt_text": final_prompt})
-            logging.info("   LLM generation complete.")
-            # Return the generated answer and the list of sources used
-            return final_answer.strip(), sources_list
-        except Exception as e:
-            logging.error(f"   Error during LLM generation: {e}")
-            # Provide error message but still return sources if available
-            return f"Sorry, I encountered an error while generating the response: {e}", sources_list
+    # --- Generate Standard Response ---
+    try:
+        logging.info("   Generating final answer with LLM...")
+        # Simple chain definition for generation
+        chain = ChatPromptTemplate.from_template("{rag_prompt_text}") | llm | StrOutputParser()
+        # Invoke the chain with the constructed prompt
+        final_answer = chain.invoke({"rag_prompt_text": final_prompt})
+        logging.info("   LLM generation complete.")
+        # Return the generated answer and the list of sources used
+        return final_answer.strip(), sources_list
+    except Exception as e:
+        logging.error(f"   Error during LLM generation: {e}")
+        # Provide error message but still return sources if available
+        return f"Sorry, I encountered an error while generating the response: {e}", sources_list
 
 
 # --- NEW: Query Condensing Function ---
@@ -518,7 +307,7 @@ if __name__ == "__main__":
     # !!! --- IMPORTANT: Make sure Supabase has data for this class --- !!!
     TEST_CLASS = "Statistics" # <<< CHANGE TO A CLASS WITH DATA IN SUPABASE & persona.json
     TEST_QUESTION = "What did the professor say about the law of large numbers in the Oct 17 lecture?" # Specific
-    # TEST_QUESTION = "Create a study guide covering everything so far" # Broad (Map-Reduce)
+    # TEST_QUESTION = "Create a study guide covering everything so far"
     # TEST_QUESTION = "Tell me more about that." # Follow-up (needs dummy history below)
 
     # --- Dummy History for testing follow-up ---
