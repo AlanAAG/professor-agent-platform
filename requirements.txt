@@ -4,6 +4,7 @@ aiosignal==1.4.0
 altair==5.5.0
 annotated-types==0.7.0
 anyio==4.11.0
+asyncio==4.0.0
 attrs==25.4.0
 beautifulsoup4==4.14.2
 blinker==1.9.0
@@ -27,11 +28,13 @@ frozenlist==1.8.0
 fsspec==2025.9.0
 gitdb==4.0.12
 GitPython==3.1.45
+google-ai-generativelanguage==0.9.0
 google-api-core==2.26.0
 google-api-python-client==2.185.0
 google-auth==2.41.1
 google-auth-httplib2==0.2.0
 google-cloud-speech==2.33.0
+google-genai==1.45.0
 googleapis-common-protos==1.70.0
 greenlet==3.2.4
 grpcio==1.75.1
@@ -67,6 +70,7 @@ langgraph-prebuilt==1.0.1
 langgraph-sdk==0.2.9
 langsmith==0.4.37
 lxml==6.0.2
+lxml_html_clean==0.4.3
 MarkupSafe==3.0.3
 marshmallow==3.26.1
 moviepy==2.2.1
