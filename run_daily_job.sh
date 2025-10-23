@@ -6,10 +6,13 @@ set -e
 echo "🚀 Starting Daily Pipeline..."
 echo "================================"
 
-# Load environment variables from .env file
+# Load environment variables from .env file (robustly handles spaces/quotes)
 if [ -f .env ]; then
     echo "✅ Loading environment variables from .env"
-    export $(cat .env | grep -v '^#' | xargs)
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
 else
     echo "❌ Error: .env file not found!"
     exit 1
@@ -33,6 +36,10 @@ export PIPELINE_MODE
 echo "📊 Pipeline mode: $PIPELINE_MODE"
 echo "================================"
 echo ""
+
+# Ensure Playwright browsers are installed (idempotent)
+echo "🧭 Ensuring Playwright browsers are installed..."
+python -m playwright install --with-deps chromium >/dev/null 2>&1 || true
 
 # Run the pipeline
 python -m src.run_hybrid_pipeline

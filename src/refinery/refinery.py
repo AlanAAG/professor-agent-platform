@@ -1,6 +1,7 @@
 # src/refinery/refinery.py
 
 import os
+import shutil
 from dotenv import load_dotenv
 import logging
 
@@ -36,7 +37,8 @@ def move_file(source_path: str, destination_dir: str):
     try:
         filename = os.path.basename(source_path)
         destination_path = os.path.join(destination_dir, filename)
-        os.rename(source_path, destination_path)
+        os.makedirs(destination_dir, exist_ok=True)
+        shutil.move(source_path, destination_path)
         logging.info(f"Moved {filename} to {destination_dir}")
     except OSError as move_err:
         logging.error(f"Error moving {os.path.basename(source_path)} to {destination_dir}: {move_err}")
