@@ -195,9 +195,16 @@ async def navigate_to_resources_section(page: Page) -> bool:
         logging.info("Resources tab found and enabled. Attempting click...")
         await resources_tab.click(timeout=10000)
 
-        # Wait for the section headers (e.g., "Session Recordings") to appear to confirm content loaded
+        # Wait for ANY of the potential section headers to appear to confirm content loaded
         logging.info("Waiting for resource section headers to appear...")
-        await page.wait_for_selector(config.RECORDINGS_LINK_SELECTOR, state="visible", timeout=20000)
+        any_section_header_selector = (
+            f"{config.PRE_READ_SECTION_SELECTOR},"
+            f"{config.IN_CLASS_SECTION_SELECTOR},"
+            f"{config.POST_CLASS_SECTION_SELECTOR},"
+            f"{config.RECORDINGS_LINK_SELECTOR}"
+        )
+        # Wait for the first visible element matching any of these selectors
+        await page.locator(any_section_header_selector).first.wait_for(state="visible", timeout=20000)
         logging.info("Successfully navigated to Resources section and section headers are visible.")
         return True
     except Exception as e:
