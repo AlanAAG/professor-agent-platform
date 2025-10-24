@@ -247,10 +247,14 @@ async def main_pipeline(mode="daily"):
                             try:
                                 section_header = page.locator(header_selector).first
                                 await section_header.wait_for(state="visible", timeout=7000)
-
-                                # If sections are accordions, they may need clicking to expand
-                                # await section_header.click(timeout=3000)
-                                # await page.wait_for_timeout(1000)
+                                
+                                # --- THIS IS THE FIX ---
+                                # Click the section header to expand the accordion
+                                logging.info(f"   Found section header: {section_tag}. Clicking to expand...")
+                                await section_header.click(timeout=5000)
+                                # Wait for the accordion animation to finish
+                                await page.wait_for_timeout(1500) 
+                                # --- END FIX ---
 
                                 # The header `div.sc-kRJjUj` sits inside `div.sc-hsNTtK`; items live in the next sibling container
                                 section_container = section_header.locator("xpath=./parent::div/following-sibling::div[1]")
