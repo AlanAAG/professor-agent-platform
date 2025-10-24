@@ -60,6 +60,14 @@ DRIVE_SETTINGS_BUTTON = 'button[jsname="J7HKb"]'
 DRIVE_TRANSCRIPT_MENU_ITEM = 'div[role^="menuitem"]:has-text("Transcript")'
 # Zoom Web Viewer
 ZOOM_TRANSCRIPT_CONTAINER_SELECTOR = "div.transcript-container"
+# More precise Zoom transcript selectors based on current DOM
+ZOOM_TRANSCRIPT_LIST_SELECTOR = "ul.transcript-list"
+ZOOM_TRANSCRIPT_ITEM_SELECTOR = "ul.transcript-list li.transcript-list-item"
+ZOOM_TRANSCRIPT_SPEAKER_SELECTOR = ".user-name-span"
+ZOOM_TRANSCRIPT_TIME_SELECTOR = ".user-info-right .time"
+ZOOM_TRANSCRIPT_TEXT_SELECTOR = ".timeline .text"
+ZOOM_TRANSCRIPT_SCROLL_WRAPPER_SELECTOR = "div.transcript-container .zm-scrollbar__wrap"
+ZOOM_TRANSCRIPT_RESUME_AUTOSCROLL_BUTTON = "button.resume-button"
 
 # --- Course Mappings ---
 # 1) Existing map from this project (renamed to LEGACY for merge step)
