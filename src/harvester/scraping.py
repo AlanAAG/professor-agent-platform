@@ -64,16 +64,116 @@ async def _scrape_drive_transcript(page: Page) -> str:
     return raw_transcription
 
 async def _scrape_zoom_transcript(page: Page) -> str:
-    # ... (Keep existing implementation) ...
+    """
+    Robustly scrapes Zoom transcript HTML and returns a normalized text string
+    with lines formatted as: "[MM:SS] Speaker: text" (when available).
+
+    Handles lazy loading by scrolling the transcript container to the top and
+    triggering the "Resume autoscrolling" state if present.
+    """
     logging.info("   Attempting Zoom transcript scrape...")
-    transcript_container_selector = config.ZOOM_TRANSCRIPT_CONTAINER_SELECTOR
     raw_transcription = ""
     try:
-        container = page.locator(transcript_container_selector).first
+        # Ensure the transcript container exists
+        container = page.locator(config.ZOOM_TRANSCRIPT_CONTAINER_SELECTOR).first
         await container.wait_for(state="visible", timeout=30000)
-        raw_transcription = await container.text_content(timeout=5000)
-        if raw_transcription: logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
-        else: logging.warning("   Zoom transcript container found but was empty.")
+
+        # If Zoom shows a "Resume autoscrolling" button, click it to load items
+        try:
+            resume_btn = page.locator(config.ZOOM_TRANSCRIPT_RESUME_AUTOSCROLL_BUTTON).first
+            if await resume_btn.count() > 0 and await resume_btn.is_visible():
+                logging.info("      Clicking 'Resume autoscrolling' to load full transcript...")
+                await resume_btn.click()
+                await page.wait_for_timeout(800)
+        except Exception:
+            pass
+
+        # Scroll transcript viewport to top to ensure items load
+        try:
+            scroll_wrap = page.locator(config.ZOOM_TRANSCRIPT_SCROLL_WRAPPER_SELECTOR).first
+            if await scroll_wrap.count() > 0:
+                await scroll_wrap.evaluate("el => el.scrollTop = 0")
+                await page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        # Wait for the transcript list items to be present
+        await page.locator(config.ZOOM_TRANSCRIPT_ITEM_SELECTOR).first.wait_for(
+            state="visible", timeout=30000
+        )
+
+        # Try to load all items by scrolling to bottom until count stabilizes
+        items = page.locator(config.ZOOM_TRANSCRIPT_ITEM_SELECTOR)
+        last_count = -1
+        stable_rounds = 0
+        for _ in range(20):  # safety cap
+            count = await items.count()
+            if count == last_count:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            if stable_rounds >= 2:
+                break
+            last_count = count
+            # scroll to bottom to force lazy load
+            try:
+                scroll_wrap = page.locator(config.ZOOM_TRANSCRIPT_SCROLL_WRAPPER_SELECTOR).first
+                if await scroll_wrap.count() > 0:
+                    await scroll_wrap.evaluate("el => el.scrollTop = el.scrollHeight")
+                    await page.wait_for_timeout(400)
+                else:
+                    # fallback: scroll the container element
+                    await container.evaluate("el => el.scrollTop = el.scrollHeight")
+                    await page.wait_for_timeout(400)
+            except Exception:
+                await page.mouse.wheel(0, 2000)
+                await page.wait_for_timeout(400)
+
+        count = await items.count()
+        logging.info(f"      Collected approximately {count} Zoom transcript list items after scrolling.")
+        
+        # Extract each item atomically to avoid large textContent concatenation issues
+        segments: list[str] = []
+        for i in range(count):
+            item = items.nth(i)
+            # Speaker name
+            speaker = await item.locator(config.ZOOM_TRANSCRIPT_SPEAKER_SELECTOR).first.text_content() or ""
+            speaker = speaker.strip()
+
+            # Timestamp (if present)
+            try:
+                ts = await item.locator(config.ZOOM_TRANSCRIPT_TIME_SELECTOR).first.text_content()
+            except Exception:
+                ts = ""
+            ts = (ts or "").strip()
+
+            # Text content (main utterance)
+            try:
+                text = await item.locator(config.ZOOM_TRANSCRIPT_TEXT_SELECTOR).first.text_content()
+            except Exception:
+                text = ""
+            text = (text or "").strip()
+
+            if not text:
+                continue
+
+            # Build normalized line
+            if ts and speaker:
+                segments.append(f"[{ts}] {speaker}: {text}")
+            elif ts:
+                segments.append(f"[{ts}] {text}")
+            elif speaker:
+                segments.append(f"{speaker}: {text}")
+            else:
+                segments.append(text)
+
+        raw_transcription = "\n".join(segments).strip()
+
+        if raw_transcription:
+            logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars, {len(segments)} segments).")
+        else:
+            logging.warning("   Zoom transcript items found but produced empty text.")
+
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
     return raw_transcription
