@@ -68,28 +68,54 @@ async def _scrape_zoom_transcript(page: Page) -> str:
     logging.info("   Attempting Zoom transcript scrape...")
     raw_transcription = ""
     try:
-        # Wait for the *list* of transcript items to be attached to the DOM
-        list_selector = "ul.transcript-list"
+        # 1. Try to find and click any cookie acceptance button
+        cookie_button_selector = (
+            'button:has-text("Accept"), '
+            'button:has-text("Agree"), '
+            'button:has-text("Got it"), '
+            'button:has-text("Cookies Settings")'
+        )
+        try:
+            cookie_button = page.locator(cookie_button_selector).first
+            await cookie_button.wait_for(state="visible", timeout=5000)
+            logging.info("      Cookie banner found. Clicking...")
+            await cookie_button.click()
+            await page.wait_for_timeout(1000)  # Wait for banner to disappear
+        except Exception:
+            logging.info("      No common cookie banner found, proceeding...")
+
+        # 2. Try to click the video player to initialize it
+        player_selector = "div.playback-video"  # A plausible selector for the player area
+        try:
+            player = page.locator(player_selector).first
+            await player.wait_for(state="visible", timeout=10000)
+            logging.info("      Clicking video player to initialize...")
+            await player.click(timeout=5000)
+            await page.wait_for_timeout(2000)  # Wait for JS to load
+        except Exception:
+            logging.info("      Video player not found or clickable, proceeding...")
+
+        # 3. Wait for the transcript list
+        list_selector = "ul.transcript-list"  # This selector is correct per your HTML
         await page.wait_for_selector(list_selector, state="attached", timeout=30000)
         logging.info("      Transcript list container found.")
 
-        # Target the specific text elements within the timeline
-        text_selector = "div.timeline div.text"
-        # Wait for the first text element to be visible
-        await page.locator(text_selector).first.wait_for(state="visible", timeout=10000) 
+        # 4. Wait for and extract the text
+        text_selector = "div.timeline div.text"  # This selector is also correct
+        await page.locator(text_selector).first.wait_for(state="visible", timeout=10000)
 
         all_segments = await page.locator(text_selector).all_text_contents()
         raw_transcription = " ".join(filter(None, all_segments))
 
-        if raw_transcription: 
+        if raw_transcription:
             logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
-        else: 
+        else:
             logging.warning("   Zoom transcript items found but were empty.")
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
-        try: 
+        try:
             await page.screenshot(path=f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
-        except Exception as screen_err: 
+        except Exception as screen_err:
             logging.error(f"      Failed to save error screenshot: {screen_err}")
     return raw_transcription
 
