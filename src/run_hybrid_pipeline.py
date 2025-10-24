@@ -332,7 +332,7 @@ async def main_pipeline(mode="daily"):
 
 
                 except Exception as course_err:
-                    logging.error(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                    logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
                     # Ensure we navigate back to a known state if possible
                     try: await page.goto(config.COURSES_URL)
                     except Exception: logging.error("Failed to navigate back to courses page after error.")
