@@ -156,7 +156,7 @@ for subj in _PARTNER_SUBJECTS:
 #    CRITICAL: 'name' MUST remain the short alias used throughout the app
 #    (and as keys in persona.json) so Supabase filtering matches correctly.
 COURSE_MAP: dict[str, dict] = {}
-all_codes = all_codes = {"AIML101"} #set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys())
+all_codes = {"AIML101"} #all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys()) 
 for code in sorted(all_codes):
     partner_entry = _partner_map.get(code)
     legacy_entry = LEGACY_COURSE_MAP.get(code)
