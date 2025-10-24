@@ -3,8 +3,8 @@
 import streamlit as st
 import json
 import os
-# Use absolute import relative to src if running as module, or adjust as needed
-from . import rag_core
+# Use absolute import so running as a module works consistently
+from src.app import rag_core
 
 # Ensure page config is the first Streamlit call
 st.set_page_config(layout="wide")
