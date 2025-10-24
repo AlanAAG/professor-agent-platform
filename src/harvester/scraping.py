@@ -107,10 +107,18 @@ async def check_url_content_type(url: str) -> str:
     if not url or not url.startswith(('http://', 'https://')):
         logging.warning(f"Invalid or internal URL passed to check_url_content_type: {url}")
         return "unknown"
+    # Use a browser-like User-Agent to avoid 403s from some sites
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
+    }
     try:
         async with aiohttp.ClientSession() as session:
             # Use HEAD request to avoid downloading the whole file
-            async with session.head(url, timeout=15, allow_redirects=True) as response:
+            async with session.head(url, timeout=15, allow_redirects=True, headers=headers) as response:
                 response.raise_for_status() # Raise error for bad status (4xx, 5xx)
                 content_type = response.headers.get('Content-Type', '').lower()
                 logging.debug(f"   URL: {url}, Content-Type: {content_type}")
@@ -129,9 +137,17 @@ async def download_file(url: str, save_dir: str, filename: str) -> str | None:
     """Downloads a file (e.g., PDF) from a URL asynchronously."""
     filepath = os.path.join(save_dir, filename)
     logging.info(f"   Attempting to download file from {url} to {filepath}")
+    # Use a browser-like User-Agent to avoid 403s on downloads
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=60, allow_redirects=True) as response: # Longer timeout for downloads
+            async with session.get(url, timeout=60, allow_redirects=True, headers=headers) as response: # Longer timeout for downloads
                 response.raise_for_status()
                 # Ensure save directory exists
                 os.makedirs(save_dir, exist_ok=True)
@@ -157,9 +173,17 @@ async def download_file(url: str, save_dir: str, filename: str) -> str | None:
 async def scrape_html_content(url: str) -> str | None:
     """Fetches an HTML page and extracts the main article text."""
     logging.info(f"   Attempting to scrape HTML content from: {url}")
+    # Use a browser-like User-Agent to avoid 403s when fetching HTML
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/91.0.4472.124 Safari/537.36"
+        )
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30, allow_redirects=True) as response:
+            async with session.get(url, timeout=30, allow_redirects=True, headers=headers) as response:
                 response.raise_for_status()
                 html_content = await response.text()
 
