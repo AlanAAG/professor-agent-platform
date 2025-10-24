@@ -36,11 +36,12 @@ RESOURCES_TAB_SELECTOR = "div.sc-ckEbSK:has(img[src*='icons/resources.svg']):has
 # Optional: caret icon within the resources header (used as a fallback click target)
 RESOURCES_CARET_SELECTOR = "img[src*='caretDown']"
 
-# Resource Section Headers (ensure div.dlvLeftHeader:has-text(...) pattern)
-RECORDINGS_LINK_SELECTOR = "div.dlvLeftHeader:has-text('Session Recordings')"
-PRE_READ_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('Pre-Read Materials')"
-IN_CLASS_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('In Class Materials')"
-POST_CLASS_SECTION_SELECTOR = "div.dlvLeftHeader:has-text('Post Class Materials')"
+# Resource Section Headers (updated to match new HTML structure)
+# Each section header is the container `div.sc-kRJjUj` that has a `<p class="name">` with exact text
+PRE_READ_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Pre-Read Materials'))"
+IN_CLASS_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('In Class Materials'))"
+POST_CLASS_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Post Class Materials'))"
+RECORDINGS_LINK_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Session Recordings'))"
 
 # Resource items and sub-elements
 RECORDING_ITEM_SELECTOR = "div.fileBox"  # Container for each recording link/info
