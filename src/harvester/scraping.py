@@ -74,6 +74,36 @@ async def _scrape_zoom_transcript(page: Page) -> str:
     logging.info("   Attempting Zoom transcript scrape...")
     raw_transcription = ""
     try:
+        # Proactively click a stable on-page element to trigger lazy UI init
+        try:
+            logging.info("      Performing initial click to trigger Zoom UI load...")
+            clicked = False
+            for sel in getattr(config, "ZOOM_INITIAL_INTERACTION_SELECTORS", []) or []:
+                locator = page.locator(sel).first
+                if await locator.count() > 0:
+                    try:
+                        await locator.wait_for(state="visible", timeout=5000)
+                        await locator.click(timeout=3000)
+                        clicked = True
+                        logging.info(f"         Clicked '{sel}' to initialize page.")
+                        break
+                    except Exception:
+                        continue
+            if not clicked:
+                # Fallback: click the center of the page
+                try:
+                    vp = page.viewport_size
+                    if vp:
+                        await page.mouse.click(vp["width"] // 2, vp["height"] // 2)
+                        clicked = True
+                        logging.info("         Clicked page center as fallback.")
+                except Exception:
+                    pass
+            if clicked:
+                await page.wait_for_timeout(800)
+        except Exception:
+            pass
+
         # Ensure the transcript container exists
         container = page.locator(config.ZOOM_TRANSCRIPT_CONTAINER_SELECTOR).first
         await container.wait_for(state="visible", timeout=30000)
