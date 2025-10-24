@@ -64,18 +64,33 @@ async def _scrape_drive_transcript(page: Page) -> str:
     return raw_transcription
 
 async def _scrape_zoom_transcript(page: Page) -> str:
-    # ... (Keep existing implementation) ...
+    """Scrapes transcript text from a Zoom recording page."""
     logging.info("   Attempting Zoom transcript scrape...")
-    transcript_container_selector = config.ZOOM_TRANSCRIPT_CONTAINER_SELECTOR
     raw_transcription = ""
     try:
-        container = page.locator(transcript_container_selector).first
-        await container.wait_for(state="visible", timeout=30000)
-        raw_transcription = await container.text_content(timeout=5000)
-        if raw_transcription: logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
-        else: logging.warning("   Zoom transcript container found but was empty.")
+        # Wait for the *list* of transcript items to be attached to the DOM
+        list_selector = "ul.transcript-list"
+        await page.wait_for_selector(list_selector, state="attached", timeout=30000)
+        logging.info("      Transcript list container found.")
+
+        # Get all text from the individual timeline text elements
+        text_selector = "div.timeline div.text"
+        # Wait for the first text element to be visible
+        await page.locator(text_selector).first.wait_for(state="visible", timeout=10000)
+
+        all_segments = await page.locator(text_selector).all_text_contents()
+        raw_transcription = " ".join(filter(None, all_segments))
+
+        if raw_transcription:
+            logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
+        else:
+            logging.warning("   Zoom transcript items found but were empty.")
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
+        try:
+            await page.screenshot(path=f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
+        except Exception as screen_err:
+            logging.error(f"      Failed to save error screenshot: {screen_err}")
     return raw_transcription
 
 async def scrape_transcript_from_url(context: BrowserContext, url: str) -> str:
