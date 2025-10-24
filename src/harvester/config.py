@@ -69,6 +69,16 @@ ZOOM_TRANSCRIPT_TEXT_SELECTOR = ".timeline .text"
 ZOOM_TRANSCRIPT_SCROLL_WRAPPER_SELECTOR = "div.transcript-container .zm-scrollbar__wrap"
 ZOOM_TRANSCRIPT_RESUME_AUTOSCROLL_BUTTON = "button.resume-button"
 
+# Targets to try for initial page interaction to trigger lazy loading
+ZOOM_INITIAL_INTERACTION_SELECTORS = [
+    "video",
+    "div.player-container",
+    "div#player",
+    "div.playback-video",
+    "div#vjs_video_3",
+    "canvas",
+]
+
 # --- Course Mappings ---
 # 1) Existing map from this project (renamed to LEGACY for merge step)
 LEGACY_COURSE_MAP = {
