@@ -27,8 +27,8 @@ GROUP_HEADER_SELECTOR = "div.domainHeader:has(p.title:has-text('{group_name}'))"
 COURSE_LINK_SELECTOR = "a[href*='courseCode={course_code}']"
 
 # Course Details Page (Resources Tab Navigation)
-# Partner script targets a container then an h4 with 'Resources'. Keep a robust fallback to bare h4.
-RESOURCES_TAB_SELECTOR = "h4:text-is('Resources')"
+# In src/harvester/config.py, update RESOURCES_TAB_SELECTOR to:
+RESOURCES_TAB_SELECTOR = "div:has(img[src*='icons/resources.svg'] + h4:text-is('Resources'))"
 
 # Resource Section Headers (ensure div.dlvLeftHeader:has-text(...) pattern)
 RECORDINGS_LINK_SELECTOR = "div.dlvLeftHeader:has-text('Session Recordings')"
