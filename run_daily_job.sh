@@ -37,12 +37,26 @@ echo "📊 Pipeline mode: $PIPELINE_MODE"
 echo "================================"
 echo ""
 
+# Resolve Python interpreter
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON=python3
+else
+    PYTHON=python
+fi
+
+# Install dependencies (idempotent)
+echo "📦 Installing Python dependencies..."
+$PYTHON -m pip install -r requirements.txt >/dev/null 2>&1 || {
+  echo "❌ Pip install failed";
+  exit 1;
+}
+
 # Ensure Playwright browsers are installed (idempotent)
 echo "🧭 Ensuring Playwright browsers are installed..."
-python -m playwright install --with-deps chromium >/dev/null 2>&1 || true
+$PYTHON -m playwright install --with-deps chromium >/dev/null 2>&1 || true
 
 # Run the pipeline
-python -m src.run_hybrid_pipeline
+$PYTHON -m src.run_hybrid_pipeline
 
 # Check if successful
 if [ $? -eq 0 ]; then
