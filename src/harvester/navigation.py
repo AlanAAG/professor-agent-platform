@@ -179,12 +179,21 @@ async def navigate_to_resources_section(page: Page) -> bool:
     """Clicks the Resources tab/button on a course details page."""
     logging.info("Navigating to Resources section...")
     try:
+        # Locate resources header container
         resources_tab = page.locator(config.RESOURCES_TAB_SELECTOR).first
-        await resources_tab.wait_for(state="visible", timeout=15000)
-        await resources_tab.click(timeout=10000)
+        # Wait for it to be in the DOM (attached), then visible
+        await resources_tab.wait_for(state="attached", timeout=20000)
+        await resources_tab.scroll_into_view_if_needed()
+        await page.wait_for_timeout(250)
+        # Click the header or its caret icon as a fallback
+        try:
+            await resources_tab.click(timeout=10000)
+        except Exception:
+            caret = resources_tab.locator(config.RESOURCES_CARET_SELECTOR).first
+            await caret.click(timeout=8000)
         # Wait for some element *within* the resources section to appear
         # Using RECORDING_ITEM_SELECTOR as a proxy, assuming recordings are common. Adjust if needed.
-        await page.wait_for_selector(config.RESOURCE_ITEM_SELECTOR, state="attached", timeout=15000) # Wait for items to be in DOM
+        await page.wait_for_selector(config.RESOURCE_ITEM_SELECTOR, state="attached", timeout=20000) # Wait for items to be in DOM
         logging.info("Successfully navigated to Resources section.")
         return True
     except Exception as e:
