@@ -176,29 +176,36 @@ async def find_and_click_course_link(page: Page, course_code: str, group_name: s
 # --- Resource Navigation (within a course page) ---
 
 async def navigate_to_resources_section(page: Page) -> bool:
-    """Clicks the Resources tab/button on a course details page."""
+    """Clicks the Resources tab/button on a course details page using robust waits."""
     logging.info("Navigating to Resources section...")
     try:
-        # Locate resources header container
+        # Wait for the page to be mostly loaded
+        await page.wait_for_load_state("networkidle", timeout=20000)
+
         resources_tab = page.locator(config.RESOURCES_TAB_SELECTOR).first
-        # Wait for it to be in the DOM (attached), then visible
-        await resources_tab.wait_for(state="attached", timeout=20000)
-        await resources_tab.scroll_into_view_if_needed()
-        await page.wait_for_timeout(250)
-        # Click the header or its caret icon as a fallback
-        try:
-            await resources_tab.click(timeout=10000)
-        except Exception:
-            caret = resources_tab.locator(config.RESOURCES_CARET_SELECTOR).first
-            await caret.click(timeout=8000)
-        # Wait for some element *within* the resources section to appear
-        # Using RECORDING_ITEM_SELECTOR as a proxy, assuming recordings are common. Adjust if needed.
-        await page.wait_for_selector(config.RESOURCE_ITEM_SELECTOR, state="attached", timeout=20000) # Wait for items to be in DOM
-        logging.info("Successfully navigated to Resources section.")
+
+        logging.info(f"Waiting for selector: '{config.RESOURCES_TAB_SELECTOR}'")
+        # Wait for the element to be visible
+        await resources_tab.wait_for(state="visible", timeout=25000)
+        # Wait for it to be enabled (ElementHandle state for 'enabled')
+        handle = await resources_tab.element_handle()
+        if handle is not None:
+            await handle.wait_for_element_state("enabled", timeout=5000)
+
+        logging.info("Resources tab found and enabled. Attempting click...")
+        await resources_tab.click(timeout=10000)
+
+        # Wait for an item within the resources section to confirm navigation
+        await page.wait_for_selector(config.RESOURCE_ITEM_SELECTOR, state="attached", timeout=20000)
+        logging.info("Successfully navigated to Resources section and items are attached.")
         return True
     except Exception as e:
         logging.error(f"Failed to navigate to Resources section: {e}", exc_info=True)
-        await page.screenshot(path="logs/error_screenshots/resources_nav_error.png")
+        # ... (screenshot logic) ...
+        try:
+            await page.screenshot(path="logs/error_screenshots/resources_nav_error.png")
+        except Exception:
+            pass
         return False
 
 async def get_all_resource_items(page: Page) -> list[Locator]:
