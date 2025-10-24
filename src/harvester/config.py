@@ -31,7 +31,7 @@ COURSE_LINK_SELECTOR = "a[href*='courseCode={course_code}']"
 # heading text and the resources icon anywhere within the same container.
 # Note: Some pages use relative paths like ../assets/icons/resources.svg, so we
 # match on the filename substring 'resources.svg' for resilience.
-RESOURCES_TAB_SELECTOR = "div:has(> img[src*='icons/resources.svg']):has(> h4:text-is('Resources'))"
+RESOURCES_TAB_SELECTOR = "div:has(div > img[src*='icons/resources.svg']):has(div > h4:text-is('Resources'))"
 # Optional: caret icon within the resources header (used as a fallback click target)
 RESOURCES_CARET_SELECTOR = "img[src*='caretDown']"
 
