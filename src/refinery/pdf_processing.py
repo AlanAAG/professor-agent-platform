@@ -23,7 +23,7 @@ try:
 
     # Use a multi-modal capable Gemini model
     image_model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         google_api_key=gemini_api_key,
     )
     logging.info("Gemini multi-modal model configured via LangChain for image descriptions.")
