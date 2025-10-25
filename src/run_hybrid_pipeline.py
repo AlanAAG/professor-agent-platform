@@ -234,140 +234,125 @@ async def main_pipeline(mode="daily"):
 
             # --- Navigation Phase: Collect all new/relevant resource links ---
             logging.info("\n--- Starting Navigation Phase ---")
-            # for course_code, course_details in config.COURSE_MAP.items(): # Use COURSE_MAP from config
-            #     class_name = course_details["name"]
-            #     group_name = course_details.get("group") # Group might be None
-            #
-            #     logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
-            #     try:
-            #         # Navigate to the specific course page
-            #         await navigation.find_and_click_course_link(page, course_code, group_name)
-            #         current_course_url = page.url # Store URL to potentially return later
-            #
-            #         # --- Scrape Resources Tab (NEW LOGIC) ---
-            #         if await navigation.navigate_to_resources_section(page):
-            #             # Define the sections you want to scrape using your new config selectors
-            #             # Section headers follow partner script pattern: div.dlvLeftHeader:has-text(...)
-            #             # Item containers remain div.fileBox under the nearest following sibling container
-            #             sections_to_scrape = [
-            #                 ("pre_read", config.PRE_READ_SECTION_SELECTOR),
-            #                 ("in_class", config.IN_CLASS_SECTION_SELECTOR),
-            #                 ("post_class", config.POST_CLASS_SECTION_SELECTOR),
-            #                 ("sessions", config.RECORDINGS_LINK_SELECTOR), # Re-use existing selector for sessions
-            #             ]
-            #
-            #             for section_tag, header_selector in sections_to_scrape:
-            #                 logging.info(f"--- Scraping Section: {section_tag} ---")
-            #                 try:
-            #                     section_header = page.locator(header_selector).first
-            #                     await section_header.wait_for(state="visible", timeout=7000)
-            #                     
-            #                     # --- THIS IS THE FIX ---
-            #                     # Click the section header to expand the accordion
-            #                     logging.info(f"   Found section header: {section_tag}. Clicking to expand...")
-            #                     await section_header.click(timeout=5000)
-            #                     # Wait for the accordion animation to finish
-            #                     await page.wait_for_timeout(1500) 
-            #                     # --- END FIX ---
-            #
-            #                     # The header `div.sc-kRJjUj` sits inside `div.sc-hsNTtK`; items live in the next sibling container
-            #                     section_container = section_header.locator("xpath=./parent::div/following-sibling::div[1]")
-            #                     item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
-            #                     count = await item_locators.count()
-            #
-            #                     logging.info(f"   Found {count} items in section '{section_tag}'.")
-            #
-            #                     for i in range(count):
-            #                         item = item_locators.nth(i)
-            #                         url, title, date_text = None, None, None
-            #                         try:
-            #                             link_locator = item.locator("a").first
-            #                             url = await link_locator.get_attribute("href", timeout=2000)
-            #                             if url and not url.startswith("http"):
-            #                                 url = config.BASE_URL + url.lstrip('/')
-            #
-            #                             title = await item.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
-            #                             date_text_element = item.locator(config.RESOURCE_DATE_SELECTOR).first
-            #                             date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
-            #
-            #                             if not url or not title:
-            #                                 logging.warning("      Skipping item (missing URL or Title)")
-            #                                 continue
-            #
-            #                             # Skip YouTube links
-            #                             if "youtube.com" in url or "youtu.be" in url:
-            #                                 logging.info(f"      Skipping YouTube video: {title}")
-            #                                 continue
-            #
-            #                             parsed_date = utils.parse_general_date(date_text) if date_text else None
-            #
-            #                             # Run date/dupe checks
-            #                             should_process = False
-            #                             if parsed_date:
-            #                                 if parsed_date >= cutoff_date:
-            #                                     should_process = True
-            #                                 else:
-            #                                     logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-            #                             else:
-            #                                 exists_recently = recent_check_cache.get(url)
-            #                                 if exists_recently is None:
-            #                                     exists_recently = await embedding.check_if_embedded_recently(filter={"source_url": url}, days=2)
-            #                                     recent_check_cache[url] = exists_recently
-            #                                 should_process = not exists_recently
-            #                                 if not should_process:
-            #                                     logging.info(f"      Skipping undated resource (found in recent DB): {url}")
-            #
-            #                             if should_process:
-            #                                 if DEDUP_BY_URL:
-            #                                     exists_in_db = db_url_exists_cache.get(url)
-            #                                     if exists_in_db is None:
-            #                                         exists_in_db = await embedding.url_exists_in_db(url)
-            #                                         db_url_exists_cache[url] = exists_in_db
-            #                                     if exists_in_db:
-            #                                         logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-            #                                         continue
-            #
-            #                                 if url in seen_urls:
-            #                                     logging.info(f"      Duplicate URL (this run), skipping: {url}")
-            #                                 else:
-            #                                     logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-            #                                     resources_to_process.append((url, title, parsed_date, class_name, section_tag))
-            #                                     seen_urls.add(url)
-            #
-            #                         except Exception as item_err:
-            #                             logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
-            #                             continue
-            #
-            #                 except Exception as section_err:
-            #                     logging.warning(f"   Skipping section '{section_tag}'. Could not find header or items. (Error: {section_err})")
-            #                     continue
-            #
-            #     # Static syllabus scraping and embedding removed; topics inferred from general materials
-            #
-            #
-            #     except Exception as course_err:
-            #         logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
-            #         # Ensure we navigate back to a known state if possible
-            #         try: await page.goto(config.COURSES_URL)
-            #         except Exception: logging.error("Failed to navigate back to courses page after error.")
-            #         continue # Skip to next course
-            #
-            # logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
+            for course_code, course_details in config.COURSE_MAP.items(): # Use COURSE_MAP from config
+                class_name = course_details["name"]
+                group_name = course_details.get("group") # Group might be None
 
-            # --- TEMPORARY TEST BLOCK FOR ONE ZOOM LINK ---
-            logging.info("\n--- SKIPPING NAVIGATION - RUNNING TARGETED ZOOM TEST ---")
+                logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
+                try:
+                    # Navigate to the specific course page
+                    await navigation.find_and_click_course_link(page, course_code, group_name)
+                    current_course_url = page.url # Store URL to potentially return later
 
-            # This is one of the URLs that failed in your log
-            test_url = "https://us06web.zoom.us/rec/share/rSRW_E-Cdk0hz9VmOEDW16_HVBzKfOw6Z6AGZwPQB8yh0UNWMQeSYQQBPLT7eyUW.EMUbqskKRju5waUL"
-            test_title = "How does a machine learn to speak our language?"
-            test_class = "AIML" # Must match your persona.json
-            test_section = "sessions"
+                    # --- Scrape Resources Tab (NEW LOGIC) ---
+                    if await navigation.navigate_to_resources_section(page):
+                        # Define the sections you want to scrape using your new config selectors
+                        # Section headers follow partner script pattern: div.dlvLeftHeader:has-text(...)
+                        # Item containers remain div.fileBox under the nearest following sibling container
+                        sections_to_scrape = [
+                            ("pre_read", config.PRE_READ_SECTION_SELECTOR),
+                            ("in_class", config.IN_CLASS_SECTION_SELECTOR),
+                            ("post_class", config.POST_CLASS_SECTION_SELECTOR),
+                            ("sessions", config.RECORDINGS_LINK_SELECTOR), # Re-use existing selector for sessions
+                        ]
 
-            # Add just this one item to the processing queue
-            resources_to_process.append((test_url, test_title, None, test_class, test_section))
+                        for section_tag, header_selector in sections_to_scrape:
+                            logging.info(f"--- Scraping Section: {section_tag} ---")
+                            try:
+                                section_header = page.locator(header_selector).first
+                                await section_header.wait_for(state="visible", timeout=7000)
+                                
+                                # --- THIS IS THE FIX ---
+                                # Click the section header to expand the accordion
+                                logging.info(f"   Found section header: {section_tag}. Clicking to expand...")
+                                await section_header.click(timeout=5000)
+                                # Wait for the accordion animation to finish
+                                await page.wait_for_timeout(1500) 
+                                # --- END FIX ---
 
-            logging.info(f"Added 1 test item to the queue: {test_title}")
-            # --- END TEMPORARY TEST BLOCK ---
+                                # The header `div.sc-kRJjUj` sits inside `div.sc-hsNTtK`; items live in the next sibling container
+                                section_container = section_header.locator("xpath=./parent::div/following-sibling::div[1]")
+                                item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
+                                count = await item_locators.count()
+
+                                logging.info(f"   Found {count} items in section '{section_tag}'.")
+
+                                for i in range(count):
+                                    item = item_locators.nth(i)
+                                    url, title, date_text = None, None, None
+                                    try:
+                                        link_locator = item.locator("a").first
+                                        url = await link_locator.get_attribute("href", timeout=2000)
+                                        if url and not url.startswith("http"):
+                                            url = config.BASE_URL + url.lstrip('/')
+
+                                        title = await item.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
+                                        date_text_element = item.locator(config.RESOURCE_DATE_SELECTOR).first
+                                        date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
+
+                                        if not url or not title:
+                                            logging.warning("      Skipping item (missing URL or Title)")
+                                            continue
+
+                                        # Skip YouTube links
+                                        if "youtube.com" in url or "youtu.be" in url:
+                                            logging.info(f"      Skipping YouTube video: {title}")
+                                            continue
+
+                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
+
+                                        # Run date/dupe checks
+                                        should_process = False
+                                        if parsed_date:
+                                            if parsed_date >= cutoff_date:
+                                                should_process = True
+                                            else:
+                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                        else:
+                                            exists_recently = recent_check_cache.get(url)
+                                            if exists_recently is None:
+                                                exists_recently = await embedding.check_if_embedded_recently(filter={"source_url": url}, days=2)
+                                                recent_check_cache[url] = exists_recently
+                                            should_process = not exists_recently
+                                            if not should_process:
+                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+
+                                        if should_process:
+                                            if DEDUP_BY_URL:
+                                                exists_in_db = db_url_exists_cache.get(url)
+                                                if exists_in_db is None:
+                                                    exists_in_db = await embedding.url_exists_in_db(url)
+                                                    db_url_exists_cache[url] = exists_in_db
+                                                if exists_in_db:
+                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                    continue
+
+                                            if url in seen_urls:
+                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                            else:
+                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                seen_urls.add(url)
+
+                                    except Exception as item_err:
+                                        logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                        continue
+
+                            except Exception as section_err:
+                                logging.warning(f"   Skipping section '{section_tag}'. Could not find header or items. (Error: {section_err})")
+                                continue
+
+                    # Static syllabus scraping and embedding removed; topics inferred from general materials
+
+
+                except Exception as course_err:
+                    logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                    # Ensure we navigate back to a known state if possible
+                    try: await page.goto(config.COURSES_URL)
+                    except Exception: logging.error("Failed to navigate back to courses page after error.")
+                    continue # Skip to next course
+
+            logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
 
             # --- Processing Phase: Handle collected resource links ---
             logging.info("\n--- Starting Processing Phase ---")
