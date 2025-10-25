@@ -1,12 +1,13 @@
 # src/harvester/navigation.py
 
 import logging
-import os # Added for AUTH_STATE_FILE path
+import os  # Added for AUTH_STATE_FILE path
+import re
 from playwright.async_api import Page, Locator, Playwright, Browser, BrowserContext
 from playwright_stealth import stealth_async
-from . import config # Imports selectors and URLs from config.py
+from . import config  # Imports selectors and URLs from config.py
 # Assuming utils.py is in src/shared/
-from src.shared import utils # For utility functions if needed later
+from src.shared import utils  # For utility functions if needed later
 
 # --- Authentication & Initialization ---
 
@@ -14,11 +15,26 @@ async def is_session_valid(page: Page) -> bool:
     """Checks if the saved session can successfully load the dashboard."""
     logging.info("Checking if session is valid...")
     try:
-        await page.goto(config.BASE_URL, wait_until="domcontentloaded", timeout=15000)
-        # Wait for a unique element that ONLY appears after login
-        await page.wait_for_selector(config.DASHBOARD_INDICATOR, state="visible", timeout=10000)
-        logging.info("Session is valid.")
-        return True
+        await page.goto(config.BASE_URL, wait_until="domcontentloaded", timeout=20000)
+        # Allow any SPA redirects to settle
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+
+        # If redirected back to login, session is not valid
+        if "/login" in (page.url or ""):  # Be robust to None
+            logging.info("Session invalid: redirected to /login")
+            return False
+
+        # Prefer presence of a known dashboard element; otherwise accept non-login URL as valid
+        try:
+            await page.wait_for_selector(config.DASHBOARD_INDICATOR, state="visible", timeout=8000)
+            logging.info("Session is valid (dashboard indicator visible).")
+            return True
+        except Exception:
+            logging.info("Dashboard indicator not found, but not on /login. Treating session as valid.")
+            return True
     except Exception as e:
         logging.warning(f"Session validation failed: {e}")
         return False
@@ -30,7 +46,12 @@ async def perform_login(page: Page):
     os.makedirs(os.path.dirname(config.AUTH_STATE_FILE) or ".", exist_ok=True)
 
     logging.info(f"Navigating to login page: {config.LOGIN_URL}")
-    await page.goto(config.LOGIN_URL, wait_until="load")
+    await page.goto(config.LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        # Not all pages reach networkidle; continue
+        pass
 
     logging.info("Attempting login...")
     username = os.environ.get("COACH_USERNAME")
@@ -41,12 +62,35 @@ async def perform_login(page: Page):
         raise ValueError("Missing login credentials in environment variables.")
 
     try:
+        # Ensure login form is visible before interacting
+        await page.wait_for_selector(config.USERNAME_SELECTOR, state="visible", timeout=20000)
+        await page.wait_for_selector(config.PASSWORD_SELECTOR, state="visible", timeout=20000)
+        # Fill credentials and submit
         await page.locator(config.USERNAME_SELECTOR).fill(username)
         await page.locator(config.PASSWORD_SELECTOR).fill(password)
         await page.locator(config.LOGIN_BUTTON_SELECTOR).click()
 
-        # Wait for navigation to dashboard after login
-        await page.wait_for_selector(config.DASHBOARD_INDICATOR, state="visible", timeout=30000) # Increased timeout
+        # Wait for redirect away from the login page OR for dashboard indicator
+        login_url_patterns = [
+            re.compile(r"/login/?$"),
+        ]
+        try:
+            await page.wait_for_url(re.compile(r"/(courses|dashboard)"), timeout=30000)
+        except Exception:
+            # Fallback to dashboard indicator
+            try:
+                await page.wait_for_selector(config.DASHBOARD_INDICATOR, state="visible", timeout=15000)
+            except Exception as dash_err:
+                # If still on login URL, treat as failure
+                current_url = page.url
+                if any(p.search(current_url or "") for p in login_url_patterns):
+                    raise dash_err
+                # Otherwise continue; some tenants may land elsewhere (e.g., /courses)
+
+        # Final sanity: do not remain on /login
+        if "/login" in (page.url or ""):
+            raise RuntimeError("Login appears to have failed; still on /login after submit.")
+
         logging.info("Login successful!")
         # Save authentication state
         await page.context.storage_state(path=config.AUTH_STATE_FILE)
@@ -55,7 +99,19 @@ async def perform_login(page: Page):
     except Exception as e:
         logging.error(f"Login failed: {e}")
         try:
+            # Allow UI to render before screenshot to avoid all-white captures
+            try:
+                await page.wait_for_timeout(1500)
+            except Exception:
+                pass
             await page.screenshot(path="logs/error_screenshots/login_error.png")
+            # Also save HTML to aid debugging
+            try:
+                html_content = await page.content()
+                with open("logs/error_screenshots/login_error.html", "w", encoding="utf-8") as f:
+                    f.write(html_content)
+            except Exception:
+                pass
         except Exception:
             logging.error("Failed to write login error screenshot.")
         raise # Re-raise error to stop the process if login fails
@@ -66,21 +122,14 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
     context = None
     page = None
 
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/91.0.4472.124 Safari/537.36"
-    )
+    # Use Playwright's default modern User-Agent (more compatible than hardcoding an older UA)
 
     try:
         browser = await p.chromium.launch()
 
         if os.path.exists(config.AUTH_STATE_FILE):
             logging.info(f"Found existing auth state: {config.AUTH_STATE_FILE}")
-            context = await browser.new_context(
-                storage_state=config.AUTH_STATE_FILE,
-                user_agent=user_agent
-            )
+            context = await browser.new_context(storage_state=config.AUTH_STATE_FILE)
             page = await context.new_page()
             await stealth_async(page)  # <-- APPLY STEALTH
 
@@ -92,7 +141,7 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
                 await page.close()
                 await context.close()
 
-                context = await browser.new_context(user_agent=user_agent)
+                context = await browser.new_context()
                 page = await context.new_page()
                 await stealth_async(page)  # <-- APPLY STEALTH
 
@@ -102,7 +151,7 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
                 return browser, context, page
         else:
             logging.info("No auth state file found. Performing first login.")
-            context = await browser.new_context(user_agent=user_agent)
+            context = await browser.new_context()
             page = await context.new_page()
             await stealth_async(page)  # <-- APPLY STEALTH
 
@@ -133,6 +182,14 @@ async def find_and_click_course_link(page: Page, course_code: str, group_name: s
     """
     logging.info(f"Attempting to navigate to course: {course_code} (Group hint: {group_name or 'None'})")
     await page.goto(config.COURSES_URL, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
+
+    # If we were redirected to login, fail fast with a clear error
+    if "/login" in (page.url or ""):
+        raise RuntimeError("Not authenticated: redirected to login when opening courses page.")
 
     try:
         if course_code in config.DEFAULT_VISIBLE_COURSES:
