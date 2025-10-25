@@ -225,6 +225,11 @@ async def main_pipeline(mode="daily"):
                 context = await browser.new_context()
                 page = await context.new_page()
 
+            # If we're still unauthenticated after launch_and_login, abort navigation that requires auth
+            if "/login" in (page.url or ""):
+                logging.error("Aborting navigation phase: still on login page after authentication attempt.")
+                return
+
             # Store resources found during navigation phase
             resources_to_process = [] # List of tuples: (url, title, date_obj | None, class_name, section_tag)
             # Caches to avoid redundant checks within a single run
