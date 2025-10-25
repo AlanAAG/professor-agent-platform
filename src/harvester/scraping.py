@@ -4,6 +4,7 @@ import logging
 import time
 import asyncio
 import os # For path joining in download
+import random
 import aiohttp # For async HTTP requests
 from bs4 import BeautifulSoup
 from readability import Document as ReadabilityDocument # To extract main content
@@ -68,7 +69,7 @@ async def _scrape_zoom_transcript(page: Page) -> str:
     logging.info("   Attempting Zoom transcript scrape...")
     raw_transcription = ""
     try:
-        # 1. Try to find and click any cookie acceptance button
+        # 1. Try to find and click any cookie acceptance button (with human-like pauses)
         cookie_button_selector = (
             'button:has-text("Accept"), '
             'button:has-text("Agree"), '
@@ -80,27 +81,49 @@ async def _scrape_zoom_transcript(page: Page) -> str:
             cookie_button = page.locator(cookie_button_selector).first
             await cookie_button.wait_for(state="visible", timeout=7000)
             logging.info("      Cookie banner found. Clicking...")
-            await cookie_button.click()
-            await page.wait_for_timeout(1000)  # Wait for banner to disappear
+            # Short random pause before interacting with the banner
+            await page.wait_for_timeout(int(random.uniform(500, 1200)))
+            try:
+                await cookie_button.hover()
+                await page.wait_for_timeout(int(random.uniform(250, 600)))
+            except Exception:
+                # Hover may fail for some overlays; proceed to click
+                pass
+            await cookie_button.click(delay=int(random.uniform(50, 150)))
+            # Wait a bit longer after closing banner
+            await page.wait_for_timeout(int(random.uniform(1000, 2000)))
         except Exception:
             logging.info("      No common cookie banner found or timed out, proceeding...")
 
-        # 2. Try to click the video player to initialize it (optional interaction)
-        try:
-            player = page.locator("div.playback-video").first
-            await player.wait_for(state="visible", timeout=5000)
-            logging.info("      Clicking video player to initialize...")
-            await player.click(timeout=3000)
-            await page.wait_for_timeout(1500)
-        except Exception:
-            logging.info("      Video player not found or clickable, proceeding...")
+        # 2. Scroll a bit to mimic human behavior before interacting
+        logging.info("      Scrolling page slightly...")
+        for _ in range(random.randint(1, 3)):
+            await page.evaluate(f'window.scrollBy(0, {random.randint(100, 300)})')
+            await page.wait_for_timeout(int(random.uniform(400, 900)))
+        # Optionally return towards top before searching transcript
+        await page.evaluate('window.scrollTo(0, 0)')
+        await page.wait_for_timeout(int(random.uniform(500, 1000)))
 
-        # 3. Wait for the transcript list
+        # 3. Try to click the video player to initialize it (optional interaction) with hover/delay
+        try:
+            # Slight pause before interacting with the player
+            await page.wait_for_timeout(int(random.uniform(800, 1800)))
+            player_locator = page.locator("div.playback-video").first
+            await player_locator.wait_for(state="visible", timeout=5000)
+            await player_locator.hover()
+            await page.wait_for_timeout(int(random.uniform(300, 700)))
+            await player_locator.click(timeout=3000, delay=int(random.uniform(50, 150)))
+            logging.info("      Clicked video player...")
+            await page.wait_for_timeout(int(random.uniform(1500, 2500)))
+        except Exception as e:
+            logging.info(f"      Video player interaction failed: {e}")
+
+        # 4. Wait for the transcript list
         list_selector = "ul.transcript-list"  # This selector is correct
         await page.wait_for_selector(list_selector, state="attached", timeout=30000)
         logging.info("      Transcript list container found.")
 
-        # 4. Wait for and extract the text
+        # 5. Wait for and extract the text
         text_selector = "div.timeline div.text"  # This selector is also correct
         await page.locator(text_selector).first.wait_for(state="visible", timeout=10000)
 
