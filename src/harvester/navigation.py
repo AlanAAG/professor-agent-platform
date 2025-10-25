@@ -12,31 +12,42 @@ from src.shared import utils  # For utility functions if needed later
 # --- Authentication & Initialization ---
 
 async def is_session_valid(page: Page) -> bool:
-    """Checks if the saved session can successfully load the dashboard."""
-    logging.info("Checking if session is valid...")
+    """Checks if the saved session can successfully load the COURSES page."""
+    logging.info("Checking if session is valid by navigating to Courses page...")
     try:
-        await page.goto(config.BASE_URL, wait_until="domcontentloaded", timeout=20000)
-        # Allow any SPA redirects to settle
+        # Navigate directly to the page requiring authentication
+        await page.goto(config.COURSES_URL, wait_until="domcontentloaded", timeout=20000)
+        # Allow potential redirects or SPA loading
         try:
             await page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
-            pass
+            logging.debug("Network idle timeout during session validation, proceeding...")
+            pass  # Continue even if network idle isn't reached
 
-        # If redirected back to login, session is not valid
-        if "/login" in (page.url or ""):  # Be robust to None
-            logging.info("Session invalid: redirected to /login")
+        current_url = page.url or ""
+
+        # Explicit check for redirection to login
+        if "/login" in current_url:
+            logging.info("Session invalid: redirected back to /login when accessing /courses.")
             return False
 
-        # Prefer presence of a known dashboard element; otherwise accept non-login URL as valid
-        try:
-            await page.wait_for_selector(config.DASHBOARD_INDICATOR, state="visible", timeout=8000)
-            logging.info("Session is valid (dashboard indicator visible).")
-            return True
-        except Exception:
-            logging.info("Dashboard indicator not found, but not on /login. Treating session as valid.")
-            return True
+        # Check for a reliable element on the courses page.
+        # Use a broader selector to check if any course content loaded.
+        # We consider either a group header or any course link as evidence of a loaded courses page.
+        courses_content_selector = "div.domainHeader, a[href*='courseCode=']"
+        await page.wait_for_selector(courses_content_selector, state="attached", timeout=15000)
+
+        logging.info("Session appears valid: successfully loaded /courses page content.")
+        return True
+
     except Exception as e:
-        logging.warning(f"Session validation failed: {e}")
+        logging.warning(f"Session validation failed when accessing /courses: {e}")
+        # Try capturing screenshot on validation failure
+        try:
+            os.makedirs("logs/error_screenshots", exist_ok=True)
+            await page.screenshot(path="logs/error_screenshots/session_validation_fail.png")
+        except Exception:
+            pass
         return False
 
 async def perform_login(page: Page):
@@ -219,6 +230,21 @@ async def find_and_click_course_link(page: Page, course_code: str, group_name: s
     # If we were redirected to login, fail fast with a clear error
     if "/login" in (page.url or ""):
         raise RuntimeError("Not authenticated: redirected to login when opening courses page.")
+
+    # --- ADD DEBUG SCREENSHOT AND CONTENT LOG ---
+    try:
+        os.makedirs("logs/error_screenshots", exist_ok=True)
+        logging.info(f"Attempting to save screenshot of courses page: {page.url}")
+        await page.screenshot(path=f"logs/error_screenshots/courses_page_load_{course_code}.png")
+        page_content = await page.content()
+        logging.info(f"Courses page content length: {len(page_content)} chars")
+        logging.info(f"Courses page content start:\n{page_content[:500]}")
+        # Optionally save full HTML for deeper inspection
+        # with open(f"logs/courses_page_{course_code}.html", "w", encoding="utf-8") as f:
+        #     f.write(page_content)
+    except Exception as screen_err:
+        logging.error(f"Failed to save courses page debug info: {screen_err}")
+    # --- END DEBUG ---
 
     try:
         if course_code in config.DEFAULT_VISIBLE_COURSES:
