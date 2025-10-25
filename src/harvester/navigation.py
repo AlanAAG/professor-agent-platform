@@ -46,11 +46,40 @@ async def perform_login(page: Page):
     os.makedirs(os.path.dirname(config.AUTH_STATE_FILE) or ".", exist_ok=True)
 
     logging.info(f"Navigating to login page: {config.LOGIN_URL}")
-    await page.goto(config.LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        # Use extended timeout and wait for DOM content; some sites need longer to initialize
+        await page.goto(config.LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+        logging.info("Initial navigation complete. Waiting for potential dynamic loading...")
+        # Give the page extra time to execute any client-side rendering code
+        await page.wait_for_timeout(5000)
+    except Exception as goto_err:
+        logging.error(f"Failed even during page.goto: {goto_err}")
+        # Try to capture immediate context for diagnostics
+        try:
+            await page.screenshot(path="logs/error_screenshots/goto_login_error.png")
+        except Exception:
+            pass
+        raise
+
+    # Capture a screenshot right after the initial wait to observe render state
+    try:
+        await page.screenshot(path="logs/error_screenshots/after_login_goto.png")
+        logging.info("Saved screenshot after page.goto and initial wait.")
+    except Exception as screen_err:
+        logging.error(f"Failed to save post-goto screenshot: {screen_err}")
+
+    # Log the received HTML to help diagnose blank or blocked pages
+    try:
+        page_content = await page.content()
+        logging.info(f"Page content length after load: {len(page_content)} chars")
+        logging.info(f"Page content start:\n{page_content[:500]}")
+    except Exception as content_err:
+        logging.error(f"Failed to get page content: {content_err}")
+
+    # Best-effort: allow network to go idle, but do not require it
     try:
         await page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
-        # Not all pages reach networkidle; continue
         pass
 
     logging.info("Attempting login...")
