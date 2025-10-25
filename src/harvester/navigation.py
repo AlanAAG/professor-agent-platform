@@ -3,6 +3,7 @@
 import logging
 import os # Added for AUTH_STATE_FILE path
 from playwright.async_api import Page, Locator, Playwright, Browser, BrowserContext
+from playwright_stealth import stealth_async
 from . import config # Imports selectors and URLs from config.py
 # Assuming utils.py is in src/shared/
 from src.shared import utils # For utility functions if needed later
@@ -64,30 +65,25 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
     browser = None
     context = None
     page = None
-    
-    # --- THIS IS THE NEW FIX ---
-    # Define a standard browser User-Agent to avoid bot detection
+
     user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/91.0.4472.124 Safari/537.36"
     )
-    # --- END FIX ---
-    
-    try:
-        browser = await p.chromium.launch() 
 
-        # --- Authentication Strategy: Load or Login ---
+    try:
+        browser = await p.chromium.launch()
+
         if os.path.exists(config.AUTH_STATE_FILE):
             logging.info(f"Found existing auth state: {config.AUTH_STATE_FILE}")
-            
-            # --- FIX APPLIED HERE ---
             context = await browser.new_context(
                 storage_state=config.AUTH_STATE_FILE,
-                user_agent=user_agent 
+                user_agent=user_agent
             )
-            
             page = await context.new_page()
+            await stealth_async(page)  # <-- APPLY STEALTH
+
             if await is_session_valid(page):
                 logging.info("Loaded valid session from state file.")
                 return browser, context, page
@@ -95,23 +91,21 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
                 logging.warning("Existing session expired or invalid. Performing new login.")
                 await page.close()
                 await context.close()
-                
-                # --- FIX APPLIED HERE ---
-                context = await browser.new_context(user_agent=user_agent) # Fresh context
-                
+
+                context = await browser.new_context(user_agent=user_agent)
                 page = await context.new_page()
+                await stealth_async(page)  # <-- APPLY STEALTH
+
                 if not await perform_login(page):
                     await browser.close()
                     return None, None, None
                 return browser, context, page
         else:
-            # First run scenario
             logging.info("No auth state file found. Performing first login.")
-            
-            # --- FIX APPLIED HERE ---
             context = await browser.new_context(user_agent=user_agent)
-            
             page = await context.new_page()
+            await stealth_async(page)  # <-- APPLY STEALTH
+
             if not await perform_login(page):
                 await browser.close()
                 return None, None, None
