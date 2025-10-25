@@ -64,40 +64,57 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
     browser = None
     context = None
     page = None
+    
+    # --- THIS IS THE NEW FIX ---
+    # Define a standard browser User-Agent to avoid bot detection
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/91.0.4472.124 Safari/537.36"
+    )
+    # --- END FIX ---
+    
     try:
-        browser = await p.chromium.launch() # Consider adding headless=True for automation server
+        browser = await p.chromium.launch() 
 
         # --- Authentication Strategy: Load or Login ---
         if os.path.exists(config.AUTH_STATE_FILE):
             logging.info(f"Found existing auth state: {config.AUTH_STATE_FILE}")
-            context = await browser.new_context(storage_state=config.AUTH_STATE_FILE)
+            
+            # --- FIX APPLIED HERE ---
+            context = await browser.new_context(
+                storage_state=config.AUTH_STATE_FILE,
+                user_agent=user_agent 
+            )
+            
             page = await context.new_page()
             if await is_session_valid(page):
                 logging.info("Loaded valid session from state file.")
                 return browser, context, page
             else:
                 logging.warning("Existing session expired or invalid. Performing new login.")
-                # Close old context/page, create new ones for fresh login
                 await page.close()
                 await context.close()
-                context = await browser.new_context() # Fresh context
+                
+                # --- FIX APPLIED HERE ---
+                context = await browser.new_context(user_agent=user_agent) # Fresh context
+                
                 page = await context.new_page()
                 if not await perform_login(page):
-                    # Login failed, return None to indicate failure
                     await browser.close()
                     return None, None, None
-                # If login succeeds here, page and context are valid
                 return browser, context, page
         else:
-            # First run scenario, no auth state exists
+            # First run scenario
             logging.info("No auth state file found. Performing first login.")
-            context = await browser.new_context()
+            
+            # --- FIX APPLIED HERE ---
+            context = await browser.new_context(user_agent=user_agent)
+            
             page = await context.new_page()
             if not await perform_login(page):
-                # Login failed, return None
                 await browser.close()
                 return None, None, None
-            # If login succeeds, page and context are valid
             return browser, context, page
 
     except Exception as e:
