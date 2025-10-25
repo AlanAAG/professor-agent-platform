@@ -12,42 +12,36 @@ from src.shared import utils  # For utility functions if needed later
 # --- Authentication & Initialization ---
 
 async def is_session_valid(page: Page) -> bool:
-    """Checks if the saved session can successfully load the COURSES page."""
+    """Checks if the saved session can successfully load the COURSES page AND render content."""
     logging.info("Checking if session is valid by navigating to Courses page...")
     try:
-        # Navigate directly to the page requiring authentication
-        await page.goto(config.COURSES_URL, wait_until="domcontentloaded", timeout=20000)
-        # Allow potential redirects or SPA loading
-        try:
-            await page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            logging.debug("Network idle timeout during session validation, proceeding...")
-            pass  # Continue even if network idle isn't reached
+        await page.goto(config.COURSES_URL, wait_until="domcontentloaded", timeout=30000)
+        # Allow redirects or blocking JS to potentially trigger
+        await page.wait_for_timeout(2000)
 
         current_url = page.url or ""
-
-        # Explicit check for redirection to login
         if "/login" in current_url:
-            logging.info("Session invalid: redirected back to /login when accessing /courses.")
+            logging.warning("Session invalid: Redirected back to /login.")
             return False
 
-        # Check for a reliable element on the courses page.
-        # Use a broader selector to check if any course content loaded.
-        # We consider either a group header or any course link as evidence of a loaded courses page.
-        courses_content_selector = "div.domainHeader, a[href*='courseCode=']"
-        await page.wait_for_selector(courses_content_selector, state="attached", timeout=15000)
+        # --- Stricter: verify visible content on the courses page ---
+        first_default_course_code = list(config.DEFAULT_VISIBLE_COURSES)[0]
+        visible_content_selector = config.COURSE_LINK_SELECTOR.format(course_code=first_default_course_code)
+        logging.info(f"Checking for visible content using selector: {visible_content_selector}")
+        await page.locator(visible_content_selector).first.wait_for(state="visible", timeout=20000)
 
-        logging.info("Session appears valid: successfully loaded /courses page content.")
+        logging.info("Session is valid: Successfully loaded /courses page and verified visible content.")
         return True
 
     except Exception as e:
-        logging.warning(f"Session validation failed when accessing /courses: {e}")
-        # Try capturing screenshot on validation failure
+        logging.warning(f"Session validation failed: {e}")
         try:
             os.makedirs("logs/error_screenshots", exist_ok=True)
             await page.screenshot(path="logs/error_screenshots/session_validation_fail.png")
-        except Exception:
-            pass
+            page_content = await page.content()
+            logging.warning(f"Validation failure page content (first 500 chars):\n{page_content[:500]}")
+        except Exception as screen_err:
+            logging.error(f"Failed to capture screenshot/content on validation failure: {screen_err}")
         return False
 
 async def perform_login(page: Page):
@@ -170,8 +164,10 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
         if os.path.exists(config.AUTH_STATE_FILE):
             logging.info(f"Found existing auth state: {config.AUTH_STATE_FILE}")
             context = await browser.new_context(storage_state=config.AUTH_STATE_FILE)
+            # Add init script before any pages are created
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = await context.new_page()
-            await stealth_async(page)  # <-- APPLY STEALTH
+            await stealth_async(page)  # Apply other stealth measures AFTER init script
 
             if await is_session_valid(page):
                 logging.info("Loaded valid session from state file.")
@@ -182,8 +178,9 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
                 await context.close()
 
                 context = await browser.new_context()
+                await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 page = await context.new_page()
-                await stealth_async(page)  # <-- APPLY STEALTH
+                await stealth_async(page)  # Apply other stealth measures AFTER init script
 
                 if not await perform_login(page):
                     await browser.close()
@@ -192,8 +189,9 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
         else:
             logging.info("No auth state file found. Performing first login.")
             context = await browser.new_context()
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = await context.new_page()
-            await stealth_async(page)  # <-- APPLY STEALTH
+            await stealth_async(page)  # Apply other stealth measures AFTER init script
 
             if not await perform_login(page):
                 await browser.close()
@@ -221,15 +219,47 @@ async def find_and_click_course_link(page: Page, course_code: str, group_name: s
     otherwise expand the owning group first, then click the course link.
     """
     logging.info(f"Attempting to navigate to course: {course_code} (Group hint: {group_name or 'None'})")
-    await page.goto(config.COURSES_URL, wait_until="domcontentloaded")
-    try:
-        await page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
+    await page.goto(config.COURSES_URL, wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(3000)  # Allow time for JS to potentially run/fail
 
     # If we were redirected to login, fail fast with a clear error
     if "/login" in (page.url or ""):
         raise RuntimeError("Not authenticated: redirected to login when opening courses page.")
+
+    # --- NEW: Check for Blank Page / Force Relogin ---
+    is_blank = False
+    try:
+        first_default_course_code = list(config.DEFAULT_VISIBLE_COURSES)[0]
+        check_selector = config.COURSE_LINK_SELECTOR.format(course_code=first_default_course_code)
+        await page.locator(check_selector).first.wait_for(state="visible", timeout=10000)
+        logging.info("Courses page content seems visible.")
+    except Exception:
+        logging.warning("Courses page appears blank or key content missing after navigation.")
+        is_blank = True
+        # Capture state
+        try:
+            os.makedirs("logs/error_screenshots", exist_ok=True)
+            await page.screenshot(path=f"logs/error_screenshots/blank_courses_page_{course_code}.png")
+            page_content = await page.content()
+            logging.warning(f"Blank page content (first 500 chars):\n{page_content[:500]}")
+        except Exception:
+            pass
+
+        # Attempt re-login
+        logging.warning("Attempting force re-login within the current browser...")
+        try:
+            login_success = await perform_login(page)
+            if not login_success:
+                raise RuntimeError("Forced re-login failed.")
+            logging.info("Forced re-login successful. Re-navigating to courses...")
+            await page.goto(config.COURSES_URL, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            await page.locator(check_selector).first.wait_for(state="visible", timeout=15000)
+            logging.info("Courses page loaded successfully after forced re-login.")
+        except Exception as relogin_err:
+            logging.error(f"Failed to recover session with forced re-login: {relogin_err}")
+            raise RuntimeError(f"Could not load courses page even after re-login attempt: {relogin_err}") from relogin_err
+    # --- END CHECK ---
 
     # --- ADD DEBUG SCREENSHOT AND CONTENT LOG ---
     try:
