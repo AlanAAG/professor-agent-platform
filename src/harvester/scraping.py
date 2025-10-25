@@ -73,30 +73,30 @@ async def _scrape_zoom_transcript(page: Page) -> str:
             'button:has-text("Accept"), '
             'button:has-text("Agree"), '
             'button:has-text("Got it"), '
+            'button:has-text("Allow"), '
             'button:has-text("Cookies Settings")'
         )
         try:
             cookie_button = page.locator(cookie_button_selector).first
-            await cookie_button.wait_for(state="visible", timeout=5000)
+            await cookie_button.wait_for(state="visible", timeout=7000)
             logging.info("      Cookie banner found. Clicking...")
             await cookie_button.click()
             await page.wait_for_timeout(1000)  # Wait for banner to disappear
         except Exception:
-            logging.info("      No common cookie banner found, proceeding...")
+            logging.info("      No common cookie banner found or timed out, proceeding...")
 
-        # 2. Try to click the video player to initialize it
-        player_selector = "div.playback-video"  # A plausible selector for the player area
+        # 2. Try to click the video player to initialize it (optional interaction)
         try:
-            player = page.locator(player_selector).first
-            await player.wait_for(state="visible", timeout=10000)
+            player = page.locator("div.playback-video").first
+            await player.wait_for(state="visible", timeout=5000)
             logging.info("      Clicking video player to initialize...")
-            await player.click(timeout=5000)
-            await page.wait_for_timeout(2000)  # Wait for JS to load
+            await player.click(timeout=3000)
+            await page.wait_for_timeout(1500)
         except Exception:
             logging.info("      Video player not found or clickable, proceeding...")
 
         # 3. Wait for the transcript list
-        list_selector = "ul.transcript-list"  # This selector is correct per your HTML
+        list_selector = "ul.transcript-list"  # This selector is correct
         await page.wait_for_selector(list_selector, state="attached", timeout=30000)
         logging.info("      Transcript list container found.")
 
@@ -114,6 +114,7 @@ async def _scrape_zoom_transcript(page: Page) -> str:
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
         try:
+            os.makedirs("logs/error_screenshots", exist_ok=True)
             await page.screenshot(path=f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
         except Exception as screen_err:
             logging.error(f"      Failed to save error screenshot: {screen_err}")
