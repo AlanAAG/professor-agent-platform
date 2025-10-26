@@ -369,9 +369,12 @@ async def main_pipeline(mode="daily"):
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
         # Ensure browser is closed in case of crash
     finally:
-        if page: await page.close()
-        if context: await context.close()
-        if browser: await browser.close()
+        # When using persistent context, only close the context; it manages pages and underlying browser
+        try:
+            if context:
+                await context.close()
+        except Exception:
+            pass
         logging.info("🚀 Hybrid Pipeline Finished.")
 
 # --- Allow running the script directly ---

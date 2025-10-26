@@ -3,11 +3,23 @@
 import logging
 import os  # Added for AUTH_STATE_FILE path
 import re
+import random
+import tempfile
 from playwright.async_api import Page, Locator, Playwright, Browser, BrowserContext
 from playwright_stealth import stealth_async
 from . import config  # Imports selectors and URLs from config.py
 # Assuming utils.py is in src/shared/
 from src.shared import utils  # For utility functions if needed later
+
+# A small pool of modern desktop user agents to rotate between.
+USER_AGENTS = [
+    # Windows 10/11 Chrome
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    # macOS Sonoma Chrome
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    # Linux Chrome
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+]
 
 # --- Authentication & Initialization ---
 
@@ -151,64 +163,116 @@ async def perform_login(page: Page):
         raise # Re-raise error to stop the process if login fails
 
 async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContext | None, Page | None]:
-    """Launches browser, creates context (loading state if possible), and ensures login."""
-    browser = None
-    context = None
-    page = None
+    """Launch a persistent browser context with stealth and ensure a valid session.
 
-    # Use Playwright's default modern User-Agent (more compatible than hardcoding an older UA)
+    Returns (browser, context, page) where browser is always None when using
+    launch_persistent_context. Callers should only close the context.
+    """
+    browser: Browser | None = None  # Using persistent context, browser object is not returned
+    context: BrowserContext | None = None
+    page: Page | None = None
+
+    # Persistent user data directory (env override supports experimentation)
+    user_data_dir = os.environ.get("PW_USER_DATA_DIR") or os.path.join("data", "pw_user_data")
+    os.makedirs(user_data_dir, exist_ok=True)
+    logging.info(f"Using persistent user data directory: {user_data_dir}")
+
+    # Engine and headless toggles via environment
+    engine_name = (os.environ.get("PW_ENGINE") or "chromium").strip().lower()
+    headless_env = (os.environ.get("PW_HEADLESS") or "true").strip().lower()
+    headless = headless_env in ("1", "true", "yes")
 
     try:
-        browser = await p.chromium.launch()
-
-        if os.path.exists(config.AUTH_STATE_FILE):
-            logging.info(f"Found existing auth state: {config.AUTH_STATE_FILE}")
-            context = await browser.new_context(storage_state=config.AUTH_STATE_FILE)
-            # Add init script before any pages are created
-            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page = await context.new_page()
-            await stealth_async(page)  # Apply other stealth measures AFTER init script
-
-            if await is_session_valid(page):
-                logging.info("Loaded valid session from state file.")
-                return browser, context, page
-            else:
-                logging.warning("Existing session expired or invalid. Performing new login.")
-                await page.close()
-                await context.close()
-
-                context = await browser.new_context()
-                await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                page = await context.new_page()
-                await stealth_async(page)  # Apply other stealth measures AFTER init script
-
-                if not await perform_login(page):
-                    await browser.close()
-                    return None, None, None
-                return browser, context, page
+        # Select browser engine
+        if engine_name == "firefox":
+            engine = p.firefox
+        elif engine_name == "webkit":
+            engine = p.webkit
         else:
-            logging.info("No auth state file found. Performing first login.")
-            context = await browser.new_context()
-            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page = await context.new_page()
-            await stealth_async(page)  # Apply other stealth measures AFTER init script
+            engine = p.chromium
+            engine_name = "chromium"
 
-            if not await perform_login(page):
-                await browser.close()
+        # Build common launch options
+        stealth_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--window-size=1440,900",
+            "--lang=en-US,en",
+            "--accept-lang=en-US,en;q=0.9",
+        ]
+
+        launch_kwargs: dict = {
+            "headless": headless,
+            "user_agent": random.choice(USER_AGENTS),
+            "viewport": {"width": 1440, "height": 900},
+            "ignore_https_errors": True,
+        }
+
+        # 'args' is primarily used by Chromium; include only when launching Chromium to avoid warnings
+        if engine_name == "chromium":
+            launch_kwargs["args"] = stealth_args
+
+        # Launch persistent context
+        context = await engine.launch_persistent_context(user_data_dir, **launch_kwargs)
+
+        # Add init script after context is created to hide webdriver
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+        # Get or create a page
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        # Log browser console messages for debugging detection issues
+        try:
+            page.on(
+                "console",
+                lambda msg: logging.warning(f"BROWSER CONSOLE [{msg.type}]: {msg.text}")
+            )
+        except Exception:
+            # Best-effort; do not fail launch if event hook fails
+            pass
+
+        # Apply stealth AFTER the page exists
+        await stealth_async(page)
+
+        # Try using the existing persisted session
+        if await is_session_valid(page):
+            logging.info("Session from persistent context is valid.")
+            return None, context, page
+        else:
+            logging.warning("Session from persistent context invalid or not found. Performing login...")
+
+            if await perform_login(page):
+                logging.info("Login successful within persistent context.")
+                # Optionally clear cookies after a forced login to drop any stale state
+                try:
+                    await context.clear_cookies()
+                    logging.info("Cleared old cookies after forced login.")
+                except Exception as clear_err:
+                    logging.warning(f"Could not clear context storage after forced login: {clear_err}")
+
+                # Re-validate after login
+                if await is_session_valid(page):
+                    return None, context, page
+                else:
+                    raise RuntimeError("Session still invalid after forced login.")
+            else:
+                logging.error("Login failed even with persistent context.")
+                await context.close()
                 return None, None, None
-            return browser, context, page
 
     except Exception as e:
-        logging.critical(f"Error during browser launch or login process: {e}")
+        logging.critical(f"Error during persistent context launch or login process: {e}", exc_info=True)
         try:
             if page:
                 await page.screenshot(path="logs/error_screenshots/launch_login_error.png")
         except Exception:
             logging.error("Failed to write launch/login error screenshot.")
         if context:
-            await context.close()
-        if browser:
-            await browser.close()
+            try:
+                await context.close()
+            except Exception:
+                pass
         return None, None, None
 
 # --- Course Navigation ---

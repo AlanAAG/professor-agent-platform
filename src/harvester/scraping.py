@@ -148,6 +148,13 @@ async def scrape_transcript_from_url(context: BrowserContext, url: str) -> str:
     page = None
     try:
         page = await context.new_page()
+        try:
+            page.on(
+                "console",
+                lambda msg: logging.warning(f"BROWSER CONSOLE [{msg.type}]: {msg.text}")
+            )
+        except Exception:
+            pass
         logging.info(f"   Opening transcript URL: {url}")
         await page.goto(url, wait_until="load", timeout=90000)
         logging.info("      Waiting for page elements to potentially initialize...")

@@ -53,10 +53,17 @@ $PYTHON -m pip install -r requirements.txt >/dev/null 2>&1 || {
 
 # Ensure Playwright browsers are installed (idempotent)
 echo "🧭 Ensuring Playwright browsers are installed..."
-$PYTHON -m playwright install --with-deps chromium >/dev/null 2>&1 || true
+# Allow switching engine via PW_ENGINE (chromium|firefox|webkit)
+ENGINE=${PW_ENGINE:-chromium}
+$PYTHON -m playwright install --with-deps "$ENGINE" >/dev/null 2>&1 || true
 
-# Run the pipeline
-$PYTHON -m src.run_hybrid_pipeline
+# Run the pipeline (use xvfb-run if headful and available)
+if [ "${PW_HEADLESS,,}" = "false" ] && command -v xvfb-run >/dev/null 2>&1; then
+  echo "🖥️  Running headful under Xvfb..."
+  xvfb-run -a $PYTHON -m src.run_hybrid_pipeline
+else
+  $PYTHON -m src.run_hybrid_pipeline
+fi
 
 # Check if successful
 if [ $? -eq 0 ]; then
