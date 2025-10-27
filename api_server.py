@@ -3,9 +3,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
-from supabase import create_client, Client
 import cohere
-from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank
+from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
 import os
 import json
 from typing import List, Dict, Optional
@@ -22,13 +21,8 @@ app.add_middleware(
 )
 
 # Initialize clients
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
-
-supabase: Client = create_client(
-    os.getenv("EXTERNAL_SUPABASE_URL"),
-    os.getenv("EXTERNAL_SUPABASE_SERVICE_KEY")
-)
 
 # Configure re-ranking (Cohere) and embedding model name for consistency
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
@@ -53,31 +47,16 @@ async def health_check():
 @app.post("/api/rag-search")
 async def rag_search(request: RAGRequest):
     try:
-        # Generate embedding
-        embedding_result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=request.query,
-            task_type="retrieval_query"
+        # Standardized retrieval via shared utility (Supabase RPC + Gemini embeddings)
+        documents = retrieve_rag_documents(
+            query=request.query,
+            selected_class=request.selectedClass,
+            match_count=5,
+            match_threshold=0.7,
         )
-        embedding = embedding_result['embedding']
-        
-        # Vector search (initial retrieval)
-        response = supabase.rpc(
-            "match_documents",
-            {
-                "query_embedding": embedding,
-                "match_threshold": 0.7,
-                "match_count": 5,
-                "filter_class": request.selectedClass
-            }
-        ).execute()
-        
-        documents = response.data if response.data else []
-        # Optional: Apply Cohere re-ranking if available (shared util handles no-op)
+        # Optional re-ranking (no-op if Cohere not configured)
         documents = cohere_rerank(request.query, documents)
-        
         return {"documents": documents}
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
