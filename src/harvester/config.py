@@ -1,86 +1,83 @@
-# src/harvester/config.py
+"""
+Selenium-oriented configuration for the harvester module.
+
+This converts prior Playwright selectors into robust Selenium-friendly
+XPaths/CSS selectors and keeps course mappings and URLs separated from logic.
+"""
 
 # --- Core URLs ---
 LOGIN_URL = "https://coach.tetr.com/login"
 BASE_URL = "https://coach.tetr.com/"
 COURSES_URL = BASE_URL + "courses"
-AUTH_STATE_FILE = "data/auth_state.json" # Relative to project root
 
-"""
-Selectors and course mappings adapted to match the partner Selenium script,
-converted to Playwright-friendly CSS/XPath where appropriate.
-"""
+# File path to persist cookies/session if desired (used by Selenium helpers)
+AUTH_STATE_FILE = "data/auth_state.json"
 
-# --- Navigation Selectors ---
-# Login Page
-USERNAME_SELECTOR = 'input[name="officialEmail"]'
-PASSWORD_SELECTOR = 'input[name="password"]'
-LOGIN_BUTTON_SELECTOR = '#gtmLoginStd'
-DASHBOARD_INDICATOR = '#gtm-IdDashboard'  # Selector to confirm login success
+# --- Login Page Selectors (Selenium) ---
+# Use simple CSS or IDs where stable; fallback to names
+USERNAME_BY = ("css", 'input[name="officialEmail"]')
+PASSWORD_BY = ("css", 'input[name="password"]')
+LOGIN_BUTTON_BY = ("css", '#gtmLoginStd')
 
-# Courses Page
-# Group header: partner script uses an XPath searching for div.domainHeader with a nested p.title == group_name
-# Playwright equivalent using :has and :has-text
-GROUP_HEADER_SELECTOR = "div.domainHeader:has(p.title:has-text('{group_name}'))"
+# A generic indicator that we are not on the login page anymore
+DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
-# Course link: same logic as partner (href contains courseCode=<code>)
-COURSE_LINK_SELECTOR = "a[href*='courseCode={course_code}']"
+# --- Courses Page (Selenium) ---
+# Group header: div.domainHeader containing p.title == {group_name}
+GROUP_HEADER_XPATH_TEMPLATE = (
+    "//div[contains(concat(' ', normalize-space(@class), ' '), ' domainHeader ')]"
+    "[.//p[contains(concat(' ', normalize-space(@class), ' '), ' title ') and normalize-space(text())='{group_name}']]"
+)
 
-# Course Details Page (Resources Tab Navigation)
-# Target the clickable Resources header container robustly by matching both the
-# heading text and the resources icon within the same container. Updated to use
-# the partner-provided, more specific container class and a <p> heading.
-# Note: Some pages use relative paths like ../assets/icons/resources.svg, so we
-# match on the filename substring 'resources.svg' for resilience.
-RESOURCES_TAB_SELECTOR = "div.sc-ckEbSK:has(img[src*='icons/resources.svg']):has(p:text-is('Resources'))"
-# Optional: caret icon within the resources header (used as a fallback click target)
-RESOURCES_CARET_SELECTOR = "img[src*='caretDown']"
+# Course link: anchor whose href contains courseCode={course_code}
+COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
 
-# Resource Section Headers (updated to match new HTML structure)
-# Each section header is the container `div.sc-kRJjUj` that has a `<p class="name">` with exact text
-PRE_READ_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Pre-Read Materials'))"
-IN_CLASS_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('In Class Materials'))"
-POST_CLASS_SECTION_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Post Class Materials'))"
-RECORDINGS_LINK_SELECTOR = "div.sc-kRJjUj:has(p.name:text-is('Session Recordings'))"
+# --- Course Details Page (Resources Tab Navigation) ---
+# Resources tab header: partner-provided structure using container class
+RESOURCES_TAB_XPATH = (
+    "//div[contains(@class,'sc-ckEbSK')]"
+    "[.//img[contains(@src,'resources.svg')] and .//p[normalize-space(text())='Resources']]"
+)
+
+# Section headers inside resources
+SECTION_HEADER_XPATH_TPL = (
+    "//div[contains(@class,'sc-kRJjUj')][.//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
+    " and normalize-space(text())='{section_title}']]"
+)
+
+PRE_READ_SECTION_TITLE = "Pre-Read Materials"
+IN_CLASS_SECTION_TITLE = "In Class Materials"
+POST_CLASS_SECTION_TITLE = "Post Class Materials"
+SESSION_RECORDINGS_SECTION_TITLE = "Session Recordings"
 
 # Resource items and sub-elements
-RECORDING_ITEM_SELECTOR = "div.fileBox"  # Container for each recording link/info
-RESOURCE_ITEM_SELECTOR = "div.fileBox"
-RESOURCE_TITLE_SELECTOR = "div.fileContentCol p"
-RESOURCE_DATE_SELECTOR = "div.fileContentCol span"
-RESOURCE_LINK_SELECTOR = "div.fileBox > a"
+RESOURCE_ITEM_CSS = "div.fileBox"
+RESOURCE_TITLE_CSS = "div.fileContentCol p"
+RESOURCE_DATE_CSS = "div.fileContentCol span"
 
-# (Removed) Static syllabus selector; syllabus scraping no longer used
-
-# --- Transcript Scraping Selectors (kept; used by scraping module) ---
+# --- Transcript Scraping Selectors ---
 # Google Drive Web Viewer
-DRIVE_VIDEO_PLAY_BUTTON = 'button[jsname="dW8tsb"]'
-DRIVE_TRANSCRIPT_SEGMENT_SELECTOR = "div[jsname='h7hTqc'] div.wyBDIb"
-DRIVE_SETTINGS_BUTTON = 'button[jsname="J7HKb"]'
-DRIVE_TRANSCRIPT_MENU_ITEM = 'div[role^="menuitem"]:has-text("Transcript")'
-# Zoom Web Viewer
-ZOOM_TRANSCRIPT_CONTAINER_SELECTOR = "div.transcript-container"
-# More precise Zoom transcript selectors based on current DOM
-ZOOM_TRANSCRIPT_LIST_SELECTOR = "ul.transcript-list"
-ZOOM_TRANSCRIPT_ITEM_SELECTOR = "ul.transcript-list li.transcript-list-item"
-ZOOM_TRANSCRIPT_SPEAKER_SELECTOR = ".user-name-span"
-ZOOM_TRANSCRIPT_TIME_SELECTOR = ".user-info-right .time"
-ZOOM_TRANSCRIPT_TEXT_SELECTOR = ".timeline .text"
-ZOOM_TRANSCRIPT_SCROLL_WRAPPER_SELECTOR = "div.transcript-container .zm-scrollbar__wrap"
-ZOOM_TRANSCRIPT_RESUME_AUTOSCROLL_BUTTON = "button.resume-button"
+DRIVE_PLAY_BUTTON_CSS = "button[jsname='IGlMSc'], button[jsname='dW8tsb']"
+DRIVE_SETTINGS_BUTTON_CSS = "button[jsname='dq27Te'], button[jsname='J7HKb']"
+DRIVE_TRANSCRIPT_HEADING_CSS = "h2#ucc-0"
+DRIVE_TRANSCRIPT_CONTAINER_CSS = "div[jsname='h7hTqc']"
+DRIVE_TRANSCRIPT_SEGMENT_CSS = "div.JnEIz div.wyBDIb, div[jsname='h7hTqc'] div.wyBDIb"
 
-# Targets to try for initial page interaction to trigger lazy loading
-ZOOM_INITIAL_INTERACTION_SELECTORS = [
+# Zoom Web Viewer
+ZOOM_TRANSCRIPT_CONTAINER_CSS = "div.transcript-container"
+ZOOM_TRANSCRIPT_LIST_CSS = "ul.transcript-list"
+ZOOM_TRANSCRIPT_TEXT_CSS = "div.timeline div.text"
+
+# Initial interaction targets (best-effort)
+ZOOM_INITIAL_INTERACTIONS = [
     "video",
     "div.player-container",
     "div#player",
     "div.playback-video",
-    "div#vjs_video_3",
     "canvas",
 ]
 
 # --- Course Mappings ---
-# 1) Existing map from this project (renamed to LEGACY for merge step)
 LEGACY_COURSE_MAP = {
     # Quantitative Tools for Business
     "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
@@ -104,7 +101,6 @@ LEGACY_COURSE_MAP = {
     "SAMA502": {"name": "CRO", "group": "Marketing Strategies"},
 }
 
-# 2) Partner course subjects (from SUBJECT_TO_DOC_ID keys)
 _PARTNER_SUBJECTS = [
     "AIML101 How do machines see, hear or speak",
     "PRTC301 How to use statistics to build a better business",
@@ -121,7 +117,6 @@ _PARTNER_SUBJECTS = [
     "MAST601 How to network effortlessly",
 ]
 
-# 3) Partner group mapping (from COURSE_TO_GROUP)
 PARTNER_COURSE_TO_GROUP = {
     "AIML101": "Quantitative Tools for Business",
     "PRTC301": "Quantitative Tools for Business",
@@ -138,7 +133,6 @@ PARTNER_COURSE_TO_GROUP = {
     "MAST601": "Management Project - I",
 }
 
-# 4) Build partner-derived map: code -> { full_name, code, group }
 _partner_map: dict[str, dict] = {}
 for subj in _PARTNER_SUBJECTS:
     parts = subj.split(" ", 1)
@@ -152,28 +146,21 @@ for subj in _PARTNER_SUBJECTS:
         "group": PARTNER_COURSE_TO_GROUP.get(code),
     }
 
-# 5) Merge legacy with partner
-#    CRITICAL: 'name' MUST remain the short alias used throughout the app
-#    (and as keys in persona.json) so Supabase filtering matches correctly.
 COURSE_MAP: dict[str, dict] = {}
-all_codes = {"AIML101"} #all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys()) 
+all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys())
 for code in sorted(all_codes):
     partner_entry = _partner_map.get(code)
     legacy_entry = LEGACY_COURSE_MAP.get(code)
     merged = {
-        # Keep the canonical short name (e.g., "AIML", "Excel", "Statistics")
         "name": (legacy_entry or {}).get("name") or code,
         "code": code,
-        # Prefer partner group when available
         "group": (partner_entry or {}).get("group") if partner_entry and partner_entry.get("group") is not None else (legacy_entry or {}).get("group"),
-        # Preserve the human-friendly title for display/logging when available
         "full_name": (partner_entry or {}).get("full_name") or (legacy_entry or {}).get("name") or code,
     }
     COURSE_MAP[code] = merged
 
-# 6) Default visible courses (from partner script)
+# Default visible courses (from partner script)
 DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
 
 # --- Other Settings ---
-# Cutoff date logic handled dynamically in the pipeline script (mode='daily'/'backlog')
-# Output directories defined in pipeline script
+# Cutoff date logic handled dynamically in the pipeline

@@ -220,6 +220,62 @@ async def url_exists_in_db(url: str) -> bool:
     if not supabase:
         # If Supabase isn't configured, avoid blocking the pipeline
         return False
+
+
+# --- Synchronous helpers for harvesting pipeline ---
+def check_if_embedded_recently_sync(filter: dict, days: int = 2) -> bool:
+    """Synchronous variant to check for recently embedded content.
+
+    Mirrors check_if_embedded_recently but executes the Supabase query directly
+    without asyncio to allow use from synchronous Selenium pipeline.
+    """
+    if not supabase:
+        return False
+    if not isinstance(filter, dict):
+        return False
+
+    try:
+        cutoff_dt = datetime.datetime.now() - datetime.timedelta(days=days)
+        cutoff_iso = cutoff_dt.isoformat()
+
+        query = supabase.table("documents").select("metadata", count="exact")
+        if "source_url" in filter and filter["source_url"]:
+            query = query.eq("metadata->>source_url", filter["source_url"])
+        elif filter:
+            query = query.contains("metadata", filter)
+        query = query.gt("metadata->>retrieval_date", cutoff_iso).limit(1)
+        response = query.execute()
+        count = getattr(response, "count", None)
+        if count is None and isinstance(response, dict):
+            count = response.get("count")
+        return bool(count and count > 0)
+    except Exception as e:
+        logging.error(f"Error (sync) checking Supabase for recent embedding: {e}")
+        return False
+
+
+def url_exists_in_db_sync(url: str) -> bool:
+    """Synchronous check for existing document by source_url."""
+    if not supabase:
+        return False
+    if not url:
+        return False
+    try:
+        response = (
+            supabase
+            .table("documents")
+            .select("id", count="exact")
+            .eq("metadata->>source_url", url)
+            .limit(1)
+            .execute()
+        )
+        count = getattr(response, "count", None)
+        if count is None and isinstance(response, dict):
+            count = response.get("count")
+        return bool(count and count > 0)
+    except Exception as e:
+        logging.error(f"Error (sync) checking Supabase for existing URL '{url}': {e}")
+        return False
     if not url:
         return False
 
