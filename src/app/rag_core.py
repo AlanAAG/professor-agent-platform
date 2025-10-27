@@ -11,27 +11,15 @@ from langchain_core.documents import Document # For type hinting
 from langchain_core.messages import HumanMessage, AIMessage # Added message types
 import logging
 import cohere # Import Cohere library
-from src.shared.utils import cohere_rerank, EMBEDDING_MODEL_NAME
+from src.shared.utils import cohere_rerank, EMBEDDING_MODEL_NAME, retrieve_rag_documents_langchain
 
 # --- Setup Logging ---
 # Configure logging for better tracking and debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Attempt to import necessary components from refinery ---
-# This assumes refinery.embedding correctly initializes and exposes 'vector_store'
-embedding = None
-try:
-    from src.refinery import embedding
-except Exception as e:
-    logging.error(f"RAG Core: Failed to import refinery.embedding: {e}")
-    embedding = None
-
-if embedding is not None:
-    if not hasattr(embedding, 'vector_store') or getattr(embedding, 'vector_store', None) is None:
-        logging.error("RAG Core: vector_store not initialized in embedding module.")
-        embedding = None
-    else:
-        logging.info("RAG Core: Successfully imported vector_store from refinery.embedding.")
+# --- Retrieval Backend ---
+# Use shared Supabase RPC retrieval to avoid duplication across services.
+embedding = None  # retained for backward compatibility; not used
 
 # --- Load Environment Variables ---
 # Loads variables from .env file for local development
@@ -186,23 +174,21 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
     try:
         # --- 1. Retrieve General Course Materials for Topic Identification ---
         logging.info("   Retrieving general course materials for topic identification...")
-        if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-            raise RuntimeError("Vector store is not available for retrieval.")
 
         broad_query = f"Overall course content and key concepts for {class_name}"
-        general_docs = embedding.vector_store.similarity_search(
+        general_docs = retrieve_rag_documents_langchain(
             query=broad_query,
-            k=30,  # Fetch a larger set of diverse course materials
-            filter={"class_name": class_name}
+            selected_class=class_name,
+            match_count=30,
         )
 
         # If no general materials found, fallback to a broad summary flow
         if not general_docs:
             logging.warning("   No general course materials found. Falling back to broad summary.")
-            initial_docs = embedding.vector_store.similarity_search(
+            initial_docs = retrieve_rag_documents_langchain(
                 query=question,  # Use original question for broad retrieval
-                k=INITIAL_RETRIEVAL_K * 2,  # Retrieve more documents
-                filter={"class_name": class_name}
+                selected_class=class_name,
+                match_count=INITIAL_RETRIEVAL_K * 2,
             )
             reranked_fallback_docs = _rerank_documents(question, initial_docs)
             final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2]
@@ -233,10 +219,10 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
 
         if not topics:
             logging.warning("   LLM topic identification returned no topics. Falling back to broad summary.")
-            initial_docs = embedding.vector_store.similarity_search(
+            initial_docs = retrieve_rag_documents_langchain(
                 query=question,
-                k=INITIAL_RETRIEVAL_K * 2,
-                filter={"class_name": class_name}
+                selected_class=class_name,
+                match_count=INITIAL_RETRIEVAL_K * 2,
             )
             reranked_fallback_docs = _rerank_documents(question, initial_docs)
             final_context_docs = reranked_fallback_docs[:FINAL_CONTEXT_K * 2]
@@ -275,10 +261,10 @@ def _handle_map_reduce_query(question: str, class_name: str, persona: dict, chat
         logging.info(f"      Mapping topic {i+1}/{len(topics)}: '{topic_name}'")
         try:
             # Retrieve chunks specifically relevant to this topic name
-            topic_docs = embedding.vector_store.similarity_search(
-                query=f"Detailed explanation, examples, formulas, and key concepts related to {topic_name} in {class_name}", # More specific query
-                k=MAP_REDUCE_RETRIEVAL_K,
-                filter={"class_name": class_name} # Search all relevant content types
+            topic_docs = retrieve_rag_documents_langchain(
+                query=f"Detailed explanation, examples, formulas, and key concepts related to {topic_name} in {class_name}",
+                selected_class=class_name,
+                match_count=MAP_REDUCE_RETRIEVAL_K,
             )
             # Re-rank the retrieved docs for the topic summary for better focus
             reranked_topic_docs = _rerank_documents(topic_name, topic_docs)
@@ -348,10 +334,7 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
         error_msg = "LLM model not initialized. Check configuration and API keys."
         logging.error(f"RAG Core: ERROR - {error_msg}")
         return error_msg
-    if not embedding or not hasattr(embedding, 'vector_store') or embedding.vector_store is None:
-        error_msg = "Vector store not initialized or available. Check Supabase connection and refinery.embedding."
-        logging.error(f"RAG Core: ERROR - {error_msg}")
-        return error_msg
+    # Retrieval handled via shared Supabase RPC util; no direct vector store dependency
 
     chat_history = chat_history or []
     logging.info(f"RAG Core: Received query for class '{class_name}': '{question}'")
@@ -377,10 +360,10 @@ def get_rag_response(question: str, class_name: str, persona: dict, chat_history
         final_context_docs: list[Document] = []
         try:
             # a. Initial Retrieval (using CONDENSED question)
-            initial_docs = embedding.vector_store.similarity_search(
-                query=condensed_question, # Use condensed query for better semantic match
-                k=INITIAL_RETRIEVAL_K,
-                filter={"class_name": class_name} # CRUCIAL filter
+            initial_docs = retrieve_rag_documents_langchain(
+                query=condensed_question,  # Use condensed query for better semantic match
+                selected_class=class_name,
+                match_count=INITIAL_RETRIEVAL_K,
             )
             logging.info(f"   Initial retrieval returned {len(initial_docs)} chunks.")
             if not initial_docs:
