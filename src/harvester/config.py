@@ -28,9 +28,9 @@ DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
 # Group header: div.domainHeader containing p.title == {group_name}
+# UPDATED based on user-provided selector
 GROUP_HEADER_XPATH_TEMPLATE = (
-    "//div[contains(concat(' ', normalize-space(@class), ' '), ' domainHeader ')]"
-    "[.//p[contains(concat(' ', normalize-space(@class), ' '), ' title ') and normalize-space(text())='{group_name}']]"
+    "//div[@class='domainHeader '][.//p[@class='title ' and text()='{group_name}']]"
 )
 
 # Course link: anchor whose href contains courseCode={course_code}
@@ -38,15 +38,15 @@ COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
 # Resources tab header: partner-provided structure using container class
+# UPDATED based on user-provided selector
 RESOURCES_TAB_XPATH = (
-    "//div[contains(@class,'sc-ckEbSK')]"
-    "[.//img[contains(@src,'resources.svg')] and .//p[normalize-space(text())='Resources']]"
+    "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]"
 )
 
 # Section headers inside resources
+# UPDATED based on user-provided selector
 SECTION_HEADER_XPATH_TPL = (
-    "//div[contains(@class,'sc-kRJjUj')][.//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
-    " and normalize-space(text())='{section_title}']]"
+    "//div[contains(@class, 'sc-kRJjUj')]//p[contains(text(), '{section_title}')]"
 )
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"
@@ -65,7 +65,8 @@ DRIVE_PLAY_BUTTON_CSS = "button[jsname='IGlMSc'], button[jsname='dW8tsb']"
 DRIVE_SETTINGS_BUTTON_CSS = "button[jsname='dq27Te'], button[jsname='J7HKb']"
 DRIVE_TRANSCRIPT_HEADING_CSS = "h2#ucc-0"
 DRIVE_TRANSCRIPT_CONTAINER_CSS = "div[jsname='h7hTqc']"
-DRIVE_TRANSCRIPT_SEGMENT_CSS = "div.JnEIz div.wyBDIb, div[jsname='h7hTqc'] div.wyBDIb"
+# UPDATED based on user-provided selector for the segment block
+DRIVE_TRANSCRIPT_SEGMENT_CSS = "div.JnEIz"
 
 # Zoom Web Viewer
 ZOOM_TRANSCRIPT_CONTAINER_CSS = "div.transcript-container"
@@ -191,7 +192,7 @@ class HarvesterSettings(BaseSettings):
     COACH_PASSWORD: str = Field(default="...")
 
     # --- Harvester-specific settings ---
-    # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS
+    # Accept both HARVESTER_SELEN_HEADLESS and legacy SELENIUM_HEADLESS
     selenium_headless: bool = Field(
         default=True,
         validation_alias=AliasChoices("HARVESTER_SELENIUM_HEADLESS", "SELENIUM_HEADLESS"),
