@@ -11,6 +11,7 @@ from langchain_core.documents import Document # For type hinting
 from langchain_core.messages import HumanMessage, AIMessage # Added message types
 import logging
 import cohere # Import Cohere library
+from src.shared.utils import cohere_rerank, EMBEDDING_MODEL_NAME
 
 # --- Setup Logging ---
 # Configure logging for better tracking and debugging
@@ -132,40 +133,12 @@ YOUR ANSWER (as {persona.get('professor_name', 'Professor')}):
 
 # --- Re-ranking Function (Using Cohere API) ---
 def _rerank_documents(query: str, documents: list[Document]) -> list[Document]:
-    """Re-ranks documents using Cohere Rerank API for better relevance."""
-    if not co or not documents: # Check if Cohere client exists and there are docs
-        if not documents:
-            logging.info("   No documents to re-rank.")
-            return [] # Return empty list if no docs were passed
-        if not co:
-            logging.warning("   Cohere client not configured. Skipping re-ranking, using original vector similarity order.")
-        return documents # Return original list if Cohere isn't set up
-
-    logging.info(f"   Re-ranking {len(documents)} documents with Cohere...")
-    try:
-        doc_texts = [doc.page_content for doc in documents]
-        # Call Cohere API
-        rerank_results = co.rerank(
-            query=query,
-            documents=doc_texts,
-            top_n=len(documents), # Re-rank all retrieved docs to get a fully sorted list
-            model='rerank-english-v3.0' # Use appropriate Cohere model (check docs for updates/multilingual)
-        )
-
-        # Create a new list sorted according to Cohere's relevance scores
-        reranked_docs = []
-        for result in rerank_results.results:
-            original_doc = documents[result.index]
-            # Optional: Add score to metadata for debugging
-            # original_doc.metadata['rerank_score'] = result.relevance_score
-            reranked_docs.append(original_doc)
-
-        logging.info("   Cohere Re-ranking complete.")
-        return reranked_docs
-
-    except Exception as e:
-        logging.error(f"   Error during Cohere re-ranking: {e}. Falling back to original order.")
-        return documents # Fallback to original order on API error
+    """Re-ranks documents using shared Cohere utility for better relevance."""
+    if not documents:
+        logging.info("   No documents to re-rank.")
+        return []
+    reranked = cohere_rerank(query, documents)
+    return reranked
 
 # --- Function to Identify Topics using LLM ---
 def _identify_topics_with_llm(context_text: str, class_name: str) -> list[str]:

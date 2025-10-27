@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
 from supabase import create_client, Client
+import cohere
+from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank
 import os
 import json
 from typing import List, Dict, Optional
@@ -28,6 +30,13 @@ supabase: Client = create_client(
     os.getenv("EXTERNAL_SUPABASE_SERVICE_KEY")
 )
 
+# Configure re-ranking (Cohere) and embedding model name for consistency
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+co = cohere.Client(COHERE_API_KEY) if COHERE_API_KEY else None
+
+# IMPORTANT: Keep this aligned with src/refinery/embedding.py
+EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
+
 class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
     selectedClass: Optional[str] = None
@@ -46,13 +55,13 @@ async def rag_search(request: RAGRequest):
     try:
         # Generate embedding
         embedding_result = genai.embed_content(
-            model="models/text-embedding-004",
+            model=EMBEDDING_MODEL,
             content=request.query,
             task_type="retrieval_query"
         )
         embedding = embedding_result['embedding']
         
-        # Vector search
+        # Vector search (initial retrieval)
         response = supabase.rpc(
             "match_documents",
             {
@@ -64,6 +73,8 @@ async def rag_search(request: RAGRequest):
         ).execute()
         
         documents = response.data if response.data else []
+        # Optional: Apply Cohere re-ranking if available (shared util handles no-op)
+        documents = cohere_rerank(request.query, documents)
         
         return {"documents": documents}
         
