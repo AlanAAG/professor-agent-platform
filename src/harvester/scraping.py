@@ -7,6 +7,7 @@ import random
 from typing import Optional
 
 import requests
+from requests.exceptions import RequestException
 from bs4 import BeautifulSoup
 from readability import Document as ReadabilityDocument
 from selenium.webdriver.common.by import By
@@ -17,6 +18,7 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     ElementClickInterceptedException,
     StaleElementReferenceException,
+    WebDriverException,
 )
 from selenium import webdriver
 from . import config
@@ -52,7 +54,7 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
                     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
                 except TimeoutException:
                     pass
-            except Exception as e:
+            except WebDriverException as e:
                 logging.debug(f"      Ignoring error clicking play: {e}")
 
         # Open settings gear
@@ -88,7 +90,7 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
             try:
                 os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
                 driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_no_container_{int(time.time())}.png"))
-            except Exception:
+            except (OSError, WebDriverException):
                 pass
             raise
         # Scroll to bottom to load all with explicit wait for growth
@@ -115,21 +117,21 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_timeout_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
     except NoSuchElementException as e:
         logging.error(f"   Missing expected element on Google Drive page: {e}")
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_no_such_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
-    except Exception as e:
+    except WebDriverException as e:
         logging.error(f"   Failed during Google Drive transcript scraping: {e}")
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_error_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
     return raw_transcription
 
@@ -151,7 +153,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
                 except TimeoutException:
                     pass
                 break
-            except Exception:
+            except WebDriverException:
                 # Non-fatal; continue with scraping
                 pass
 
@@ -169,7 +171,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
         if player is not None:
             try:
                 driver.execute_script("arguments[0].click();", player)
-            except Exception:
+            except WebDriverException:
                 pass
             try:
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
@@ -184,7 +186,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
             try:
                 os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
                 driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_no_list_{int(time.time())}.png"))
-            except Exception:
+            except (OSError, WebDriverException):
                 pass
             raise
         try:
@@ -194,7 +196,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
             try:
                 os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
                 driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_text_not_visible_{int(time.time())}.png"))
-            except Exception:
+            except (OSError, WebDriverException):
                 pass
             raise
         texts = [el.text for el in safe_find_all(driver, (By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS), timeout=10) or []]
@@ -208,21 +210,21 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_timeout_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
     except NoSuchElementException as e:
         logging.error(f"   Missing expected element on Zoom page: {e}")
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_no_such_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
-    except Exception as e:
+    except WebDriverException as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}")
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_error_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
     return raw_transcription
 
@@ -243,7 +245,7 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
                     EC.url_contains("zoom.us"),
                 )
             )
-        except Exception:
+        except WebDriverException:
             pass
         current_url = driver.current_url
         if "drive.google.com" in current_url:
@@ -261,19 +263,19 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"nav_timeout_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
         try:
             driver.switch_to.window(original)
-        except Exception:
+        except WebDriverException:
             pass
         return ""
-    except Exception as e:
+    except WebDriverException as e:
         logging.error(f"   Error navigating to or processing transcript URL {url}: {e}")
         try:
             os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
             driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"nav_error_{int(time.time())}.png"))
-        except Exception:
+        except (OSError, WebDriverException):
             pass
         try:
             # Ensure we return to original handle if possible
@@ -281,7 +283,7 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
                 pass
             if driver.window_handles:
                 driver.switch_to.window(driver.window_handles[0])
-        except Exception:
+        except WebDriverException:
             pass
         return ""
 
@@ -297,7 +299,7 @@ def check_url_content_type(url: str) -> str:
         resp = requests.head(url, timeout=15, allow_redirects=True, headers=BROWSER_HEADER)
         resp.raise_for_status()
         return (resp.headers.get("Content-Type", "")).lower()
-    except Exception as e:
+    except RequestException as e:
         logging.error(f"   Error checking content type for {url}: {e}")
         return "error"
 
@@ -314,7 +316,7 @@ def download_file(url: str, save_dir: str, filename: str) -> Optional[str]:
                         f.write(chunk)
         logging.info(f"   Successfully downloaded {filename}")
         return filepath
-    except Exception as e:
+    except RequestException as e:
         logging.error(f"   Error downloading {url}: {e}")
         return None
 
@@ -330,7 +332,7 @@ def scrape_html_content(url: str) -> Optional[str]:
         main_text = soup.get_text(separator='\n', strip=True)
         logging.info(f"   Successfully scraped HTML content ({len(main_text)} chars).")
         return main_text
-    except Exception as e:
+    except RequestException as e:
         logging.error(f"   Error scraping HTML {url}: {e}")
         return None
 
