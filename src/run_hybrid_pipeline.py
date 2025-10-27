@@ -221,7 +221,8 @@ async def main_pipeline(mode="daily"):
                 except Exception:
                     pass
                 # Launch fresh browser without auth; sufficient for public Zoom links
-                browser = await p.chromium.launch()
+                # Force headless here to avoid X server dependency in CI/servers
+                browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context()
                 page = await context.new_page()
 

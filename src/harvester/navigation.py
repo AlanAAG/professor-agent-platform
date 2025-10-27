@@ -180,7 +180,20 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
     # Engine and headless toggles via environment
     engine_name = (os.environ.get("PW_ENGINE") or "chromium").strip().lower()
     headless_env = (os.environ.get("PW_HEADLESS") or "true").strip().lower()
-    headless = headless_env in ("1", "true", "yes")
+    # Normalize booleans from environment with broad support
+    truthy = {"1", "true", "yes", "on"}
+    falsy = {"0", "false", "no", "off"}
+    if headless_env in truthy:
+        headless = True
+    elif headless_env in falsy:
+        headless = False
+    else:
+        headless = True  # default to headless in CI/servers
+
+    # If running headful without an X server, force headless to avoid crash
+    if not headless and not os.environ.get("DISPLAY"):
+        logging.warning("No X server detected ($DISPLAY missing). Forcing headless mode.")
+        headless = True
 
     try:
         # Select browser engine
@@ -197,6 +210,7 @@ async def launch_and_login(p: Playwright) -> tuple[Browser | None, BrowserContex
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-gpu",
             "--window-size=1440,900",
             "--lang=en-US,en",
             "--accept-lang=en-US,en;q=0.9",
