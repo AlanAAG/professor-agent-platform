@@ -51,11 +51,23 @@ $PYTHON -m pip install -r requirements.txt >/dev/null 2>&1 || {
   exit 1;
 }
 
-# Ensure Playwright browsers are installed (idempotent)
-echo "🧭 Ensuring Playwright browsers are installed..."
-# Allow switching engine via PW_ENGINE (chromium|firefox|webkit)
-ENGINE=${PW_ENGINE:-chromium}
-$PYTHON -m playwright install --with-deps "$ENGINE" >/dev/null 2>&1 || true
+
+# Ensure Google Chrome exists when running locally; Selenium Manager handles driver
+if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chrome >/dev/null 2>&1; then
+  echo "🧭 Installing Google Chrome for Selenium (local dev)..."
+  if [ -x "$(command -v apt)" ]; then
+    sudo apt-get update -y >/dev/null 2>&1 || true
+    sudo apt-get install -y wget gnupg >/dev/null 2>&1 || true
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg || true
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+    sudo apt-get update -y >/dev/null 2>&1 || true
+    sudo apt-get install -y google-chrome-stable >/dev/null 2>&1 || {
+      echo "⚠️  Failed to install google-chrome-stable; continuing."
+    }
+  else
+    echo "⚠️  Could not auto-install Chrome on this platform."
+  fi
+fi
 
 # Run the pipeline (use xvfb-run if headful and available)
 if [ "${PW_HEADLESS,,}" = "false" ] && command -v xvfb-run >/dev/null 2>&1; then
