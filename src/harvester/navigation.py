@@ -19,13 +19,14 @@ from . import config
 # --- Driver setup ---
 def _create_driver() -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
-    # Prefer structured settings if available
-    headless_env = (
-        (os.environ.get("HARVESTER_SELENIUM_HEADLESS") or os.environ.get("SELENIUM_HEADLESS") or "true")
-        .strip()
-        .lower()
-    )
-    if headless_env in ("1", "true", "yes"):
+    # Prefer structured settings via Pydantic Settings
+    try:
+        headless = bool(getattr(config.SETTINGS, "selenium_headless", True))
+    except Exception:
+        # Fallback to environment variables if settings unavailable
+        env_val = (os.environ.get("HARVESTER_SELENIUM_HEADLESS") or os.environ.get("SELENIUM_HEADLESS") or "true").strip().lower()
+        headless = env_val in ("1", "true", "yes")
+    if headless:
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -37,6 +38,11 @@ def _create_driver() -> webdriver.Chrome:
     options.add_experimental_option('useAutomationExtension', False)
 
     driver = webdriver.Chrome(options=options)
+    # Ensure implicit waits are disabled; we rely on explicit waits
+    try:
+        driver.implicitly_wait(0)
+    except Exception:
+        pass
     try:
         # Reduce webdriver fingerprints
         driver.execute_cdp_cmd(
@@ -49,8 +55,7 @@ def _create_driver() -> webdriver.Chrome:
         # Best-effort; continue if CDP not available
         pass
     try:
-        from .config import SETTINGS  # Lazy import to avoid cycles
-        driver.set_page_load_timeout(int(getattr(SETTINGS, "page_load_timeout", 60)))
+        driver.set_page_load_timeout(int(getattr(config.SETTINGS, "page_load_timeout", 60)))
     except Exception:
         driver.set_page_load_timeout(60)
     return driver
