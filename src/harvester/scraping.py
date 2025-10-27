@@ -20,6 +20,7 @@ from selenium.common.exceptions import (
 )
 from selenium import webdriver
 from . import config
+from .navigation import safe_find, safe_find_all, safe_click
 
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {
@@ -56,17 +57,12 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
 
         # Open settings gear
         try:
-            settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
+            safe_click(driver, (By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS))
         except TimeoutException:
             logging.error(f"      Settings button not clickable (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
             raise
         except NoSuchElementException:
             logging.error(f"      Settings button not present (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
-            raise
-        try:
-            driver.execute_script("arguments[0].click();", settings_btn)
-        except ElementClickInterceptedException:
-            logging.error("      Click on settings button was intercepted.")
             raise
         # Wait for transcript UI to appear
         try:
@@ -182,7 +178,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
 
         # Wait for transcript list and texts
         try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
+            safe_find(driver, (By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS), timeout=30)
         except TimeoutException:
             logging.error(f"      Transcript list not found (selector: {config.ZOOM_TRANSCRIPT_LIST_CSS}).")
             try:
@@ -192,7 +188,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
                 pass
             raise
         try:
-            wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)))
+            safe_find(driver, (By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS), timeout=20)
         except TimeoutException:
             logging.error(f"      Transcript text not visible (selector: {config.ZOOM_TRANSCRIPT_TEXT_CSS}).")
             try:
@@ -201,7 +197,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
             except Exception:
                 pass
             raise
-        texts = [el.text for el in driver.find_elements(By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)]
+        texts = [el.text for el in safe_find_all(driver, (By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS), timeout=10) or []]
         raw_transcription = " ".join([t.strip() for t in texts if t and t.strip()])
         if raw_transcription:
             logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
