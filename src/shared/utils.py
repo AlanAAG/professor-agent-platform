@@ -9,6 +9,9 @@ try:
     import cohere
 except Exception:
     cohere = None  # Optional dependency
+    # Warn once at import time if user expects Cohere
+    if os.environ.get("COHERE_API_KEY"):
+        logging.warning("Cohere API key is set but 'cohere' package is not available. Install 'cohere' to enable re-ranking.")
 
 # Shared constants
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")

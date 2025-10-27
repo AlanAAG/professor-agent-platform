@@ -54,8 +54,25 @@ jobs:
           mkdir -p data/raw_static
           mkdir -p data/raw_pdfs
           mkdir -p /tmp/harvester_downloads
+
+      # Step 6: Create a .env file for Pydantic Settings (kept local to runner)
+      - name: Write .env from GitHub Secrets
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          COHERE_API_KEY=${{ secrets.COHERE_API_KEY }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          COACH_USERNAME=${{ secrets.COACH_USERNAME }}
+          COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
+          HARVESTER_SELENIUM_HEADLESS=true
+          HARVESTER_PAGE_LOAD_TIMEOUT=60
+          HARVESTER_WAIT_TIMEOUT=30
+          HARVESTER_SCREENSHOT_DIR=logs/error_screenshots
+          HARVESTER_DOWNLOADS_DIR=/tmp/harvester_downloads
+          EOF
       
-      # Step 6: Run the pipeline
+      # Step 7: Run the pipeline
       - name: Run Harvester & Refinery Pipeline
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -69,7 +86,7 @@ jobs:
         run: |
           python -m src.run_hybrid_pipeline
       
-      # Step 7: Upload logs and screenshots (on failure)
+      # Step 8: Upload logs and screenshots (on failure)
       - name: Upload logs and screenshots (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -80,7 +97,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # Step 8: Upload logs and screenshots (on success)
+      # Step 9: Upload logs and screenshots (on success)
       - name: Upload logs and screenshots (on success)
         if: success()
         uses: actions/upload-artifact@v4
@@ -91,7 +108,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      # Step 9: Upload logs and screenshots (on cancellation)
+      # Step 10: Upload logs and screenshots (on cancellation)
       - name: Upload logs and screenshots (on cancellation)
         if: cancelled()
         uses: actions/upload-artifact@v4
@@ -102,9 +119,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       
-      # Step 10: Clean up sensitive files
+      # Step 11: Clean up sensitive files
       - name: Clean up sensitive files
         if: always()
         run: |
           rm -f data/auth_state.json
+          rm -f .env
           echo "✅ Cleaned up authentication files"
