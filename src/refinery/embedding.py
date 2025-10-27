@@ -7,6 +7,7 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from src.shared.utils import EMBEDDING_MODEL_NAME
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
@@ -36,10 +37,9 @@ try:
     logging.info("Supabase client initialized.")
 
     # --- Initialize Embedding Model ---
-    # Make sure you have the correct model name for embeddings.
-    # 'models/embedding-001' is the standard Gemini embedding model.
+    # Keep model name in one shared place for consistency
     embeddings_model = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
+        model=EMBEDDING_MODEL_NAME,
         google_api_key=gemini_api_key
     )
     logging.info("Gemini embedding model initialized.")

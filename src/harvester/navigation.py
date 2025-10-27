@@ -4,7 +4,8 @@ import logging
 import os
 import random
 import time
-from typing import Optional
+from typing import Optional, Iterator
+from contextlib import contextmanager
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -55,7 +56,16 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
     logging.info("Checking if session is valid by navigating to Courses page...")
     try:
         driver.get(config.COURSES_URL)
-        time.sleep(2)
+        # Wait for navigation result (either courses page or redirected to login)
+        try:
+            _wait(driver, 20).until(
+                EC.any_of(
+                    EC.url_contains("/courses"),
+                    EC.url_contains("/login"),
+                )
+            )
+        except Exception:
+            pass  # Fallback to checks below
         if "/login" in (driver.current_url or ""):
             logging.warning("Session invalid: redirected to /login")
             return False
@@ -85,7 +95,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
     logging.info(f"Navigating to login page: {config.LOGIN_URL}")
     driver.get(config.LOGIN_URL)
-    time.sleep(3)
+    # Rely on form field visibility rather than fixed sleep
 
     try:
         _wait(driver, 25).until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.USERNAME_BY[1])))
@@ -127,30 +137,41 @@ def perform_login(driver: webdriver.Chrome) -> bool:
         raise
 
 
-def launch_and_login() -> webdriver.Chrome:
-    """Create a Selenium driver and ensure we are authenticated."""
+@contextmanager
+def launch_and_login() -> Iterator[webdriver.Chrome]:
+    """Context-managed Selenium driver that ensures an authenticated session.
+
+    Usage:
+        with launch_and_login() as driver:
+            ...
+    """
     driver = _create_driver()
     try:
-        if is_session_valid(driver):
-            return driver
-        # Try to login
-        if perform_login(driver) and is_session_valid(driver):
-            return driver
-        raise RuntimeError("Failed to establish an authenticated session")
-    except Exception:
-        # Bubble up after cleanup
+        if not is_session_valid(driver):
+            if not (perform_login(driver) and is_session_valid(driver)):
+                raise RuntimeError("Failed to establish an authenticated session")
+        yield driver
+    finally:
         try:
             driver.quit()
         except Exception:
             pass
-        raise
 
 
 # --- Course Navigation ---
 def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group_name: Optional[str]) -> None:
     logging.info(f"Navigating to course: {course_code} (group: {group_name or 'unknown'})")
     driver.get(config.COURSES_URL)
-    time.sleep(2)
+    # Wait for either courses or a redirect to login
+    try:
+        _wait(driver, 20).until(
+            EC.any_of(
+                EC.url_contains("/courses"),
+                EC.url_contains("/login"),
+            )
+        )
+    except Exception:
+        pass
     if "/login" in (driver.current_url or ""):
         raise RuntimeError("Not authenticated: redirected to login when opening courses page")
 
@@ -160,15 +181,19 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         check_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
         _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
     except Exception:
-        logging.warning("Courses content not immediately visible; retrying after short wait")
-        time.sleep(3)
+        logging.warning("Courses content not immediately visible; waiting briefly for elements")
+        try:
+            _wait(driver, 5).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
+        except Exception:
+            pass
 
     try:
         if course_code in config.DEFAULT_VISIBLE_COURSES:
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
             link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-            time.sleep(0.8)
+            # Re-validate clickable after scroll (avoids animation issues)
+            link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
             link_el.click()
             _wait(driver, 30).until(EC.url_contains("/course"))
             logging.info(f"Opened course {course_code}")
@@ -181,7 +206,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
             link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-            time.sleep(0.8)
+            link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
             link_el.click()
             _wait(driver, 30).until(EC.url_contains("/course"))
             return
@@ -189,15 +214,15 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
         header_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-        time.sleep(0.8)
+        header_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
         header_el.click()
         logging.info(f"Expanded group '{effective_group}'")
-        time.sleep(2)
 
         target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
+        # Wait for course link to become clickable after expansion
         link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-        time.sleep(0.6)
+        link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
         link_el.click()
         _wait(driver, 30).until(EC.url_contains("/course"))
         logging.info(f"Opened course {course_code}")
@@ -218,7 +243,10 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
             EC.element_to_be_clickable((By.XPATH, config.RESOURCES_TAB_XPATH))
         )
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", resources_el)
-        time.sleep(0.5)
+        # Re-validate clickable after scroll
+        resources_el = _wait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, config.RESOURCES_TAB_XPATH))
+        )
         resources_el.click()
 
         # Wait for any section header
@@ -248,10 +276,18 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
     header_el = _wait(driver, 7).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-    time.sleep(0.3)
+    header_el = _wait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
     header_el.click()
-    time.sleep(1.0)
-    # Items are in next sibling div
-    container = driver.find_element(By.XPATH, header_xpath + "/parent::div/following-sibling::div[1]")
+    # Items are in next sibling div. Wait for it to populate.
+    container_xpath = header_xpath + "/parent::div/following-sibling::div[1]"
+    _wait(driver, 10).until(EC.presence_of_element_located((By.XPATH, container_xpath)))
+    container = driver.find_element(By.XPATH, container_xpath)
+    # Wait until at least one resource item is present (best-effort)
+    try:
+        _wait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS))
+        )
+    except TimeoutException:
+        pass
     items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
     return items

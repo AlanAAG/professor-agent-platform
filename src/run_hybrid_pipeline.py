@@ -201,130 +201,125 @@ def main_pipeline(mode="daily"):
     else:
         raise ValueError(f"Unsupported pipeline mode: {mode}")
 
-    driver = None
+    # Use context manager to guarantee cleanup
     try:
-        driver = navigation.launch_and_login()
+        with navigation.launch_and_login() as driver:
 
-        # Store resources found during navigation phase
-        resources_to_process = []  # (url, title, date_obj, class_name, section_tag)
-        recent_check_cache: dict[str, bool] = {}
-        seen_urls: set[str] = set()
-        db_url_exists_cache: dict[str, bool] = {}
+            # Store resources found during navigation phase
+            resources_to_process = []  # (url, title, date_obj, class_name, section_tag)
+            recent_check_cache: dict[str, bool] = {}
+            seen_urls: set[str] = set()
+            db_url_exists_cache: dict[str, bool] = {}
 
-        logging.info("\n--- Starting Navigation Phase ---")
-        for course_code, course_details in config.COURSE_MAP.items():
-            class_name = course_details["name"]
-            group_name = course_details.get("group")
+            logging.info("\n--- Starting Navigation Phase ---")
+            for course_code, course_details in config.COURSE_MAP.items():
+                class_name = course_details["name"]
+                group_name = course_details.get("group")
 
-            logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
-            try:
-                navigation.find_and_click_course_link(driver, course_code, group_name)
-
-                if navigation.navigate_to_resources_section(driver):
-                    sections = [
-                        ("pre_read", config.PRE_READ_SECTION_TITLE),
-                        ("in_class", config.IN_CLASS_SECTION_TITLE),
-                        ("post_class", config.POST_CLASS_SECTION_TITLE),
-                        ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
-                    ]
-
-                    for section_tag, title_text in sections:
-                        logging.info(f"--- Scraping Section: {section_tag} ---")
-                        try:
-                            items = navigation.expand_section_and_get_items(driver, title_text)
-                            logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
-                            for item in items:
-                                url, title, date_text = None, None, None
-                                try:
-                                    # Link
-                                    link_el = item.find_element(By.TAG_NAME, "a")
-                                    href = link_el.get_attribute("href")
-                                    if href and not href.startswith("http"):
-                                        href = config.BASE_URL + href.lstrip('/')
-                                    url = href
-                                    # Title
-                                    try:
-                                        title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                        title = title_el.text
-                                    except Exception:
-                                        title = url or ""
-                                    # Date
-                                    try:
-                                        date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                        date_text = date_el.text
-                                    except Exception:
-                                        date_text = None
-
-                                    if not url or not title:
-                                        logging.info("      Skipping item (missing URL or Title)")
-                                        continue
-
-                                    if "youtube.com" in url or "youtu.be" in url:
-                                        logging.info(f"      Skipping YouTube video: {title}")
-                                        continue
-
-                                    parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                    should_process = False
-                                    if parsed_date:
-                                        if parsed_date >= cutoff_date:
-                                            should_process = True
-                                        else:
-                                            logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                    else:
-                                        exists_recently = recent_check_cache.get(url)
-                                        if exists_recently is None:
-                                        exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
-                                        recent_check_cache[url] = exists_recently
-                                        should_process = not exists_recently
-                                        if not should_process:
-                                            logging.info(f"      Skipping undated resource (found in recent DB): {url}")
-
-                                    if should_process:
-                                        if DEDUP_BY_URL:
-                                            exists_in_db = db_url_exists_cache.get(url)
-                                            if exists_in_db is None:
-                                                # We only have async version; best-effort skip extra DB roundtrip here
-                                            exists_in_db = embedding.url_exists_in_db_sync(url)
-                                            db_url_exists_cache[url] = exists_in_db
-                                            if exists_in_db:
-                                                logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-                                                continue
-
-                                        if url in seen_urls:
-                                            logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                        else:
-                                            logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                            resources_to_process.append((url, title, parsed_date, class_name, section_tag))
-                                            seen_urls.add(url)
-                                except Exception as item_err:
-                                    logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
-                                    continue
-                        except Exception as section_err:
-                            logging.warning(f"   Skipping section '{section_tag}'. Error: {section_err}")
-                            continue
-
-            except Exception as course_err:
-                logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
                 try:
-                    driver.get(config.COURSES_URL)
-                except Exception:
-                    logging.error("Failed to navigate back to courses page after error.")
-                continue
+                    navigation.find_and_click_course_link(driver, course_code, group_name)
 
-        logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
+                    if navigation.navigate_to_resources_section(driver):
+                        sections = [
+                            ("pre_read", config.PRE_READ_SECTION_TITLE),
+                            ("in_class", config.IN_CLASS_SECTION_TITLE),
+                            ("post_class", config.POST_CLASS_SECTION_TITLE),
+                            ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
+                        ]
 
-        logging.info("\n--- Starting Processing Phase ---")
-        for url, title, date_obj, class_name, section_tag in resources_to_process:
-            process_single_resource(driver, url, title, date_obj, class_name, section_tag)
+                        for section_tag, title_text in sections:
+                            logging.info(f"--- Scraping Section: {section_tag} ---")
+                            try:
+                                items = navigation.expand_section_and_get_items(driver, title_text)
+                                logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
+                                for item in items:
+                                    url, title, date_text = None, None, None
+                                    try:
+                                        # Link
+                                        link_el = item.find_element(By.TAG_NAME, "a")
+                                        href = link_el.get_attribute("href")
+                                        if href and not href.startswith("http"):
+                                            href = config.BASE_URL + href.lstrip('/')
+                                        url = href
+                                        # Title
+                                        try:
+                                            title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                            title = title_el.text
+                                        except Exception:
+                                            title = url or ""
+                                        # Date
+                                        try:
+                                            date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                            date_text = date_el.text
+                                        except Exception:
+                                            date_text = None
+
+                                        if not url or not title:
+                                            logging.info("      Skipping item (missing URL or Title)")
+                                            continue
+
+                                        if "youtube.com" in url or "youtu.be" in url:
+                                            logging.info(f"      Skipping YouTube video: {title}")
+                                            continue
+
+                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                        should_process = False
+                                        if parsed_date:
+                                            if parsed_date >= cutoff_date:
+                                                should_process = True
+                                            else:
+                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                        else:
+                                            exists_recently = recent_check_cache.get(url)
+                                            if exists_recently is None:
+                                                exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
+                                            recent_check_cache[url] = exists_recently
+                                            should_process = not exists_recently
+                                            if not should_process:
+                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+
+                                        if should_process:
+                                            if DEDUP_BY_URL:
+                                                exists_in_db = db_url_exists_cache.get(url)
+                                                if exists_in_db is None:
+                                                    # We only have async version; best-effort skip extra DB roundtrip here
+                                                    exists_in_db = embedding.url_exists_in_db_sync(url)
+                                                db_url_exists_cache[url] = exists_in_db
+                                                if exists_in_db:
+                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                    continue
+
+                                            if url in seen_urls:
+                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                            else:
+                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                seen_urls.add(url)
+                                    except Exception as item_err:
+                                        logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                        continue
+                            except Exception as section_err:
+                                logging.warning(f"   Skipping section '{section_tag}'. Error: {section_err}")
+                                continue
+
+                except Exception as course_err:
+                    logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                    try:
+                        driver.get(config.COURSES_URL)
+                    except Exception:
+                        logging.error("Failed to navigate back to courses page after error.")
+                    continue
+
+            logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
+
+            logging.info("\n--- Starting Processing Phase ---")
+            for url, title, date_obj, class_name, section_tag in resources_to_process:
+                process_single_resource(driver, url, title, date_obj, class_name, section_tag)
 
     except Exception as pipeline_err:
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         logging.info("🚀 Hybrid Pipeline Finished.")
 
 # --- Allow running the script directly ---
