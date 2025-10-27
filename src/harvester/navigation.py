@@ -19,7 +19,12 @@ from . import config
 # --- Driver setup ---
 def _create_driver() -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
-    headless_env = (os.environ.get("SELENIUM_HEADLESS") or "true").strip().lower()
+    # Prefer structured settings if available
+    headless_env = (
+        (os.environ.get("HARVESTER_SELENIUM_HEADLESS") or os.environ.get("SELENIUM_HEADLESS") or "true")
+        .strip()
+        .lower()
+    )
     if headless_env in ("1", "true", "yes"):
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -43,7 +48,11 @@ def _create_driver() -> webdriver.Chrome:
     except Exception:
         # Best-effort; continue if CDP not available
         pass
-    driver.set_page_load_timeout(60)
+    try:
+        from .config import SETTINGS  # Lazy import to avoid cycles
+        driver.set_page_load_timeout(int(getattr(SETTINGS, "page_load_timeout", 60)))
+    except Exception:
+        driver.set_page_load_timeout(60)
     return driver
 
 

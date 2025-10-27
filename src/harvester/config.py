@@ -5,6 +5,10 @@ This converts prior Playwright selectors into robust Selenium-friendly
 XPaths/CSS selectors and keeps course mappings and URLs separated from logic.
 """
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, AliasChoices
+import os
+
 # --- Core URLs ---
 LOGIN_URL = "https://coach.tetr.com/login"
 BASE_URL = "https://coach.tetr.com/"
@@ -164,3 +168,48 @@ DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline
+
+
+# --- Structured settings (via Pydantic Settings) ---
+class HarvesterSettings(BaseSettings):
+    """Centralized, typed settings for harvester behavior.
+
+    Values can be configured via environment variables. Prefer the
+    HARVESTER_* variants, but common legacy envs are supported where noted.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS
+    selenium_headless: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("HARVESTER_SELENIUM_HEADLESS", "SELENIUM_HEADLESS"),
+    )
+
+    # Page load timeout for Selenium's driver
+    page_load_timeout: int = Field(
+        default=60,
+        validation_alias=AliasChoices("HARVESTER_PAGE_LOAD_TIMEOUT"),
+    )
+
+    # Default wait timeout for WebDriverWait operations
+    wait_timeout: int = Field(
+        default=30,
+        validation_alias=AliasChoices("HARVESTER_WAIT_TIMEOUT"),
+    )
+
+    # Directory to store screenshots when errors occur
+    screenshot_dir: str = Field(
+        default="logs/error_screenshots",
+        validation_alias=AliasChoices("HARVESTER_SCREENSHOT_DIR"),
+    )
+
+    # Temporary downloads directory for any saved assets
+    downloads_dir: str = Field(
+        default="/tmp/harvester_downloads",
+        validation_alias=AliasChoices("HARVESTER_DOWNLOADS_DIR"),
+    )
+
+
+# Instantiate settings once for module-level access
+SETTINGS = HarvesterSettings()
