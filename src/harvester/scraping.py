@@ -2,13 +2,18 @@
 
 import logging
 import time
-import asyncio
-import os # For path joining in download
+import os
 import random
-import aiohttp # For async HTTP requests
+from typing import Optional
+
+import requests
 from bs4 import BeautifulSoup
-from readability import Document as ReadabilityDocument # To extract main content
-from playwright.async_api import Page, BrowserContext
+from readability import Document as ReadabilityDocument
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from selenium import webdriver
 from . import config
 
 # Use a browser-like User-Agent to avoid 403s from some sites
@@ -20,248 +25,191 @@ BROWSER_HEADER = {
     )
 }
 
-# --- Existing Transcript Scraping Functions ---
-async def _scrape_drive_transcript(page: Page) -> str:
-    # ... (Keep existing implementation with Play/Settings/Transcript clicks) ...
+def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
     logging.info("   Attempting Google Drive transcript scrape...")
     raw_transcription = ""
     try:
-        play_button = page.locator(config.DRIVE_VIDEO_PLAY_BUTTON).first
-        # Ensure we wait for the element before checking visibility; Playwright's is_visible doesn't take timeout
+        wait = WebDriverWait(driver, 30)
+        # Try to click play
         try:
-            await play_button.wait_for(state="visible", timeout=10000)
-            logging.info("      Clicking play button...")
-            await play_button.click(timeout=5000)
-            await page.wait_for_timeout(2000)
-        except Exception:
-            logging.info("      Play button not immediately visible or already played, proceeding...")
+            play_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_PLAY_BUTTON_CSS)))
+            driver.execute_script("arguments[0].click();", play_btn)
+            time.sleep(2)
+        except TimeoutException:
+            logging.info("      Play button not found; proceeding...")
 
-        settings_button = page.locator(config.DRIVE_SETTINGS_BUTTON).first
-        logging.info("      Clicking settings (gear) button...")
-        await settings_button.wait_for(state="visible", timeout=15000)
-        await settings_button.click(timeout=5000)
+        # Open settings gear
+        settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
+        driver.execute_script("arguments[0].click();", settings_btn)
+        time.sleep(2)
 
-        transcript_menu_item = page.locator(config.DRIVE_TRANSCRIPT_MENU_ITEM).first
-        logging.info("      Clicking transcript menu item...")
-        await transcript_menu_item.wait_for(state="visible", timeout=10000)
-        await transcript_menu_item.click(timeout=5000)
+        # Wait for transcript heading or container
+        try:
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_HEADING_CSS)))
+        except TimeoutException:
+            logging.info("      Transcript heading not found; checking container directly...")
 
-        logging.info("      Waiting for transcript segments to appear...")
-        transcript_segment_selector = config.DRIVE_TRANSCRIPT_SEGMENT_SELECTOR
-        await page.wait_for_selector(transcript_segment_selector, state="visible", timeout=45000)
+        # Container and segments
+        container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)))
+        # Scroll to bottom to load all
+        last_height = 0
+        for _ in range(60):
+            new_height = driver.execute_script("return arguments[0].scrollHeight", container)
+            if new_height == last_height:
+                break
+            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", container)
+            last_height = new_height
+            time.sleep(1)
 
-        all_segments = await page.locator(transcript_segment_selector).all_text_contents()
-        raw_transcription = " ".join(filter(None, all_segments))
-
+        segments = driver.find_elements(By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_SEGMENT_CSS)
+        texts = [seg.text.strip() for seg in segments if seg.text and seg.text.strip()]
+        raw_transcription = " ".join(texts)
         if raw_transcription:
             logging.info(f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars).")
         else:
             logging.warning("   Google Drive transcript segments found but were empty.")
-
     except Exception as e:
-        logging.error(f"   Failed during Google Drive transcript scraping steps: {e}", exc_info=True)
-        try: await page.screenshot(path=f"logs/error_screenshots/drive_scrape_error_{int(time.time())}.png")
-        except Exception as screen_err: logging.error(f"      Failed to save error screenshot: {screen_err}")
+        logging.error(f"   Failed during Google Drive transcript scraping: {e}")
+        try:
+            driver.save_screenshot(f"logs/error_screenshots/drive_scrape_error_{int(time.time())}.png")
+        except Exception:
+            pass
     return raw_transcription
 
-async def _scrape_zoom_transcript(page: Page) -> str:
-    """Scrapes transcript text from a Zoom recording page."""
+def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
     logging.info("   Attempting Zoom transcript scrape...")
     raw_transcription = ""
+    wait = WebDriverWait(driver, 30)
     try:
-        # 1. Try to find and click any cookie acceptance button (with human-like pauses)
-        cookie_button_selector = (
-            'button:has-text("Accept"), '
-            'button:has-text("Agree"), '
-            'button:has-text("Got it"), '
-            'button:has-text("Allow"), '
-            'button:has-text("Cookies Settings")'
-        )
-        try:
-            cookie_button = page.locator(cookie_button_selector).first
-            await cookie_button.wait_for(state="visible", timeout=7000)
-            logging.info("      Cookie banner found. Clicking...")
-            # Short random pause before interacting with the banner
-            await page.wait_for_timeout(int(random.uniform(500, 1200)))
+        # Cookie buttons (best-effort)
+        for text in ["Accept", "Agree", "Got it", "Allow", "Cookies Settings"]:
             try:
-                await cookie_button.hover()
-                await page.wait_for_timeout(int(random.uniform(250, 600)))
-            except Exception:
-                # Hover may fail for some overlays; proceed to click
+                btn = wait.until(EC.presence_of_element_located((By.XPATH, f"//button[contains(., '{text}')]")))
+                try:
+                    btn.click()
+                    time.sleep(random.uniform(0.4, 0.9))
+                    break
+                except Exception:
+                    pass
+            except TimeoutException:
                 pass
-            await cookie_button.click(delay=int(random.uniform(50, 150)))
-            # Wait a bit longer after closing banner
-            await page.wait_for_timeout(int(random.uniform(1000, 2000)))
-        except Exception:
-            logging.info("      No common cookie banner found or timed out, proceeding...")
 
-        # 2. Scroll a bit to mimic human behavior before interacting
-        logging.info("      Scrolling page slightly...")
-        for _ in range(random.randint(1, 3)):
-            await page.evaluate(f'window.scrollBy(0, {random.randint(100, 300)})')
-            await page.wait_for_timeout(int(random.uniform(400, 900)))
-        # Optionally return towards top before searching transcript
-        await page.evaluate('window.scrollTo(0, 0)')
-        await page.wait_for_timeout(int(random.uniform(500, 1000)))
+        # Light human-like scroll
+        driver.execute_script("window.scrollBy(0, 200);")
+        time.sleep(random.uniform(0.4, 0.9))
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(random.uniform(0.4, 0.9))
 
-        # 3. Try to click the video player to initialize it (optional interaction) with hover/delay
+        # Initialize player (best-effort)
         try:
-            # Slight pause before interacting with the player
-            await page.wait_for_timeout(int(random.uniform(800, 1800)))
-            player_locator = page.locator("div.playback-video").first
-            await player_locator.wait_for(state="visible", timeout=5000)
-            await player_locator.hover()
-            await page.wait_for_timeout(int(random.uniform(300, 700)))
-            await player_locator.click(timeout=3000, delay=int(random.uniform(50, 150)))
-            logging.info("      Clicked video player...")
-            await page.wait_for_timeout(int(random.uniform(1500, 2500)))
-        except Exception as e:
-            logging.info(f"      Video player interaction failed: {e}")
+            player = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.playback-video")))
+            driver.execute_script("arguments[0].click();", player)
+            time.sleep(random.uniform(1.0, 1.8))
+        except TimeoutException:
+            pass
 
-        # 4. Wait for the transcript list
-        list_selector = "ul.transcript-list"  # This selector is correct
-        await page.wait_for_selector(list_selector, state="attached", timeout=30000)
-        logging.info("      Transcript list container found.")
-
-        # 5. Wait for and extract the text
-        text_selector = "div.timeline div.text"  # This selector is also correct
-        await page.locator(text_selector).first.wait_for(state="visible", timeout=10000)
-
-        all_segments = await page.locator(text_selector).all_text_contents()
-        raw_transcription = " ".join(filter(None, all_segments))
-
+        # Wait for transcript list and texts
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)))
+        texts = [el.text for el in driver.find_elements(By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)]
+        raw_transcription = " ".join([t.strip() for t in texts if t and t.strip()])
         if raw_transcription:
             logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
         else:
             logging.warning("   Zoom transcript items found but were empty.")
     except Exception as e:
-        logging.error(f"   Failed to scrape Zoom transcript: {e}", exc_info=True)
+        logging.error(f"   Failed to scrape Zoom transcript: {e}")
         try:
             os.makedirs("logs/error_screenshots", exist_ok=True)
-            await page.screenshot(path=f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
-        except Exception as screen_err:
-            logging.error(f"      Failed to save error screenshot: {screen_err}")
-    return raw_transcription
-
-async def scrape_transcript_from_url(context: BrowserContext, url: str) -> str:
-    # ... (Keep existing implementation) ...
-    page = None
-    try:
-        page = await context.new_page()
-        try:
-            page.on(
-                "console",
-                lambda msg: logging.warning(f"BROWSER CONSOLE [{msg.type}]: {msg.text}")
-            )
+            driver.save_screenshot(f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
         except Exception:
             pass
+    return raw_transcription
+
+def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
+    try:
         logging.info(f"   Opening transcript URL: {url}")
-        await page.goto(url, wait_until="load", timeout=90000)
-        logging.info("      Waiting for page elements to potentially initialize...")
-        await page.wait_for_timeout(7000)
-        current_url = page.url
+        # Open in new tab to preserve course page
+        original = driver.current_window_handle
+        driver.execute_script("window.open(arguments[0], '_blank');", url)
+        WebDriverWait(driver, 30).until(lambda d: len(d.window_handles) > 1)
+        new_handle = [h for h in driver.window_handles if h != original][0]
+        driver.switch_to.window(new_handle)
+        time.sleep(4)
+        current_url = driver.current_url
         if "drive.google.com" in current_url:
-            return await _scrape_drive_transcript(page)
+            text = _scrape_drive_transcript(driver)
         elif "zoom.us" in current_url:
-            return await _scrape_zoom_transcript(page)
+            text = _scrape_zoom_transcript(driver)
         else:
             logging.warning(f"   Unknown recording platform at {current_url}. Skipping transcript scrape.")
-            return ""
+            text = ""
+        driver.close()
+        driver.switch_to.window(original)
+        return text
     except Exception as e:
-        logging.error(f"   Error navigating to or processing transcript URL {url}: {e}", exc_info=True)
-        if page:
-            try: await page.screenshot(path=f"logs/error_screenshots/nav_error_{int(time.time())}.png")
-            except Exception as screen_err: logging.error(f"      Failed to save navigation error screenshot: {screen_err}")
+        logging.error(f"   Error navigating to or processing transcript URL {url}: {e}")
+        try:
+            driver.save_screenshot(f"logs/error_screenshots/nav_error_{int(time.time())}.png")
+        except Exception:
+            pass
+        try:
+            # Ensure we return to original handle if possible
+            for h in driver.window_handles[:-1]:
+                pass
+            if driver.window_handles:
+                driver.switch_to.window(driver.window_handles[0])
+        except Exception:
+            pass
         return ""
-    finally:
-        if page:
-            try: await page.close(); logging.info(f"   Closed tab for {url}")
-            except Exception as close_err: logging.error(f"   Error closing page for {url}: {close_err}")
 
 
 # --- NEW HELPER FUNCTIONS ---
 
-async def check_url_content_type(url: str) -> str:
-    """Sends a HEAD request to determine the content type (PDF, HTML, etc.)."""
+def check_url_content_type(url: str) -> str:
     logging.debug(f"Checking content type for URL: {url}")
-    # Handle potential Playwright internal URLs if passed accidentally
-    if not url or not url.startswith(('http://', 'https://')):
-        logging.warning(f"Invalid or internal URL passed to check_url_content_type: {url}")
+    if not url or not url.startswith(("http://", "https://")):
+        logging.warning(f"Invalid URL for content type check: {url}")
         return "unknown"
     try:
-        async with aiohttp.ClientSession() as session:
-            # Use HEAD request to avoid downloading the whole file
-            async with session.head(url, timeout=15, allow_redirects=True, headers=BROWSER_HEADER) as response:
-                response.raise_for_status() # Raise error for bad status (4xx, 5xx)
-                content_type = response.headers.get('Content-Type', '').lower()
-                logging.debug(f"   URL: {url}, Content-Type: {content_type}")
-                return content_type
-    except aiohttp.ClientError as e:
-        logging.error(f"   Network error checking content type for {url}: {e}")
-        return "error"
-    except asyncio.TimeoutError:
-        logging.error(f"   Timeout checking content type for {url}")
-        return "error"
+        resp = requests.head(url, timeout=15, allow_redirects=True, headers=BROWSER_HEADER)
+        resp.raise_for_status()
+        return (resp.headers.get("Content-Type", "")).lower()
     except Exception as e:
-        logging.error(f"   Unexpected error checking content type for {url}: {e}")
+        logging.error(f"   Error checking content type for {url}: {e}")
         return "error"
 
-async def download_file(url: str, save_dir: str, filename: str) -> str | None:
-    """Downloads a file (e.g., PDF) from a URL asynchronously."""
+def download_file(url: str, save_dir: str, filename: str) -> Optional[str]:
     filepath = os.path.join(save_dir, filename)
     logging.info(f"   Attempting to download file from {url} to {filepath}")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=60, allow_redirects=True, headers=BROWSER_HEADER) as response: # Longer timeout for downloads
-                response.raise_for_status()
-                # Ensure save directory exists
-                os.makedirs(save_dir, exist_ok=True)
-                # Stream the download
-                with open(filepath, 'wb') as f:
-                    while True:
-                        chunk = await response.content.read(8192) # Read in chunks
-                        if not chunk:
-                            break
+        with requests.get(url, timeout=60, allow_redirects=True, headers=BROWSER_HEADER, stream=True) as r:
+            r.raise_for_status()
+            os.makedirs(save_dir, exist_ok=True)
+            with open(filepath, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
                         f.write(chunk)
-                logging.info(f"   Successfully downloaded {filename}")
-                return filepath
-    except aiohttp.ClientError as e:
-        logging.error(f"   Network error downloading {url}: {e}")
-        return None
-    except asyncio.TimeoutError:
-        logging.error(f"   Timeout downloading {url}")
-        return None
+        logging.info(f"   Successfully downloaded {filename}")
+        return filepath
     except Exception as e:
-        logging.error(f"   Unexpected error downloading {url}: {e}")
+        logging.error(f"   Error downloading {url}: {e}")
         return None
 
-async def scrape_html_content(url: str) -> str | None:
-    """Fetches an HTML page and extracts the main article text."""
+def scrape_html_content(url: str) -> Optional[str]:
     logging.info(f"   Attempting to scrape HTML content from: {url}")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30, allow_redirects=True, headers=BROWSER_HEADER) as response:
-                response.raise_for_status()
-                html_content = await response.text()
-
-                # Use readability-lxml to extract the main content
-                doc = ReadabilityDocument(html_content)
-                main_content_html = doc.summary() # Gets main content HTML
-                
-                # Convert main content HTML to clean text using BeautifulSoup
-                soup = BeautifulSoup(main_content_html, 'lxml')
-                main_text = soup.get_text(separator='\n', strip=True) # Get text, preserving paragraphs
-
-                logging.info(f"   Successfully scraped HTML content ({len(main_text)} chars).")
-                return main_text
-    except aiohttp.ClientError as e:
-        logging.error(f"   Network error scraping HTML {url}: {e}")
-        return None
-    except asyncio.TimeoutError:
-        logging.error(f"   Timeout scraping HTML {url}")
-        return None
+        resp = requests.get(url, timeout=30, allow_redirects=True, headers=BROWSER_HEADER)
+        resp.raise_for_status()
+        html_content = resp.text
+        doc = ReadabilityDocument(html_content)
+        main_content_html = doc.summary()
+        soup = BeautifulSoup(main_content_html, 'lxml')
+        main_text = soup.get_text(separator='\n', strip=True)
+        logging.info(f"   Successfully scraped HTML content ({len(main_text)} chars).")
+        return main_text
     except Exception as e:
-        logging.error(f"   Unexpected error scraping HTML {url}: {e}")
+        logging.error(f"   Error scraping HTML {url}: {e}")
         return None
 
     

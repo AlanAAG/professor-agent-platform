@@ -1,16 +1,16 @@
 # src/run_hybrid_pipeline.py
 
 import os
-import asyncio
 import datetime
 import logging
 import tempfile
-from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+from selenium import webdriver
 
 # --- Import project modules (package-qualified for -m execution) ---
 from src.harvester import navigation, scraping, config
 from src.refinery import cleaning, embedding, pdf_processing  # Added pdf_processing
+from selenium.webdriver.common.by import By
 from src.shared import utils
 
 # --- Setup Logging ---
@@ -49,7 +49,7 @@ os.makedirs(RAW_PDF_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-async def process_single_resource(context, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
+def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
     """
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
     Determines content type and calls appropriate processing functions.
@@ -72,14 +72,14 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
         if "drive.google.com" in url or "zoom.us" in url:
             content_type_tag = "recording_transcript"
             logging.info("   Content type: Recording Transcript. Scraping...")
-            transcript_text = await scraping.scrape_transcript_from_url(context, url)
+            transcript_text = scraping.scrape_transcript_from_url(driver, url)
             if transcript_text:
                 raw_content_data = transcript_text
             else:
                 logging.warning(f"   No transcript content scraped from {url}")
                 return
         else:
-            content_type_header = await scraping.check_url_content_type(url)
+            content_type_header = scraping.check_url_content_type(url)
 
             if content_type_header and "application/pdf" in content_type_header:
                 content_type_tag = "pdf"
@@ -87,7 +87,7 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
                 safe_filename_base = utils.create_safe_filename(
                     f"{class_name}_{date_obj.strftime('%Y-%m-%d') if date_obj else 'nodate'}_{title}"
                 )
-                temp_pdf_path = await scraping.download_file(url, TEMP_DIR, f"{safe_filename_base}.pdf")
+                temp_pdf_path = scraping.download_file(url, TEMP_DIR, f"{safe_filename_base}.pdf")
                 if temp_pdf_path:
                     raw_content_data = temp_pdf_path
                 else:
@@ -96,7 +96,7 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
             elif content_type_header and "text/html" in content_type_header:
                 content_type_tag = "webpage"
                 logging.info("   Content type: HTML. Scraping text...")
-                html_text = await scraping.scrape_html_content(url)
+                html_text = scraping.scrape_html_content(url)
                 if html_text:
                     raw_content_data = html_text
                 else:
@@ -183,7 +183,7 @@ async def process_single_resource(context, url: str, title: str, date_obj: datet
             except OSError as e: logging.warning(f"   Could not delete failed temp PDF {raw_content_data}: {e}")
 
 
-async def main_pipeline(mode="daily"):
+def main_pipeline(mode="daily"):
     """
     Main orchestration function for the stateless Harvester & Refinery pipeline.
     Connects scraping directly to cleaning and embedding.
@@ -201,180 +201,130 @@ async def main_pipeline(mode="daily"):
     else:
         raise ValueError(f"Unsupported pipeline mode: {mode}")
 
-    browser = None
-    context = None
-    page = None
+    driver = None
     try:
-        async with async_playwright() as p:
-            browser, context, page = await navigation.launch_and_login(p)
-            if not page:
-                logging.warning("Login failed or not configured. Falling back to unauthenticated browser for targeted test.")
-                # Close any partially created contexts/browsers
-                try:
-                    if context:
-                        await context.close()
-                except Exception:
-                    pass
-                try:
-                    if browser:
-                        await browser.close()
-                except Exception:
-                    pass
-                # Launch fresh browser without auth; sufficient for public Zoom links
-                browser = await p.chromium.launch()
-                context = await browser.new_context()
-                page = await context.new_page()
+        driver = navigation.launch_and_login()
 
-            # If we're still unauthenticated after launch_and_login, abort navigation that requires auth
-            if "/login" in (page.url or ""):
-                logging.error("Aborting navigation phase: still on login page after authentication attempt.")
-                return
+        # Store resources found during navigation phase
+        resources_to_process = []  # (url, title, date_obj, class_name, section_tag)
+        recent_check_cache: dict[str, bool] = {}
+        seen_urls: set[str] = set()
+        db_url_exists_cache: dict[str, bool] = {}
 
-            # Store resources found during navigation phase
-            resources_to_process = [] # List of tuples: (url, title, date_obj | None, class_name, section_tag)
-            # Caches to avoid redundant checks within a single run
-            recent_check_cache: dict[str, bool] = {}
-            seen_urls: set[str] = set()
-            db_url_exists_cache: dict[str, bool] = {}
+        logging.info("\n--- Starting Navigation Phase ---")
+        for course_code, course_details in config.COURSE_MAP.items():
+            class_name = course_details["name"]
+            group_name = course_details.get("group")
 
-            # --- Navigation Phase: Collect all new/relevant resource links ---
-            logging.info("\n--- Starting Navigation Phase ---")
-            for course_code, course_details in config.COURSE_MAP.items(): # Use COURSE_MAP from config
-                class_name = course_details["name"]
-                group_name = course_details.get("group") # Group might be None
+            logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
+            try:
+                navigation.find_and_click_course_link(driver, course_code, group_name)
 
-                logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
-                try:
-                    # Navigate to the specific course page
-                    await navigation.find_and_click_course_link(page, course_code, group_name)
-                    current_course_url = page.url # Store URL to potentially return later
+                if navigation.navigate_to_resources_section(driver):
+                    sections = [
+                        ("pre_read", config.PRE_READ_SECTION_TITLE),
+                        ("in_class", config.IN_CLASS_SECTION_TITLE),
+                        ("post_class", config.POST_CLASS_SECTION_TITLE),
+                        ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
+                    ]
 
-                    # --- Scrape Resources Tab (NEW LOGIC) ---
-                    if await navigation.navigate_to_resources_section(page):
-                        # Define the sections you want to scrape using your new config selectors
-                        # Section headers follow partner script pattern: div.dlvLeftHeader:has-text(...)
-                        # Item containers remain div.fileBox under the nearest following sibling container
-                        sections_to_scrape = [
-                            ("pre_read", config.PRE_READ_SECTION_SELECTOR),
-                            ("in_class", config.IN_CLASS_SECTION_SELECTOR),
-                            ("post_class", config.POST_CLASS_SECTION_SELECTOR),
-                            ("sessions", config.RECORDINGS_LINK_SELECTOR), # Re-use existing selector for sessions
-                        ]
-
-                        for section_tag, header_selector in sections_to_scrape:
-                            logging.info(f"--- Scraping Section: {section_tag} ---")
-                            try:
-                                section_header = page.locator(header_selector).first
-                                await section_header.wait_for(state="visible", timeout=7000)
-                                
-                                # --- THIS IS THE FIX ---
-                                # Click the section header to expand the accordion
-                                logging.info(f"   Found section header: {section_tag}. Clicking to expand...")
-                                await section_header.click(timeout=5000)
-                                # Wait for the accordion animation to finish
-                                await page.wait_for_timeout(1500) 
-                                # --- END FIX ---
-
-                                # The header `div.sc-kRJjUj` sits inside `div.sc-hsNTtK`; items live in the next sibling container
-                                section_container = section_header.locator("xpath=./parent::div/following-sibling::div[1]")
-                                item_locators = section_container.locator(config.RESOURCE_ITEM_SELECTOR)
-                                count = await item_locators.count()
-
-                                logging.info(f"   Found {count} items in section '{section_tag}'.")
-
-                                for i in range(count):
-                                    item = item_locators.nth(i)
-                                    url, title, date_text = None, None, None
+                    for section_tag, title_text in sections:
+                        logging.info(f"--- Scraping Section: {section_tag} ---")
+                        try:
+                            items = navigation.expand_section_and_get_items(driver, title_text)
+                            logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
+                            for item in items:
+                                url, title, date_text = None, None, None
+                                try:
+                                    # Link
+                                    link_el = item.find_element(By.TAG_NAME, "a")
+                                    href = link_el.get_attribute("href")
+                                    if href and not href.startswith("http"):
+                                        href = config.BASE_URL + href.lstrip('/')
+                                    url = href
+                                    # Title
                                     try:
-                                        link_locator = item.locator("a").first
-                                        url = await link_locator.get_attribute("href", timeout=2000)
-                                        if url and not url.startswith("http"):
-                                            url = config.BASE_URL + url.lstrip('/')
+                                        title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                        title = title_el.text
+                                    except Exception:
+                                        title = url or ""
+                                    # Date
+                                    try:
+                                        date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                        date_text = date_el.text
+                                    except Exception:
+                                        date_text = None
 
-                                        title = await item.locator(config.RESOURCE_TITLE_SELECTOR).text_content(timeout=2000)
-                                        date_text_element = item.locator(config.RESOURCE_DATE_SELECTOR).first
-                                        date_text = await date_text_element.text_content(timeout=1000) if await date_text_element.is_visible() else None
-
-                                        if not url or not title:
-                                            logging.warning("      Skipping item (missing URL or Title)")
-                                            continue
-
-                                        # Skip YouTube links
-                                        if "youtube.com" in url or "youtu.be" in url:
-                                            logging.info(f"      Skipping YouTube video: {title}")
-                                            continue
-
-                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
-
-                                        # Run date/dupe checks
-                                        should_process = False
-                                        if parsed_date:
-                                            if parsed_date >= cutoff_date:
-                                                should_process = True
-                                            else:
-                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                        else:
-                                            exists_recently = recent_check_cache.get(url)
-                                            if exists_recently is None:
-                                                exists_recently = await embedding.check_if_embedded_recently(filter={"source_url": url}, days=2)
-                                                recent_check_cache[url] = exists_recently
-                                            should_process = not exists_recently
-                                            if not should_process:
-                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
-
-                                        if should_process:
-                                            if DEDUP_BY_URL:
-                                                exists_in_db = db_url_exists_cache.get(url)
-                                                if exists_in_db is None:
-                                                    exists_in_db = await embedding.url_exists_in_db(url)
-                                                    db_url_exists_cache[url] = exists_in_db
-                                                if exists_in_db:
-                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-                                                    continue
-
-                                            if url in seen_urls:
-                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                            else:
-                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
-                                                seen_urls.add(url)
-
-                                    except Exception as item_err:
-                                        logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                    if not url or not title:
+                                        logging.info("      Skipping item (missing URL or Title)")
                                         continue
 
-                            except Exception as section_err:
-                                logging.warning(f"   Skipping section '{section_tag}'. Could not find header or items. (Error: {section_err})")
-                                continue
+                                    if "youtube.com" in url or "youtu.be" in url:
+                                        logging.info(f"      Skipping YouTube video: {title}")
+                                        continue
 
-                    # Static syllabus scraping and embedding removed; topics inferred from general materials
+                                    parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                    should_process = False
+                                    if parsed_date:
+                                        if parsed_date >= cutoff_date:
+                                            should_process = True
+                                        else:
+                                            logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                    else:
+                                        exists_recently = recent_check_cache.get(url)
+                                        if exists_recently is None:
+                                        exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
+                                        recent_check_cache[url] = exists_recently
+                                        should_process = not exists_recently
+                                        if not should_process:
+                                            logging.info(f"      Skipping undated resource (found in recent DB): {url}")
 
+                                    if should_process:
+                                        if DEDUP_BY_URL:
+                                            exists_in_db = db_url_exists_cache.get(url)
+                                            if exists_in_db is None:
+                                                # We only have async version; best-effort skip extra DB roundtrip here
+                                            exists_in_db = embedding.url_exists_in_db_sync(url)
+                                            db_url_exists_cache[url] = exists_in_db
+                                            if exists_in_db:
+                                                logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                continue
 
-                except Exception as course_err:
-                    logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
-                    # Ensure we navigate back to a known state if possible
-                    try: await page.goto(config.COURSES_URL)
-                    except Exception: logging.error("Failed to navigate back to courses page after error.")
-                    continue # Skip to next course
+                                        if url in seen_urls:
+                                            logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                        else:
+                                            logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                            resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                            seen_urls.add(url)
+                                except Exception as item_err:
+                                    logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                    continue
+                        except Exception as section_err:
+                            logging.warning(f"   Skipping section '{section_tag}'. Error: {section_err}")
+                            continue
 
-            logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
+            except Exception as course_err:
+                logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                try:
+                    driver.get(config.COURSES_URL)
+                except Exception:
+                    logging.error("Failed to navigate back to courses page after error.")
+                continue
 
-            # --- Processing Phase: Handle collected resource links ---
-            logging.info("\n--- Starting Processing Phase ---")
-            for url, title, date_obj, class_name, section_tag in resources_to_process:
-                # Process each resource - this function handles type detection, download/scrape, refinery, embedding
-                await process_single_resource(context, url, title, date_obj, class_name, section_tag)
+        logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
+
+        logging.info("\n--- Starting Processing Phase ---")
+        for url, title, date_obj, class_name, section_tag in resources_to_process:
+            process_single_resource(driver, url, title, date_obj, class_name, section_tag)
 
     except Exception as pipeline_err:
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
-        # Ensure browser is closed in case of crash
     finally:
-        # When using persistent context, only close the context; it manages pages and underlying browser
-        try:
-            if context:
-                await context.close()
-        except Exception:
-            pass
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
         logging.info("🚀 Hybrid Pipeline Finished.")
 
 # --- Allow running the script directly ---
@@ -384,13 +334,10 @@ if __name__ == "__main__":
     # parser = argparse.ArgumentParser(description="Run the Harvester & Refinery Pipeline.")
     # parser.add_argument('--mode', type=str, default="daily", choices=['daily', 'backlog'], help="Pipeline mode: 'daily' or 'backlog'.")
     # args = parser.parse_args()
-    # asyncio.run(main_pipeline(mode=args.mode))
-
     # --- Default Run (e.g., for GitHub Actions) ---
-    # Reads mode from environment variable or defaults to 'daily'
     pipeline_mode = os.environ.get("PIPELINE_MODE", "daily").lower()
     if pipeline_mode not in ["daily", "backlog"]:
         logging.warning(f"Invalid PIPELINE_MODE '{pipeline_mode}'. Defaulting to 'daily'.")
         pipeline_mode = "daily"
 
-    asyncio.run(main_pipeline(mode=pipeline_mode))
+    main_pipeline(mode=pipeline_mode)
