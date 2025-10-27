@@ -180,6 +180,17 @@ class HarvesterSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    # --- Secrets loaded from .env ---
+    # These fields are added to accept the values from the .env file
+    # created by the GitHub Action, resolving the ValidationError.
+    GEMINI_API_KEY: str = Field(default="...")
+    COHERE_API_KEY: str = Field(default="...")
+    SUPABASE_URL: str = Field(default="...")
+    SUPABASE_KEY: str = Field(default="...")
+    COACH_USERNAME: str = Field(default="...")
+    COACH_PASSWORD: str = Field(default="...")
+
+    # --- Harvester-specific settings ---
     # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS
     selenium_headless: bool = Field(
         default=True,
