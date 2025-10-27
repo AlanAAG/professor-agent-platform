@@ -50,6 +50,114 @@ def cohere_rerank(query: str, documents: List[Any]) -> List[Any]:
     except Exception as e:
         logging.warning(f"Cohere re-ranking failed, using original order: {e}")
         return documents
+ 
+# --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None  # Optional dependency
+
+try:
+    from supabase import create_client, Client
+except Exception:
+    create_client = None  # type: ignore
+    Client = None  # type: ignore
+
+try:
+    from langchain_core.documents import Document
+except Exception:
+    Document = None  # type: ignore
+
+_SUPABASE_CLIENT = None
+
+
+def _get_supabase_client():
+    """Return a cached Supabase client, preferring EXTERNAL_ env vars."""
+    global _SUPABASE_CLIENT
+    if _SUPABASE_CLIENT is not None:
+        return _SUPABASE_CLIENT
+    if not create_client:
+        raise RuntimeError("Supabase client not available. Install 'supabase'.")
+
+    url = os.environ.get("EXTERNAL_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    key = os.environ.get("EXTERNAL_SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError(
+            "Supabase credentials missing. Set EXTERNAL_SUPABASE_URL/EXTERNAL_SUPABASE_SERVICE_KEY or SUPABASE_URL/SUPABASE_KEY",
+        )
+    _SUPABASE_CLIENT = create_client(url, key)
+    return _SUPABASE_CLIENT
+
+
+def _ensure_genai():
+    if genai is None:
+        raise RuntimeError("google-generativeai not available. Install 'google-generativeai'.")
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing GOOGLE_API_KEY or GEMINI_API_KEY for embeddings.")
+    genai.configure(api_key=api_key)
+
+
+def embed_query(text: str, model: str | None = None) -> list[float]:
+    """Embed a query string using Gemini embeddings."""
+    _ensure_genai()
+    embedding_model = model or EMBEDDING_MODEL_NAME
+    result = genai.embed_content(
+        model=embedding_model,
+        content=text,
+        task_type="retrieval_query",
+    )
+    return result.get("embedding") or result["embedding"]
+
+
+def retrieve_rag_documents(
+    query: str,
+    selected_class: str | None = None,
+    match_count: int = 20,
+    match_threshold: float = 0.7,
+) -> list[dict]:
+    """Retrieve documents via Supabase 'match_documents' RPC."""
+    supabase = _get_supabase_client()
+    query_embedding = embed_query(query)
+    payload = {
+        "query_embedding": query_embedding,
+        "match_threshold": float(match_threshold),
+        "match_count": int(match_count),
+    }
+    if selected_class:
+        payload["filter_class"] = selected_class
+    response = supabase.rpc("match_documents", payload).execute()
+    return getattr(response, "data", None) or []
+
+
+def _to_langchain_documents(raw_docs: list[dict]) -> list[Document]:
+    if Document is None:
+        raise RuntimeError("langchain-core is required to build Document objects.")
+    docs: list[Document] = []
+    for d in raw_docs:
+        content = d.get("page_content") or d.get("content") or ""
+        meta = d.get("metadata") or {}
+        for key in ("class_name", "title", "section", "url", "id", "similarity"):
+            if key in d and key not in meta:
+                meta[key] = d[key]
+        docs.append(Document(page_content=content, metadata=meta))
+    return docs
+
+
+def retrieve_rag_documents_langchain(
+    query: str,
+    selected_class: str | None = None,
+    match_count: int = 20,
+    match_threshold: float = 0.7,
+):
+    """Retrieve documents and return as LangChain Document objects."""
+    raw = retrieve_rag_documents(
+        query=query,
+        selected_class=selected_class,
+        match_count=match_count,
+        match_threshold=match_threshold,
+    )
+    return _to_langchain_documents(raw)
 import datetime
 import logging
 from typing import Optional

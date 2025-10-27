@@ -38,29 +38,35 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
         # Try to click play
         try:
             play_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_PLAY_BUTTON_CSS)))
-            driver.execute_script("arguments[0].click();", play_btn)
-            # Wait a short moment for player state change by checking for settings button
-            try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
-            except TimeoutException:
-                pass
         except TimeoutException:
             logging.info(f"      Play button not found within timeout (selector: {config.DRIVE_PLAY_BUTTON_CSS}); proceeding...")
-        except (NoSuchElementException, StaleElementReferenceException) as e:
-            logging.info(f"      Play button lookup failed ({type(e).__name__}); proceeding anyway.")
+            play_btn = None
+        except (NoSuchElementException, StaleElementReferenceException):
+            logging.info("      Play button lookup failed; proceeding anyway.")
+            play_btn = None
+        if play_btn is not None:
+            try:
+                driver.execute_script("arguments[0].click();", play_btn)
+                try:
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
+                except TimeoutException:
+                    pass
+            except Exception as e:
+                logging.debug(f"      Ignoring error clicking play: {e}")
 
         # Open settings gear
         try:
             settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
-            driver.execute_script("arguments[0].click();", settings_btn)
         except TimeoutException:
             logging.error(f"      Settings button not clickable (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
             raise
-        except ElementClickInterceptedException as e:
-            logging.error("      Click on settings button was intercepted.")
-            raise
         except NoSuchElementException:
             logging.error(f"      Settings button not present (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
+            raise
+        try:
+            driver.execute_script("arguments[0].click();", settings_btn)
+        except ElementClickInterceptedException:
+            logging.error("      Click on settings button was intercepted.")
             raise
         # Wait for transcript UI to appear
         try:
@@ -82,6 +88,12 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
             container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)))
         except TimeoutException:
             logging.error(f"      Transcript container not found (selector: {config.DRIVE_TRANSCRIPT_CONTAINER_CSS}).")
+            # Capture a screenshot right where it fails
+            try:
+                os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+                driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_no_container_{int(time.time())}.png"))
+            except Exception:
+                pass
             raise
         # Scroll to bottom to load all with explicit wait for growth
         last_height = driver.execute_script("return arguments[0].scrollHeight", container)
@@ -96,7 +108,7 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
                 break
 
         segments = driver.find_elements(By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_SEGMENT_CSS)
-        texts = [seg.text.strip() for seg in segments if seg.text and seg.text.strip()]
+        texts = [seg.text.strip() for seg in segments if getattr(seg, 'text', '').strip()]
         raw_transcription = " ".join(texts)
         if raw_transcription:
             logging.info(f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars).")
@@ -131,21 +143,21 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
     wait = WebDriverWait(driver, getattr(config, "SETTINGS", None).wait_timeout if hasattr(config, "SETTINGS") else 30)
     try:
         # Cookie buttons (best-effort)
-        for text in ["Accept", "Agree", "Got it", "Allow", "Cookies Settings"]:
+        for label in ["Accept", "Agree", "Got it", "Allow", "Cookies Settings"]:
             try:
-                btn = wait.until(EC.presence_of_element_located((By.XPATH, f"//button[contains(., '{text}')]")))
-                try:
-                    btn.click()
-                    # Short explicit wait for disappearance or non-blocking
-                    try:
-                        WebDriverWait(driver, 2).until(EC.staleness_of(btn))
-                    except TimeoutException:
-                        pass
-                    break
-                except Exception:
-                    pass
+                btn = wait.until(EC.presence_of_element_located((By.XPATH, f"//button[contains(., '{label}')]")))
             except TimeoutException:
-                logging.debug(f"      Cookie consent button not found for text '{text}'.")
+                continue
+            try:
+                btn.click()
+                try:
+                    WebDriverWait(driver, 2).until(EC.staleness_of(btn))
+                except TimeoutException:
+                    pass
+                break
+            except Exception:
+                # Non-fatal; continue with scraping
+                pass
 
         # Light human-like scroll
         driver.execute_script("window.scrollBy(0, 200);")
@@ -154,27 +166,40 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
         # Initialize player (best-effort)
         try:
             player = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.playback-video")))
-            driver.execute_script("arguments[0].click();", player)
-            # Wait for transcript list presence instead of fixed sleep
+        except TimeoutException:
+            player = None
+        except NoSuchElementException:
+            player = None
+        if player is not None:
+            try:
+                driver.execute_script("arguments[0].click();", player)
+            except Exception:
+                pass
             try:
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
             except TimeoutException:
                 pass
-        except TimeoutException:
-            logging.debug("      Zoom player not found within timeout; continuing to transcript extraction.")
-        except NoSuchElementException:
-            logging.debug("      Zoom player element not present; continuing.")
 
         # Wait for transcript list and texts
         try:
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
         except TimeoutException:
             logging.error(f"      Transcript list not found (selector: {config.ZOOM_TRANSCRIPT_LIST_CSS}).")
+            try:
+                os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+                driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_no_list_{int(time.time())}.png"))
+            except Exception:
+                pass
             raise
         try:
             wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)))
         except TimeoutException:
             logging.error(f"      Transcript text not visible (selector: {config.ZOOM_TRANSCRIPT_TEXT_CSS}).")
+            try:
+                os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+                driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_text_not_visible_{int(time.time())}.png"))
+            except Exception:
+                pass
             raise
         texts = [el.text for el in driver.find_elements(By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)]
         raw_transcription = " ".join([t.strip() for t in texts if t and t.strip()])
