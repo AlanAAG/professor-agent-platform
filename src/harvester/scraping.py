@@ -34,14 +34,25 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
         try:
             play_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_PLAY_BUTTON_CSS)))
             driver.execute_script("arguments[0].click();", play_btn)
-            time.sleep(2)
+            # Wait a short moment for player state change by checking for settings button
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
+            except TimeoutException:
+                pass
         except TimeoutException:
             logging.info("      Play button not found; proceeding...")
 
         # Open settings gear
         settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
         driver.execute_script("arguments[0].click();", settings_btn)
-        time.sleep(2)
+        # Wait for transcript UI to appear
+        try:
+            wait.until(EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_HEADING_CSS)),
+                EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)),
+            ))
+        except TimeoutException:
+            pass
 
         # Wait for transcript heading or container
         try:
@@ -51,15 +62,17 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
 
         # Container and segments
         container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)))
-        # Scroll to bottom to load all
-        last_height = 0
+        # Scroll to bottom to load all with explicit wait for growth
+        last_height = driver.execute_script("return arguments[0].scrollHeight", container)
         for _ in range(60):
-            new_height = driver.execute_script("return arguments[0].scrollHeight", container)
-            if new_height == last_height:
-                break
             driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", container)
-            last_height = new_height
-            time.sleep(1)
+            try:
+                WebDriverWait(driver, 3).until(
+                    lambda d: d.execute_script("return arguments[0].scrollHeight", container) > last_height
+                )
+                last_height = driver.execute_script("return arguments[0].scrollHeight", container)
+            except TimeoutException:
+                break
 
         segments = driver.find_elements(By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_SEGMENT_CSS)
         texts = [seg.text.strip() for seg in segments if seg.text and seg.text.strip()]
@@ -87,7 +100,11 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
                 btn = wait.until(EC.presence_of_element_located((By.XPATH, f"//button[contains(., '{text}')]")))
                 try:
                     btn.click()
-                    time.sleep(random.uniform(0.4, 0.9))
+                    # Short explicit wait for disappearance or non-blocking
+                    try:
+                        WebDriverWait(driver, 2).until(EC.staleness_of(btn))
+                    except TimeoutException:
+                        pass
                     break
                 except Exception:
                     pass
@@ -96,15 +113,17 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
 
         # Light human-like scroll
         driver.execute_script("window.scrollBy(0, 200);")
-        time.sleep(random.uniform(0.4, 0.9))
         driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(random.uniform(0.4, 0.9))
 
         # Initialize player (best-effort)
         try:
             player = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.playback-video")))
             driver.execute_script("arguments[0].click();", player)
-            time.sleep(random.uniform(1.0, 1.8))
+            # Wait for transcript list presence instead of fixed sleep
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
+            except TimeoutException:
+                pass
         except TimeoutException:
             pass
 
@@ -135,7 +154,16 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
         WebDriverWait(driver, 30).until(lambda d: len(d.window_handles) > 1)
         new_handle = [h for h in driver.window_handles if h != original][0]
         driver.switch_to.window(new_handle)
-        time.sleep(4)
+        # Wait for page to begin loading content
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.any_of(
+                    EC.url_contains("drive.google.com"),
+                    EC.url_contains("zoom.us"),
+                )
+            )
+        except Exception:
+            pass
         current_url = driver.current_url
         if "drive.google.com" in current_url:
             text = _scrape_drive_transcript(driver)

@@ -1,6 +1,55 @@
 # src/shared/utils.py
 
 import re
+import os
+import logging
+from typing import List, Any
+
+try:
+    import cohere
+except Exception:
+    cohere = None  # Optional dependency
+
+# Shared constants
+EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")
+
+
+def cohere_rerank(query: str, documents: List[Any]) -> List[Any]:
+    """Re-rank a list of documents using Cohere, if configured.
+
+    - Accepts either list of strings or objects with 'page_content'/'content'.
+    - Returns list reordered by relevance. If Cohere is not configured or
+      an error occurs, returns the input order.
+    """
+    api_key = os.environ.get("COHERE_API_KEY")
+    if not api_key or not cohere or not documents:
+        return documents
+
+    try:
+        client = cohere.Client(api_key)
+        # Normalize to strings list and keep mapping
+        texts: List[str] = []
+        index_to_doc: dict[int, Any] = {}
+        for i, doc in enumerate(documents):
+            if isinstance(doc, str):
+                content = doc
+            elif isinstance(doc, dict):
+                content = doc.get("page_content") or doc.get("content") or ""
+            else:
+                content = getattr(doc, "page_content", None) or getattr(doc, "content", None) or ""
+            texts.append(content)
+            index_to_doc[i] = doc
+
+        results = client.rerank(
+            query=query,
+            documents=texts,
+            top_n=len(texts),
+            model=os.environ.get("COHERE_RERANK_MODEL", "rerank-english-v3.0"),
+        )
+        return [index_to_doc[r.index] for r in results.results]
+    except Exception as e:
+        logging.warning(f"Cohere re-ranking failed, using original order: {e}")
+        return documents
 import datetime
 import logging
 from typing import Optional
