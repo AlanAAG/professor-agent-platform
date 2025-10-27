@@ -220,7 +220,31 @@ async def url_exists_in_db(url: str) -> bool:
     if not supabase:
         # If Supabase isn't configured, avoid blocking the pipeline
         return False
+    if not url:
+        return False
 
+    try:
+        def _execute_query():
+            return (
+                supabase
+                .table("documents")
+                .select("id", count="exact")
+                .eq("metadata->>source_url", url)
+                .limit(1)
+                .execute()
+            )
+
+        response = await asyncio.to_thread(_execute_query)
+
+        count = getattr(response, "count", None)
+        if count is None and isinstance(response, dict):
+            count = response.get("count")
+
+        return bool(count and count > 0)
+    except Exception as e:
+        logging.error(f"Error checking Supabase for existing URL '{url}': {e}")
+        # Fail-open: if the check fails, allow processing rather than silently skipping
+        return False
 
 # --- Synchronous helpers for harvesting pipeline ---
 def check_if_embedded_recently_sync(filter: dict, days: int = 2) -> bool:
@@ -276,31 +300,7 @@ def url_exists_in_db_sync(url: str) -> bool:
     except Exception as e:
         logging.error(f"Error (sync) checking Supabase for existing URL '{url}': {e}")
         return False
-    if not url:
-        return False
-
-    try:
-        def _execute_query():
-            return (
-                supabase
-                .table("documents")
-                .select("id", count="exact")
-                .eq("metadata->>source_url", url)
-                .limit(1)
-                .execute()
-            )
-
-        response = await asyncio.to_thread(_execute_query)
-
-        count = getattr(response, "count", None)
-        if count is None and isinstance(response, dict):
-            count = response.get("count")
-
-        return bool(count and count > 0)
-    except Exception as e:
-        logging.error(f"Error checking Supabase for existing URL '{url}': {e}")
-        # Fail-open: if the check fails, allow processing rather than silently skipping
-        return False
+    # <<< FAULTY, DUPLICATED ASYNC LOGIC REMOVED FROM HERE >>>
 
 # --- Optional: Test Initialization ---
 # You can run this file directly (`python src/refinery/embedding.py`)
