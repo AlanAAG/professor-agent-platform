@@ -42,11 +42,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      # Step 4: Install Playwright browsers
-      - name: Install Playwright browsers
-        run: |
-          playwright install chromium
-          playwright install-deps chromium
+      # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
+      - name: Install Google Chrome
+        uses: browser-actions/setup-chrome@v1
       
       # Step 5: Create necessary directories
       - name: Create data directories
@@ -67,6 +65,7 @@ jobs:
           COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
           COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
           PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
+          HARVESTER_SELENIUM_HEADLESS: 'true'
         run: |
           python -m src.run_hybrid_pipeline
       

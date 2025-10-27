@@ -12,7 +12,12 @@ from readability import Document as ReadabilityDocument
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+)
 from selenium import webdriver
 from . import config
 
@@ -29,7 +34,7 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
     logging.info("   Attempting Google Drive transcript scrape...")
     raw_transcription = ""
     try:
-        wait = WebDriverWait(driver, 30)
+        wait = WebDriverWait(driver, getattr(config, "SETTINGS", None).wait_timeout if hasattr(config, "SETTINGS") else 30)
         # Try to click play
         try:
             play_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_PLAY_BUTTON_CSS)))
@@ -40,11 +45,23 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
             except TimeoutException:
                 pass
         except TimeoutException:
-            logging.info("      Play button not found; proceeding...")
+            logging.info(f"      Play button not found within timeout (selector: {config.DRIVE_PLAY_BUTTON_CSS}); proceeding...")
+        except (NoSuchElementException, StaleElementReferenceException) as e:
+            logging.info(f"      Play button lookup failed ({type(e).__name__}); proceeding anyway.")
 
         # Open settings gear
-        settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
-        driver.execute_script("arguments[0].click();", settings_btn)
+        try:
+            settings_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
+            driver.execute_script("arguments[0].click();", settings_btn)
+        except TimeoutException:
+            logging.error(f"      Settings button not clickable (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
+            raise
+        except ElementClickInterceptedException as e:
+            logging.error("      Click on settings button was intercepted.")
+            raise
+        except NoSuchElementException:
+            logging.error(f"      Settings button not present (selector: {config.DRIVE_SETTINGS_BUTTON_CSS}).")
+            raise
         # Wait for transcript UI to appear
         try:
             wait.until(EC.any_of(
@@ -61,7 +78,11 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
             logging.info("      Transcript heading not found; checking container directly...")
 
         # Container and segments
-        container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)))
+        try:
+            container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)))
+        except TimeoutException:
+            logging.error(f"      Transcript container not found (selector: {config.DRIVE_TRANSCRIPT_CONTAINER_CSS}).")
+            raise
         # Scroll to bottom to load all with explicit wait for growth
         last_height = driver.execute_script("return arguments[0].scrollHeight", container)
         for _ in range(60):
@@ -81,10 +102,25 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
             logging.info(f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars).")
         else:
             logging.warning("   Google Drive transcript segments found but were empty.")
+    except TimeoutException as e:
+        logging.error(f"   Timed out during Google Drive transcript scraping: {e}")
+        try:
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_timeout_{int(time.time())}.png"))
+        except Exception:
+            pass
+    except NoSuchElementException as e:
+        logging.error(f"   Missing expected element on Google Drive page: {e}")
+        try:
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_no_such_{int(time.time())}.png"))
+        except Exception:
+            pass
     except Exception as e:
         logging.error(f"   Failed during Google Drive transcript scraping: {e}")
         try:
-            driver.save_screenshot(f"logs/error_screenshots/drive_scrape_error_{int(time.time())}.png")
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"drive_scrape_error_{int(time.time())}.png"))
         except Exception:
             pass
     return raw_transcription
@@ -92,7 +128,7 @@ def _scrape_drive_transcript(driver: webdriver.Chrome) -> str:
 def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
     logging.info("   Attempting Zoom transcript scrape...")
     raw_transcription = ""
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, getattr(config, "SETTINGS", None).wait_timeout if hasattr(config, "SETTINGS") else 30)
     try:
         # Cookie buttons (best-effort)
         for text in ["Accept", "Agree", "Got it", "Allow", "Cookies Settings"]:
@@ -109,7 +145,7 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
                 except Exception:
                     pass
             except TimeoutException:
-                pass
+                logging.debug(f"      Cookie consent button not found for text '{text}'.")
 
         # Light human-like scroll
         driver.execute_script("window.scrollBy(0, 200);")
@@ -125,22 +161,46 @@ def _scrape_zoom_transcript(driver: webdriver.Chrome) -> str:
             except TimeoutException:
                 pass
         except TimeoutException:
-            pass
+            logging.debug("      Zoom player not found within timeout; continuing to transcript extraction.")
+        except NoSuchElementException:
+            logging.debug("      Zoom player element not present; continuing.")
 
         # Wait for transcript list and texts
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
-        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)))
+        try:
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_LIST_CSS)))
+        except TimeoutException:
+            logging.error(f"      Transcript list not found (selector: {config.ZOOM_TRANSCRIPT_LIST_CSS}).")
+            raise
+        try:
+            wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)))
+        except TimeoutException:
+            logging.error(f"      Transcript text not visible (selector: {config.ZOOM_TRANSCRIPT_TEXT_CSS}).")
+            raise
         texts = [el.text for el in driver.find_elements(By.CSS_SELECTOR, config.ZOOM_TRANSCRIPT_TEXT_CSS)]
         raw_transcription = " ".join([t.strip() for t in texts if t and t.strip()])
         if raw_transcription:
             logging.info(f"   Successfully scraped Zoom transcript ({len(raw_transcription)} chars).")
         else:
             logging.warning("   Zoom transcript items found but were empty.")
+    except TimeoutException as e:
+        logging.error(f"   Timed out while scraping Zoom transcript: {e}")
+        try:
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_timeout_{int(time.time())}.png"))
+        except Exception:
+            pass
+    except NoSuchElementException as e:
+        logging.error(f"   Missing expected element on Zoom page: {e}")
+        try:
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_no_such_{int(time.time())}.png"))
+        except Exception:
+            pass
     except Exception as e:
         logging.error(f"   Failed to scrape Zoom transcript: {e}")
         try:
-            os.makedirs("logs/error_screenshots", exist_ok=True)
-            driver.save_screenshot(f"logs/error_screenshots/zoom_scrape_error_{int(time.time())}.png")
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"zoom_scrape_error_{int(time.time())}.png"))
         except Exception:
             pass
     return raw_transcription
@@ -151,12 +211,12 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
         # Open in new tab to preserve course page
         original = driver.current_window_handle
         driver.execute_script("window.open(arguments[0], '_blank');", url)
-        WebDriverWait(driver, 30).until(lambda d: len(d.window_handles) > 1)
+        WebDriverWait(driver, getattr(config, "SETTINGS", None).wait_timeout if hasattr(config, "SETTINGS") else 30).until(lambda d: len(d.window_handles) > 1)
         new_handle = [h for h in driver.window_handles if h != original][0]
         driver.switch_to.window(new_handle)
         # Wait for page to begin loading content
         try:
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, getattr(config, "SETTINGS", None).wait_timeout if hasattr(config, "SETTINGS") else 20).until(
                 EC.any_of(
                     EC.url_contains("drive.google.com"),
                     EC.url_contains("zoom.us"),
@@ -175,10 +235,23 @@ def scrape_transcript_from_url(driver: webdriver.Chrome, url: str) -> str:
         driver.close()
         driver.switch_to.window(original)
         return text
+    except TimeoutException as e:
+        logging.error(f"   Timeout when opening or processing transcript URL {url}: {e}")
+        try:
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"nav_timeout_{int(time.time())}.png"))
+        except Exception:
+            pass
+        try:
+            driver.switch_to.window(original)
+        except Exception:
+            pass
+        return ""
     except Exception as e:
         logging.error(f"   Error navigating to or processing transcript URL {url}: {e}")
         try:
-            driver.save_screenshot(f"logs/error_screenshots/nav_error_{int(time.time())}.png")
+            os.makedirs(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), exist_ok=True)
+            driver.save_screenshot(os.path.join(getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots"), f"nav_error_{int(time.time())}.png"))
         except Exception:
             pass
         try:
