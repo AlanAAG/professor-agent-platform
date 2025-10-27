@@ -147,5 +147,6 @@ fastapi
 uvicorn[standard]
 python-multipart
 pydantic
-google-generativeai
+# Pin to a version that supports genai.embed_content with task_type
+google-generativeai==0.8.3
 httpx
