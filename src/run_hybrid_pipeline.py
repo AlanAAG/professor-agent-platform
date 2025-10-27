@@ -231,11 +231,13 @@ def main_pipeline(mode="daily"):
                         for section_tag, title_text in sections:
                             logging.info(f"--- Scraping Section: {section_tag} ---")
                             try:
-                                items = navigation.expand_section_and_get_items(driver, title_text)
+                                container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
                                 logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
-                                for item in items:
+                                for idx in range(len(items)):
                                     url, title, date_text = None, None, None
                                     try:
+                                        # Re-find current item by index to avoid staleness during iteration
+                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
                                         # Link
                                         link_el = item.find_element(By.TAG_NAME, "a")
                                         href = link_el.get_attribute("href")

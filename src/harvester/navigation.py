@@ -11,7 +11,12 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+    ElementClickInterceptedException,
+)
 
 from . import config
 
@@ -29,12 +34,22 @@ def _create_driver() -> webdriver.Chrome:
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1440,900")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--lang=en-US,en")
     options.add_argument("--accept-lang=en-US,en;q=0.9")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
+
+    # Allow CI/providers (e.g., browser-actions/setup-chrome) to specify Chrome binary
+    chrome_binary = (
+        os.environ.get("CHROME_PATH")
+        or os.environ.get("GOOGLE_CHROME_SHIM")
+        or os.environ.get("CHROME_BIN")
+    )
+    if chrome_binary:
+        options.binary_location = chrome_binary
 
     driver = webdriver.Chrome(options=options)
     try:
@@ -53,11 +68,119 @@ def _create_driver() -> webdriver.Chrome:
         driver.set_page_load_timeout(int(getattr(SETTINGS, "page_load_timeout", 60)))
     except Exception:
         driver.set_page_load_timeout(60)
+
+    # Log versions to help diagnose driver-browser mismatches in CI
+    try:
+        caps = getattr(driver, "capabilities", {}) or {}
+        browser_version = caps.get("browserVersion") or caps.get("version")
+        chrome_info = caps.get("chrome") or {}
+        chromedriver_version = (chrome_info.get("chromedriverVersion") or "").split(" ")[0]
+        logging.info(f"Selenium session: Chrome {browser_version} / chromedriver {chromedriver_version}")
+    except Exception:
+        pass
     return driver
 
 
 def _wait(driver: webdriver.Chrome, seconds: int = 30) -> WebDriverWait:
     return WebDriverWait(driver, seconds)
+
+
+# --- Resilient element helpers (handle stale elements) ---
+def _scroll_into_view_center(driver: webdriver.Chrome, element) -> None:
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+    except Exception:
+        # Non-fatal; scrolling is best-effort
+        pass
+
+
+def safe_find(
+    driver: webdriver.Chrome,
+    locator: tuple[str, str],
+    timeout: int = 20,
+    attempts: int = 3,
+    clickable: bool = False,
+):
+    """Find an element, retrying on staleness. Optionally wait until clickable."""
+    last_err: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
+            element = _wait(driver, timeout).until(condition)
+            # Touch a property to assert non-stale
+            _ = element.is_enabled()
+            return element
+        except StaleElementReferenceException as e:
+            last_err = e
+            continue
+        except TimeoutException as e:
+            last_err = e
+            break
+    if last_err:
+        raise last_err
+    raise NoSuchElementException(f"Element not found for locator: {locator}")
+
+
+def safe_find_all(
+    driver: webdriver.Chrome,
+    locator: tuple[str, str],
+    timeout: int = 10,
+    attempts: int = 2,
+):
+    """Find a list of elements, retrying on staleness."""
+    last_err: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            _wait(driver, timeout).until(EC.presence_of_element_located(locator))
+            elements = driver.find_elements(*locator)
+            # Touch each element lightly to ensure not stale
+            for el in elements:
+                try:
+                    _ = el.tag_name
+                except StaleElementReferenceException:
+                    raise
+            return elements
+        except StaleElementReferenceException as e:
+            last_err = e
+            continue
+        except TimeoutException as e:
+            last_err = e
+            break
+    if last_err:
+        raise last_err
+    return []
+
+
+def safe_click(
+    driver: webdriver.Chrome,
+    locator: tuple[str, str],
+    attempts: int = 3,
+    timeout: int = 20,
+    scroll: bool = True,
+) -> None:
+    """Click an element robustly by re-finding right before the action."""
+    last_err: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            el = safe_find(driver, locator, timeout=timeout, attempts=attempts, clickable=True)
+            if scroll:
+                _scroll_into_view_center(driver, el)
+                el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=True)
+            try:
+                el.click()
+            except ElementClickInterceptedException:
+                # Fallback to JS click if intercepted
+                driver.execute_script("arguments[0].click();", el)
+            # Optionally ensure the element was acted upon; success if no exception
+            return
+        except (StaleElementReferenceException, ElementClickInterceptedException) as e:
+            last_err = e
+            continue
+        except TimeoutException as e:
+            last_err = e
+            break
+    if last_err:
+        raise last_err
 
 
 # --- Session and Login ---
@@ -199,11 +322,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     try:
         if course_code in config.DEFAULT_VISIBLE_COURSES:
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-            link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-            # Re-validate clickable after scroll (avoids animation issues)
-            link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-            link_el.click()
+            safe_click(driver, (By.XPATH, target_xpath))
             _wait(driver, 30).until(EC.url_contains("/course"))
             logging.info(f"Opened course {course_code}")
             return
@@ -213,26 +332,17 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         if not effective_group:
             logging.warning(f"No group defined for {course_code}; trying direct link click")
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-            link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-            link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-            link_el.click()
+            safe_click(driver, (By.XPATH, target_xpath))
             _wait(driver, 30).until(EC.url_contains("/course"))
             return
 
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
-        header_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-        header_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
-        header_el.click()
+        safe_click(driver, (By.XPATH, header_xpath))
         logging.info(f"Expanded group '{effective_group}'")
 
         target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-        # Wait for course link to become clickable after expansion
-        link_el = _wait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_el)
-        link_el = _wait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, target_xpath)))
-        link_el.click()
+        # Click course link after expansion
+        safe_click(driver, (By.XPATH, target_xpath))
         _wait(driver, 30).until(EC.url_contains("/course"))
         logging.info(f"Opened course {course_code}")
     except Exception as e:
@@ -248,15 +358,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
 def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     logging.info("Navigating to Resources section...")
     try:
-        resources_el = _wait(driver, 25).until(
-            EC.element_to_be_clickable((By.XPATH, config.RESOURCES_TAB_XPATH))
-        )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", resources_el)
-        # Re-validate clickable after scroll
-        resources_el = _wait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, config.RESOURCES_TAB_XPATH))
-        )
-        resources_el.click()
+        safe_click(driver, (By.XPATH, config.RESOURCES_TAB_XPATH))
 
         # Wait for any section header
         any_selector = (
@@ -281,12 +383,13 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
 
 
 def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
-    """Click a Resources accordion section and return list of item elements within it."""
+    """Click a Resources accordion section and return (container_xpath, item elements).
+
+    Returning the container XPath allows callers to re-fetch items by index to avoid
+    StaleElementReferenceException when iterating dynamically-loaded content.
+    """
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
-    header_el = _wait(driver, 7).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-    header_el = _wait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, header_xpath)))
-    header_el.click()
+    safe_click(driver, (By.XPATH, header_xpath))
     # Items are in next sibling div. Wait for it to populate.
     container_xpath = header_xpath + "/parent::div/following-sibling::div[1]"
     _wait(driver, 10).until(EC.presence_of_element_located((By.XPATH, container_xpath)))
@@ -299,4 +402,4 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
     except TimeoutException:
         pass
     items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
-    return items
+    return container_xpath, items
