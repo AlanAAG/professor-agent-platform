@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import time
+import re
 from contextlib import contextmanager
 from typing import Dict, Any, List, Tuple, Optional
 from selenium import webdriver
@@ -165,7 +166,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
         
         # Click login button
         login_button = driver.find_element(*config.LOGIN_BUTTON_BY)
-        safe_click((By.CSS_SELECTOR, config.LOGIN_BUTTON_BY[1])) # Click using CSS selector as locator
+        safe_click(driver, (By.CSS_SELECTOR, config.LOGIN_BUTTON_BY[1])) # Click using CSS selector as locator
 
         # Wait for redirection to the dashboard (or timeout)
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
@@ -205,11 +206,16 @@ def launch_and_login() -> webdriver.Chrome:
 
 # --- Core Navigation Helpers ---
 
-def safe_find(locator: Tuple[str, str], timeout: int = 30, clickable: bool = False) -> webdriver.remote.webelement.WebElement:
+def safe_find(
+    driver: webdriver.Chrome,
+    locator: Tuple[str, str],
+    timeout: int = 30,
+    clickable: bool = False,
+) -> webdriver.remote.webelement.WebElement:
     """Robust element finding with explicit waits."""
     wait = WebDriverWait(driver, timeout)
     condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
-    
+
     # Simple retry logic for StaleElementReferenceException
     for attempt in range(3):
         try:
@@ -219,15 +225,13 @@ def safe_find(locator: Tuple[str, str], timeout: int = 30, clickable: bool = Fal
                 time.sleep(1)
                 continue
             raise
-    # Should be unreachable
     raise TimeoutException(f"Timed out waiting for element located by {locator}")
 
 
-def safe_click(locator: Tuple[str, str], timeout: int = 30):
+def safe_click(driver: webdriver.Chrome, locator: Tuple[str, str], timeout: int = 30):
     """Robust click operation using JavaScript to bypass potential overlays/stale elements."""
-    element = safe_find(locator, timeout, clickable=True)
+    element = safe_find(driver, locator, timeout, clickable=True)
     # Use JavaScript click (often more reliable than native .click() in headless environments)
-    driver = element.parent
     driver.execute_script("arguments[0].click();", element)
     logging.info(f"Clicked element located by {locator}")
     # Small pause to allow UI transition
@@ -272,7 +276,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     if group_name:
         group_locator = (By.XPATH, config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=group_name))
         try:
-            group_header = safe_find(group_locator, timeout=10)
+            group_header = safe_find(driver, group_locator, timeout=10)
             logging.info(f"Found group header for: {group_name}")
             # Ensure the group is visible/expanded (by scrolling to it)
             driver.execute_script("arguments[0].scrollIntoView(true);", group_header)
@@ -283,7 +287,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     # 4. Find Course Link (using the course code)
     course_locator = (By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code))
     try:
-        course_link = safe_find(course_locator, timeout=config.SETTINGS.wait_timeout)
+        course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
         # Use JavaScript to click the link and navigate to the course page
         driver.execute_script("arguments[0].click();", course_link)
         
@@ -308,7 +312,7 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     """Clicks the 'Resources' tab on the course page."""
     try:
         # Wait for the Resources tab to be present and clickable
-        safe_click((By.XPATH, config.RESOURCES_TAB_XPATH), timeout=10)
+        safe_click(driver, (By.XPATH, config.RESOURCES_TAB_XPATH), timeout=10)
         
         # Simple wait for the page content to update after the click
         time.sleep(2)
@@ -327,7 +331,7 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
     section_locator = (By.XPATH, config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title))
     
     try:
-        section_header = safe_find(section_locator, timeout=10)
+        section_header = safe_find(driver, section_locator, timeout=10)
         
         # Click to expand the section (the header acts as the toggle)
         driver.execute_script("arguments[0].click();", section_header)
