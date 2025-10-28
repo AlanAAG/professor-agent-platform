@@ -28,15 +28,14 @@ DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
 
-# MODIFIED: Selector from working Colab script
-# Updated selector for group headers, looking for a div with class 'domainHeader ' (note trailing space)
+# MODIFIED: More robust selector for group headers (avoid trailing space class names)
 GROUP_HEADER_XPATH_TEMPLATE = (
-    "//div[@class='domainHeader '][.//p[@class='title ' and text()='{group_name}']]"
+    "//div[contains(@class,'domainHeader')][.//p[contains(@class,'title') and normalize-space(text())='{group_name}']]"
 )
 
 # Course link: anchor whose href contains courseCode={course_code}
-# This selector was correct and matches the logic in the Colab script.
-COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
+# Trimmed stray space and kept partial href match for stability.
+COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}')]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
 
