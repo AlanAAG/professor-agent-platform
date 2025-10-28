@@ -311,4 +311,4 @@ def scrape_html_content(url: str) -> Optional[str]:
         return main_text
     except RequestException as e:
         logging.error(f"   Error scraping HTML {url}: {e}")
-        return None2
+        return None
