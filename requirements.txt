@@ -147,3 +147,5 @@ python-multipart
 pydantic
 httpx
 slowapi # REQUIRED for Rate Limiting
+python-dateutil>=2.9.0  # Already using in code but not listed
+gunicorn  # For production WSGI server (optional, uvicorn is fine)

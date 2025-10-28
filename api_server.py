@@ -6,10 +6,11 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
-from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
+from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents, _get_supabase_client
 import google.generativeai as genai
 import os
 import json
+from datetime import datetime
 from typing import List, Dict, Optional
 
 # --- Rate Limiter Setup ---
@@ -66,7 +67,28 @@ class RAGRequest(BaseModel):
 
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "service": "AI Tutor API"}
+    """Enhanced health check for Render monitoring"""
+    # Check if supabase is available
+    supabase_connected = False
+    try:
+        supabase = _get_supabase_client()
+        supabase_connected = supabase is not None
+    except Exception:
+        supabase_connected = False
+    
+    return {
+        "status": "healthy",
+        "service": "AI Tutor API",
+        "version": "1.0.0-beta",
+        "timestamp": datetime.now().isoformat(),
+        "supabase_connected": supabase_connected,
+        "model_loaded": model is not None
+    }
+
+@app.get("/health")
+async def health():
+    """Dedicated health endpoint for uptime monitoring"""
+    return {"status": "ok"}
 
 @app.post("/api/rag-search")
 async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
