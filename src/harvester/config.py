@@ -27,24 +27,29 @@ LOGIN_BUTTON_BY = ("css", '#gtmLoginStd')
 DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
-# Group header: div.domainHeader containing p.title == {group_name}
-# UPDATED based on user-provided selector
+
+# MODIFIED: More robust selector for group headers (avoid trailing space class names)
 GROUP_HEADER_XPATH_TEMPLATE = (
-    "//div[@class='domainHeader '][.//p[@class='title ' and text()='{group_name}']]"
+    "//div[contains(@class,'domainHeader')][.//p[contains(@class,'title') and normalize-space(text())='{group_name}']]"
 )
 
 # Course link: anchor whose href contains courseCode={course_code}
-COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
+# Trimmed stray space and kept partial href match for stability.
+COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}')]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
-# Resources tab header: partner-provided structure using container class
-# UPDATED based on user-provided selector
+
+# MODIFIED: Broadened selector to match both header tab and side nav item
+# Prefer anchor/button elements that contain the text 'Resources', but keep the
+# earlier header-based selector as a fallback to support older DOMs.
 RESOURCES_TAB_XPATH = (
-    "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]"
+    "//a[contains(normalize-space(.), 'Resources')]"
+    " | //button[contains(normalize-space(.), 'Resources')]"
+    " | //div[contains(@class, 'sc-Rbkqr')]//h4[contains(normalize-space(.), 'Resources')]"
 )
 
-# Section headers inside resources
-# UPDATED based on user-provided selector
+# MODIFIED: Selector from working Colab script
+# Simpler XPath that finds the p tag by text inside the correct div container
 SECTION_HEADER_XPATH_TPL = (
     "//div[contains(@class, 'sc-kRJjUj')]//p[contains(text(), '{section_title}')]"
 )
@@ -55,6 +60,7 @@ POST_CLASS_SECTION_TITLE = "Post Class Materials"
 SESSION_RECORDINGS_SECTION_TITLE = "Session Recordings"
 
 # Resource items and sub-elements
+# This selector ('fileBox') was correct and matches the Colab script.
 RESOURCE_ITEM_CSS = "div.fileBox"
 RESOURCE_TITLE_CSS = "div.fileContentCol p"
 RESOURCE_DATE_CSS = "div.fileContentCol span"
@@ -87,7 +93,10 @@ LEGACY_COURSE_MAP = {
     # Quantitative Tools for Business
     "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
     "PRTC301": {"name": "Statistics", "group": "Quantitative Tools for Business"},
-    "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
+    
+    # --- MODIFIED: Moved PRTC201 ---
+    # "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
+    
     # Mathematics for Engineers
     "CAL101": {"name": "Calculus", "group": "Mathematics for Engineers"},
     # Management Project - I
@@ -100,6 +109,8 @@ LEGACY_COURSE_MAP = {
     # Management Accounting
     "FIFI101": {"name": "FinanceBasics", "group": "Management Accounting"},
     "MAST102": {"name": "MarketAnalysis", "group": "Management Accounting"},
+    # Corrected: PRTC201 is now in Management Accounting
+    "PRTC201": {"name": "Excel", "group": "Management Accounting"},
     # Marketing Strategies
     "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
     "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
@@ -125,7 +136,10 @@ _PARTNER_SUBJECTS = [
 PARTNER_COURSE_TO_GROUP = {
     "AIML101": "Quantitative Tools for Business",
     "PRTC301": "Quantitative Tools for Business",
-    "PRTC201": "Quantitative Tools for Business",
+    
+    # Corrected: PRTC201 is in Management Accounting
+    "PRTC201": "Management Accounting", 
+    
     "MAST401": "Management Project - I",
     "FIFI101": "Management Accounting",
     "LA101": "Microeconomics",
@@ -164,8 +178,8 @@ for code in sorted(all_codes):
     }
     COURSE_MAP[code] = merged
 
-# Default visible courses (from partner script)
-DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
+# Corrected: PRTC201 is not visible by default
+DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline

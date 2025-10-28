@@ -5,6 +5,7 @@ import os
 import random
 import time
 from typing import Optional, Iterator
+from urllib.parse import urlparse, parse_qs
 from contextlib import contextmanager
 
 from selenium import webdriver
@@ -19,31 +20,46 @@ from selenium.common.exceptions import (
 )
 
 from . import config
+# --- Screenshot helper ---
+def _save_screenshot(driver: webdriver.Chrome, filename: str) -> None:
+    try:
+        dir_path = getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots")
+        os.makedirs(dir_path, exist_ok=True)
+        full_path = os.path.join(dir_path, filename)
+        driver.save_screenshot(full_path)
+    except Exception:
+        pass
+
 
 
 # --- Driver setup ---
 def _create_driver() -> webdriver.Chrome:
+    """
+    MODIFIED: Simplified this function to match the working Colab script.
+    Removed all anti-bot detection and experimental options.
+    """
     options = webdriver.ChromeOptions()
-    # Prefer structured settings via Pydantic Settings
+    
+    # Check headless setting
     try:
         headless = bool(getattr(config.SETTINGS, "selenium_headless", True))
     except Exception:
-        # Fallback to environment variables if settings unavailable
         env_val = (os.environ.get("HARVESTER_SELENIUM_HEADLESS") or os.environ.get("SELENIUM_HEADLESS") or "true").strip().lower()
         headless = env_val in ("1", "true", "yes")
+    
+    # Use the same arguments as the working Colab script
     if headless:
-        options.add_argument("--headless=new")
+        # Use "--headless" (older) or "--headless=new" (newer).
+        # The Colab script used "--headless", let's stick to that for compatibility.
+        options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+
+    # Add back a few useful (but non-suspicious) options
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1440,900")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--lang=en-US,en")
-    options.add_argument("--accept-lang=en-US,en;q=0.9")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-
-    # Allow CI/providers (e.g., browser-actions/setup-chrome) to specify Chrome binary
+    
+    # Allow CI/providers to specify Chrome binary
     chrome_binary = (
         os.environ.get("CHROME_PATH")
         or os.environ.get("GOOGLE_CHROME_SHIM")
@@ -53,41 +69,87 @@ def _create_driver() -> webdriver.Chrome:
         options.binary_location = chrome_binary
 
     driver = webdriver.Chrome(options=options)
-    # Ensure implicit waits are disabled; we rely on explicit waits
+
+    # Set timeouts
     try:
-        driver.implicitly_wait(0)
+        driver.implicitly_wait(0) # We use explicit waits
     except Exception:
-        pass
-    try:
-        # Reduce webdriver fingerprints
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});",
-            },
-        )
-    except Exception:
-        # Best-effort; continue if CDP not available
         pass
     try:
         driver.set_page_load_timeout(int(getattr(config.SETTINGS, "page_load_timeout", 60)))
     except Exception:
         driver.set_page_load_timeout(60)
 
-    # Log versions to help diagnose driver-browser mismatches in CI
+    # Log versions
     try:
         caps = getattr(driver, "capabilities", {}) or {}
         browser_version = caps.get("browserVersion") or caps.get("version")
         chrome_info = caps.get("chrome") or {}
         chromedriver_version = (chrome_info.get("chromedriverVersion") or "").split(" ")[0]
-        logging.info(f"Selenium session: Chrome {browser_version} / chromedriver {chromedriver_version}")
+        logging.info(f"Selenium session (Simple Mode): Chrome {browser_version} / chromedriver {chromedriver_version}")
     except Exception:
         pass
     return driver
 
 
-def _wait(driver: webdriver.Chrome, seconds: int = 30) -> WebDriverWait:
+def _wait(driver: webdriver.Chrome, seconds: int = 60) -> WebDriverWait:
+    """Increased default wait to 60 seconds."""
     return WebDriverWait(driver, seconds)
+
+
+# --- Cookie/session restore ---
+def _try_restore_cookies(driver: webdriver.Chrome) -> bool:
+    """Best-effort: load cookies from AUTH_STATE_FILE to bypass login.
+
+    Returns True if cookies were loaded and applied; False otherwise.
+    """
+    try:
+        state_path = getattr(config, "AUTH_STATE_FILE", None) or ""
+        if not state_path or not os.path.exists(state_path):
+            return False
+        import json
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        cookies = data.get("cookies") or []
+        if not cookies:
+            return False
+        # Must be on the target domain before adding cookies
+        driver.get(config.BASE_URL)
+        # Normalize and add cookies
+        applied = 0
+        for ck in cookies:
+            try:
+                cookie = dict(ck)
+                # Selenium expects 'expiry' as int seconds since epoch
+                if "expires" in cookie and isinstance(cookie["expires"], (int, float)):
+                    cookie["expiry"] = int(cookie.pop("expires"))
+                # Some fields may cause set-cookie to fail; attempt graceful fallback
+                for attempt in range(2):
+                    try:
+                        driver.add_cookie(cookie)
+                        applied += 1
+                        break
+                    except Exception:
+                        # Remove less critical attributes and retry once
+                        for k in ["sameSite", "httpOnly", "secure"]:
+                            cookie.pop(k, None)
+                
+            except Exception:
+                continue
+        # Navigate to courses to validate session
+        driver.get(config.COURSES_URL)
+        try:
+            _wait(driver, 15).until(
+                EC.any_of(
+                    EC.url_contains("/courses"),
+                    EC.visibility_of_element_located((By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=next(iter(config.DEFAULT_VISIBLE_COURSES)))))
+                )
+            )
+        except Exception:
+            pass
+        return applied > 0
+    except Exception:
+        return False
 
 
 # --- Resilient element helpers (handle stale elements) ---
@@ -102,11 +164,11 @@ def _scroll_into_view_center(driver: webdriver.Chrome, element) -> None:
 def safe_find(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
-    timeout: int = 20,
+    timeout: int = 60,
     attempts: int = 3,
     clickable: bool = False,
 ):
-    """Find an element, retrying on staleness. Optionally wait until clickable."""
+    """Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -117,6 +179,7 @@ def safe_find(
             return element
         except StaleElementReferenceException as e:
             last_err = e
+            time.sleep(0.5) # Brief pause before retry on stale
             continue
         except TimeoutException as e:
             last_err = e
@@ -129,10 +192,10 @@ def safe_find(
 def safe_find_all(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
-    timeout: int = 10,
+    timeout: int = 60,
     attempts: int = 2,
 ):
-    """Find a list of elements, retrying on staleness."""
+    """Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -160,26 +223,34 @@ def safe_click(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
     attempts: int = 3,
-    timeout: int = 20,
+    timeout: int = 60,
     scroll: bool = True,
 ) -> None:
-    """Click an element robustly by re-finding right before the action."""
+    """
+    Robust click: scrolls, pauses, and uses a JS click.
+    """
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
-            el = safe_find(driver, locator, timeout=timeout, attempts=attempts, clickable=True)
+            # 1. Wait for the element to be at least present/clickable
+            el = safe_find(driver, locator, timeout=timeout, attempts=1, clickable=True)
+            
+            # 2. Scroll into view
             if scroll:
                 _scroll_into_view_center(driver, el)
-                el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=True)
-            try:
-                el.click()
-            except ElementClickInterceptedException:
-                # Fallback to JS click if intercepted
-                driver.execute_script("arguments[0].click();", el)
-            # Optionally ensure the element was acted upon; success if no exception
-            return
+                
+            # 3. Pause (as seen in working Colab script)
+            time.sleep(1) 
+            
+            # 4. Re-find element just in case scroll made it stale (quick)
+            el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=False) 
+            
+            # 5. Click with JavaScript (more robust)
+            driver.execute_script("arguments[0].click();", el)
+            return # Success
         except (StaleElementReferenceException, ElementClickInterceptedException) as e:
             last_err = e
+            time.sleep(1) # Wait a bit before retrying
             continue
         except TimeoutException as e:
             last_err = e
@@ -208,16 +279,25 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
             return False
 
         # Verify visible content on the courses page
+        logging.info("Verifying session by looking for dashboard or course content...")
+        
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         link_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
-        _wait(driver, 20).until(EC.visibility_of_element_located((By.XPATH, link_xpath)))
-        logging.info("Session valid: courses page content visible")
+
+        # Increased timeout from 20 to 60
+        _wait(driver, 60).until(
+            EC.any_of(
+                EC.visibility_of_element_located((By.XPATH, link_xpath)),
+                EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS))
+            )
+        )
+        logging.info("Session valid: dashboard or course content is visible.")
         return True
     except Exception as e:
         logging.warning(f"Session validation failed: {e}")
         try:
             os.makedirs("logs/error_screenshots", exist_ok=True)
-            driver.save_screenshot("logs/error_screenshots/session_validation_fail.png")
+            _save_screenshot(driver, "session_validation_fail.png")
         except Exception:
             pass
         return False
@@ -240,13 +320,23 @@ def perform_login(driver: webdriver.Chrome) -> bool:
         driver.find_element(By.CSS_SELECTOR, config.PASSWORD_BY[1]).send_keys(password)
         driver.find_element(By.CSS_SELECTOR, config.LOGIN_BUTTON_BY[1]).click()
 
-        # Wait for redirect away from login
+        # Wait for redirect away from login (allow / or /courses)
         try:
-            _wait(driver, 30).until(EC.url_contains("/courses"))
+            _wait(driver, 60).until(
+                EC.any_of(
+                    EC.url_contains("/courses"),
+                    EC.url_to_be(config.BASE_URL),
+                )
+            )
         except TimeoutException:
-            # Fallback: dashboard indicator visible
+            # Fallbacks: dashboard indicator or any visible course link
             try:
-                _wait(driver, 15).until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS)))
+                _wait(driver, 20).until(
+                    EC.any_of(
+                        EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS)),
+                        EC.visibility_of_element_located((By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=next(iter(config.DEFAULT_VISIBLE_COURSES)))))
+                    )
+                )
             except TimeoutException:
                 if "/login" in (driver.current_url or ""):
                     raise RuntimeError("Still on /login after submit")
@@ -268,7 +358,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
     except Exception as e:
         logging.error(f"Login failed: {e}")
         try:
-            driver.save_screenshot("logs/error_screenshots/login_error.png")
+            _save_screenshot(driver, "login_error.png")
         except Exception:
             pass
         raise
@@ -284,6 +374,8 @@ def launch_and_login() -> Iterator[webdriver.Chrome]:
     """
     driver = _create_driver()
     try:
+        # Attempt cookie-based restore before interactive login
+        _try_restore_cookies(driver)
         if not is_session_valid(driver):
             if not (perform_login(driver) and is_session_valid(driver)):
                 raise RuntimeError("Failed to establish an authenticated session")
@@ -293,6 +385,34 @@ def launch_and_login() -> Iterator[webdriver.Chrome]:
             driver.quit()
         except Exception:
             pass
+
+
+# --- Page readiness helpers ---
+def wait_for_course_page_ready(driver: webdriver.Chrome, timeout: int = 60) -> None:
+    """Wait until a course detail page is considered loaded.
+
+    Heuristics: URL contains '/course' or 'courseCode=', OR a visible element
+    strongly indicative of the course page exists (Resources tab, Course Details
+    header, or Course Brief nav entry). This helps avoid brittle waits.
+    """
+    course_header_fallback = (
+        "//h1[contains(normalize-space(.), 'Course Details')]"
+        " | //h2[contains(normalize-space(.), 'Course Details')]"
+        " | //h3[contains(normalize-space(.), 'Course Details')]"
+    )
+    course_brief_nav = (
+        "//a[contains(normalize-space(.), 'Course Brief')]"
+        " | //button[contains(normalize-space(.), 'Course Brief')]"
+    )
+    _wait(driver, timeout).until(
+        EC.any_of(
+            EC.url_contains("/course"),
+            EC.url_contains("courseCode="),
+            EC.visibility_of_element_located((By.XPATH, config.RESOURCES_TAB_XPATH)),
+            EC.visibility_of_element_located((By.XPATH, course_header_fallback)),
+            EC.visibility_of_element_located((By.XPATH, course_brief_nav)),
+        )
+    )
 
 
 # --- Course Navigation ---
@@ -316,44 +436,72 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     try:
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         check_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
-        _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
+        # Increased timeout from 10 to 60
+        _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
     except Exception:
         logging.warning("Courses content not immediately visible; waiting briefly for elements")
         try:
-            _wait(driver, 5).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
+            # Increased timeout from 5 to 10
+            _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
         except Exception:
-            pass
+            logging.error("Could not find any visible courses. Page may be empty or changed.")
+            pass # Don't raise here, let the next block try
+
+    # Strategy: try direct link first; if not clickable, expand the group and retry
+    target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
+    try:
+        logging.info("Trying direct course link click...")
+        safe_click(driver, (By.XPATH, target_xpath))
+        wait_for_course_page_ready(driver, timeout=60)
+        logging.info(f"Opened course {course_code}")
+        return
+    except Exception as direct_err:
+        logging.info(f"Direct click failed for {course_code} ({direct_err}). Attempting via group expansion...")
 
     try:
-        if course_code in config.DEFAULT_VISIBLE_COURSES:
-            target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-            safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 30).until(EC.url_contains("/course"))
-            logging.info(f"Opened course {course_code}")
-            return
-
         # Expand group then click
         effective_group = group_name or (config.COURSE_MAP.get(course_code, {}).get("group"))
         if not effective_group:
-            logging.warning(f"No group defined for {course_code}; trying direct link click")
-            target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
+            logging.warning(f"No group defined for {course_code}; retrying direct link click as fallback")
             safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 30).until(EC.url_contains("/course"))
+            wait_for_course_page_ready(driver, timeout=60)
+            logging.info(f"Opened course {course_code}")
             return
 
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
         safe_click(driver, (By.XPATH, header_xpath))
         logging.info(f"Expanded group '{effective_group}'")
+        logging.info("Pausing for 5 seconds to allow course group to expand...")
+        time.sleep(5)
 
-        target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-        # Click course link after expansion
-        safe_click(driver, (By.XPATH, target_xpath))
-        _wait(driver, 30).until(EC.url_contains("/course"))
-        logging.info(f"Opened course {course_code}")
-    except Exception as e:
-        logging.error(f"Course navigation failed for {course_code}: {e}")
+        # Retry clicking course link after expansion
         try:
-            driver.save_screenshot(f"logs/error_screenshots/course_nav_error_{course_code}.png")
+            safe_click(driver, (By.XPATH, target_xpath))
+            _wait(driver, 60).until(EC.url_contains("/course"))
+            logging.info(f"Opened course {course_code}")
+            return
+        except Exception as click_after_expand_err:
+            logging.info(f"Click after expanding group failed for {course_code} ({click_after_expand_err}). Trying href navigation fallback...")
+
+        # Fallback: navigate directly via the link's href
+        try:
+            link_el = safe_find(driver, (By.XPATH, target_xpath), timeout=15, attempts=2)
+            href = link_el.get_attribute("href") if link_el else None
+            if href:
+                if not href.startswith(("http://", "https://")):
+                    href = config.BASE_URL.rstrip('/') + '/' + href.lstrip('/')
+                logging.info(f"Opening course via href: {href}")
+                driver.get(href)
+                # Wait for course details page heuristics
+                wait_for_course_page_ready(driver, timeout=60)
+                logging.info(f"Opened course {course_code}")
+                return
+        except Exception as href_nav_err:
+            logging.info(f"Href navigation fallback failed for {course_code} ({href_nav_err}).")
+    except Exception as e:
+        logging.error(f"Course navigation failed for {course_code}: {type(e).__name__}: {e}")
+        try:
+            _save_screenshot(driver, f"course_nav_error_{course_code}.png")
         except Exception:
             pass
         raise
@@ -375,13 +523,14 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
             + " | "
             + config.SECTION_HEADER_XPATH_TPL.format(section_title=config.SESSION_RECORDINGS_SECTION_TITLE)
         )
-        _wait(driver, 20).until(EC.visibility_of_element_located((By.XPATH, any_selector)))
+        # Increased timeout from 20 to 60
+        _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, any_selector)))
         logging.info("Resources section loaded")
         return True
     except Exception as e:
         logging.error(f"Failed to open Resources section: {e}")
         try:
-            driver.save_screenshot("logs/error_screenshots/resources_nav_error.png")
+            _save_screenshot(driver, "resources_nav_error.png")
         except Exception:
             pass
         return False
@@ -395,6 +544,10 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
     """
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
     safe_click(driver, (By.XPATH, header_xpath))
+    
+    # Add a small pause after clicking the section header
+    time.sleep(2) 
+    
     # Items are in next sibling div. Wait for it to populate.
     container_xpath = header_xpath + "/parent::div/following-sibling::div[1]"
     _wait(driver, 10).until(EC.presence_of_element_located((By.XPATH, container_xpath)))
@@ -408,3 +561,75 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
         pass
     items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
     return container_xpath, items
+
+
+def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
+    """Detect available course codes on the Courses page by scanning anchor hrefs.
+
+    Expands visible groups to surface lazy-loaded links. Returns a set of codes.
+    """
+    logging.info("Detecting available courses on the Courses page...")
+    codes: set[str] = set()
+
+    driver.get(config.COURSES_URL)
+    try:
+        _wait(driver, 20).until(
+            EC.any_of(
+                EC.url_contains("/courses"),
+                EC.url_contains("/login"),
+            )
+        )
+    except Exception:
+        pass
+    if "/login" in (driver.current_url or ""):
+        logging.warning("Cannot detect courses: redirected to login")
+        return codes
+
+    def _collect_codes_from_links() -> None:
+        try:
+            links = safe_find_all(driver, (By.XPATH, "//a[contains(@href, 'courseCode=')]"), timeout=10, attempts=2)
+        except Exception:
+            links = []
+        for a in links:
+            try:
+                href = a.get_attribute("href") or ""
+                if not href:
+                    continue
+                parsed = urlparse(href)
+                q = parse_qs(parsed.query or "")
+                code = (q.get("courseCode") or [None])[0]
+                if not code:
+                    # Fallback: manual parse
+                    marker = "courseCode="
+                    if marker in href:
+                        frag = href.split(marker, 1)[1]
+                        code = frag.split("&", 1)[0]
+                if code:
+                    codes.add(code)
+            except Exception:
+                continue
+
+    # Initial collection from default-visible area
+    _collect_codes_from_links()
+
+    # Expand any visible groups to load more courses, then collect again
+    try:
+        group_titles = [
+            el.text.strip()
+            for el in driver.find_elements(By.XPATH, "//div[contains(@class,'domainHeader')]//p[contains(@class,'title')]")
+            if (el.text or "").strip()
+        ]
+        for group_name in group_titles:
+            try:
+                header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=group_name)
+                safe_click(driver, (By.XPATH, header_xpath))
+                time.sleep(1)
+                _collect_codes_from_links()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    logging.info(f"Detected {len(codes)} available courses on page: {sorted(codes)}")
+    return codes
+    

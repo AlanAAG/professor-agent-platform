@@ -212,7 +212,37 @@ def main_pipeline(mode="daily"):
             db_url_exists_cache: dict[str, bool] = {}
 
             logging.info("\n--- Starting Navigation Phase ---")
-            for course_code, course_details in config.COURSE_MAP.items():
+
+            # Optional: filter which courses to run via env var (comma-separated codes)
+            course_filter_env = os.environ.get("COURSE_CODES") or os.environ.get("COURSE_FILTER")
+            if course_filter_env:
+                selected_codes = [code.strip() for code in course_filter_env.split(",") if code.strip()]
+                course_items = [
+                    (code, config.COURSE_MAP[code]) for code in selected_codes if code in config.COURSE_MAP
+                ]
+                missing = [code for code in selected_codes if code not in config.COURSE_MAP]
+                if missing:
+                    logging.warning(f"Requested course codes not in COURSE_MAP and will be skipped: {missing}")
+            else:
+                course_items = list(config.COURSE_MAP.items())
+
+            # Auto-detect available courses on the page and filter out missing ones
+            try:
+                available_codes = navigation.get_available_course_codes(driver)
+                if available_codes:
+                    before = len(course_items)
+                    course_items = [(c, d) for (c, d) in course_items if c in available_codes]
+                    after = len(course_items)
+                    skipped = sorted(set(code for code, _ in config.COURSE_MAP.items()) - set(available_codes))
+                    logging.info(f"Filtering courses by availability: {before} -> {after}")
+                    if skipped:
+                        logging.warning(f"Skipping courses not present on page: {skipped}")
+                else:
+                    logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
+            except Exception as detect_err:
+                logging.warning(f"Failed to detect available courses: {detect_err}")
+
+            for course_code, course_details in course_items:
                 class_name = course_details["name"]
                 group_name = course_details.get("group")
 
@@ -238,66 +268,88 @@ def main_pipeline(mode="daily"):
                                     try:
                                         # Re-find current item by index to avoid staleness during iteration
                                         item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                                        # Link
-                                        link_el = item.find_element(By.TAG_NAME, "a")
-                                        href = link_el.get_attribute("href")
-                                        if href and not href.startswith("http"):
-                                            href = config.BASE_URL + href.lstrip('/')
-                                        url = href
-                                        # Title
+                                        # Link: handle both descendant and ancestor <a> structures
+                                        href = None
+                                        link_el = None
                                         try:
-                                            title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                            title = title_el.text
+                                            # Common case: anchor wraps the contents (ancestor of fileBox)
+                                            link_el = item.find_element(By.XPATH, ".//ancestor::a[1]")
                                         except Exception:
-                                            title = url or ""
-                                        # Date
-                                        try:
-                                            date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                            date_text = date_el.text
-                                        except Exception:
-                                            date_text = None
+                                            try:
+                                                # Fallback: anchor inside the fileBox
+                                                link_el = item.find_element(By.TAG_NAME, "a")
+                                            except Exception:
+                                                link_el = None
 
-                                        if not url or not title:
-                                            logging.info("      Skipping item (missing URL or Title)")
-                                            continue
+                                        if link_el is None:
+                                            # Last resort: locate the Nth anchor that contains a fileBox under the same container
+                                            try:
+                                                link_el = driver.find_element(
+                                                    By.XPATH,
+                                                    f"({container_xpath}//a[.//div[contains(@class,'fileBox')]])[{idx+1}]"
+                                                )
+                                            except Exception:
+                                                link_el = None
 
-                                        if "youtube.com" in url or "youtu.be" in url:
-                                            logging.info(f"      Skipping YouTube video: {title}")
-                                            continue
+                                        if link_el is not None:
+                                            href = link_el.get_attribute("href")
+                                            if href and not href.startswith("http"):
+                                                href = config.BASE_URL + href.lstrip('/')
+                                            url = href
+                                            # Title
+                                            try:
+                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                                title = title_el.text
+                                            except Exception:
+                                                title = url or ""
+                                            # Date
+                                            try:
+                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                                date_text = date_el.text
+                                            except Exception:
+                                                date_text = None
 
-                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                        should_process = False
-                                        if parsed_date:
-                                            if parsed_date >= cutoff_date:
-                                                should_process = True
+                                            if not url or not title:
+                                                logging.info("      Skipping item (missing URL or Title)")
+                                                continue
+
+                                            if "youtube.com" in url or "youtu.be" in url:
+                                                logging.info(f"      Skipping YouTube video: {title}")
+                                                continue
+
+                                            parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                            should_process = False
+                                            if parsed_date:
+                                                if parsed_date >= cutoff_date:
+                                                    should_process = True
+                                                else:
+                                                    logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
                                             else:
-                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                        else:
-                                            exists_recently = recent_check_cache.get(url)
-                                            if exists_recently is None:
-                                                exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
-                                            recent_check_cache[url] = exists_recently
-                                            should_process = not exists_recently
-                                            if not should_process:
-                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+                                                exists_recently = recent_check_cache.get(url)
+                                                if exists_recently is None:
+                                                    exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
+                                                recent_check_cache[url] = exists_recently
+                                                should_process = not exists_recently
+                                                if not should_process:
+                                                    logging.info(f"      Skipping undated resource (found in recent DB): {url}")
 
-                                        if should_process:
-                                            if DEDUP_BY_URL:
-                                                exists_in_db = db_url_exists_cache.get(url)
-                                                if exists_in_db is None:
-                                                    # We only have async version; best-effort skip extra DB roundtrip here
-                                                    exists_in_db = embedding.url_exists_in_db_sync(url)
-                                                db_url_exists_cache[url] = exists_in_db
-                                                if exists_in_db:
-                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-                                                    continue
+                                            if should_process:
+                                                if DEDUP_BY_URL:
+                                                    exists_in_db = db_url_exists_cache.get(url)
+                                                    if exists_in_db is None:
+                                                        # We only have async version; best-effort skip extra DB roundtrip here
+                                                        exists_in_db = embedding.url_exists_in_db_sync(url)
+                                                    db_url_exists_cache[url] = exists_in_db
+                                                    if exists_in_db:
+                                                        logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                        continue
 
-                                            if url in seen_urls:
-                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                            else:
-                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
-                                                seen_urls.add(url)
+                                                if url in seen_urls:
+                                                    logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                                else:
+                                                    logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                    resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                    seen_urls.add(url)
                                     except Exception as item_err:
                                         logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
                                         continue
