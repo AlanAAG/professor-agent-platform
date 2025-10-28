@@ -105,7 +105,8 @@ LEGACY_COURSE_MAP = {
     # Management Accounting
     "FIFI101": {"name": "FinanceBasics", "group": "Management Accounting"},
     "MAST102": {"name": "MarketAnalysis", "group": "Management Accounting"},
-    "PRTC201": {"name": "Excel", "group": "Management Accounting"}, # --- MODIFIED: Added PRTC201 here ---
+    # Align with working Colab mapping: PRTC201 belongs to Quantitative Tools for Business
+    "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
     # Marketing Strategies
     "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
     "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
@@ -132,8 +133,8 @@ PARTNER_COURSE_TO_GROUP = {
     "AIML101": "Quantitative Tools for Business",
     "PRTC301": "Quantitative Tools for Business",
     
-    # --- MODIFIED: Changed group for PRTC201 ---
-    "PRTC201": "Management Accounting", 
+    # Align with working Colab mapping
+    "PRTC201": "Quantitative Tools for Business", 
     
     "MAST401": "Management Project - I",
     "FIFI101": "Management Accounting",
@@ -173,8 +174,8 @@ for code in sorted(all_codes):
     }
     COURSE_MAP[code] = merged
 
-# --- MODIFIED: Removed PRTC201 from this set ---
-DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
+# Include PRTC201 as visible by default, matching Colab behavior
+DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline

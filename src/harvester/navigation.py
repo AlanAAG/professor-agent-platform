@@ -86,6 +86,61 @@ def _wait(driver: webdriver.Chrome, seconds: int = 60) -> WebDriverWait:
     return WebDriverWait(driver, seconds)
 
 
+# --- Cookie/session restore ---
+def _try_restore_cookies(driver: webdriver.Chrome) -> bool:
+    """Best-effort: load cookies from AUTH_STATE_FILE to bypass login.
+
+    Returns True if cookies were loaded and applied; False otherwise.
+    """
+    try:
+        state_path = getattr(config, "AUTH_STATE_FILE", None) or ""
+        if not state_path or not os.path.exists(state_path):
+            return False
+        import json
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        cookies = data.get("cookies") or []
+        if not cookies:
+            return False
+        # Must be on the target domain before adding cookies
+        driver.get(config.BASE_URL)
+        # Normalize and add cookies
+        applied = 0
+        for ck in cookies:
+            try:
+                cookie = dict(ck)
+                # Selenium expects 'expiry' as int seconds since epoch
+                if "expires" in cookie and isinstance(cookie["expires"], (int, float)):
+                    cookie["expiry"] = int(cookie.pop("expires"))
+                # Some fields may cause set-cookie to fail; attempt graceful fallback
+                for attempt in range(2):
+                    try:
+                        driver.add_cookie(cookie)
+                        applied += 1
+                        break
+                    except Exception:
+                        # Remove less critical attributes and retry once
+                        for k in ["sameSite", "httpOnly", "secure"]:
+                            cookie.pop(k, None)
+                
+            except Exception:
+                continue
+        # Navigate to courses to validate session
+        driver.get(config.COURSES_URL)
+        try:
+            _wait(driver, 15).until(
+                EC.any_of(
+                    EC.url_contains("/courses"),
+                    EC.visibility_of_element_located((By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=next(iter(config.DEFAULT_VISIBLE_COURSES)))))
+                )
+            )
+        except Exception:
+            pass
+        return applied > 0
+    except Exception:
+        return False
+
+
 # --- Resilient element helpers (handle stale elements) ---
 def _scroll_into_view_center(driver: webdriver.Chrome, element) -> None:
     try:
@@ -254,14 +309,23 @@ def perform_login(driver: webdriver.Chrome) -> bool:
         driver.find_element(By.CSS_SELECTOR, config.PASSWORD_BY[1]).send_keys(password)
         driver.find_element(By.CSS_SELECTOR, config.LOGIN_BUTTON_BY[1]).click()
 
-        # Wait for redirect away from login
+        # Wait for redirect away from login (allow / or /courses)
         try:
-            # Increased timeout from 30 to 60
-            _wait(driver, 60).until(EC.url_contains("/courses"))
+            _wait(driver, 60).until(
+                EC.any_of(
+                    EC.url_contains("/courses"),
+                    EC.url_to_be(config.BASE_URL),
+                )
+            )
         except TimeoutException:
-            # Fallback: dashboard indicator visible
+            # Fallbacks: dashboard indicator or any visible course link
             try:
-                _wait(driver, 15).until(EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS)))
+                _wait(driver, 20).until(
+                    EC.any_of(
+                        EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS)),
+                        EC.visibility_of_element_located((By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=next(iter(config.DEFAULT_VISIBLE_COURSES)))))
+                    )
+                )
             except TimeoutException:
                 if "/login" in (driver.current_url or ""):
                     raise RuntimeError("Still on /login after submit")
@@ -299,6 +363,8 @@ def launch_and_login() -> Iterator[webdriver.Chrome]:
     """
     driver = _create_driver()
     try:
+        # Attempt cookie-based restore before interactive login
+        _try_restore_cookies(driver)
         if not is_session_valid(driver):
             if not (perform_login(driver) and is_session_valid(driver)):
                 raise RuntimeError("Failed to establish an authenticated session")
