@@ -49,6 +49,17 @@ os.makedirs(RAW_PDF_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
+def log_progress_bar(current: int, total: int, prefix: str = "Progress"):
+    """Simple text-based progress indicator."""
+    if total == 0:
+        return
+    percent = (current / total) * 100
+    bar_length = 40
+    filled = int(bar_length * current / total)
+    bar = '█' * filled + '-' * (bar_length - filled)
+    logging.info(f"{prefix}: |{bar}| {current}/{total} ({percent:.1f}%)")
+
+
 def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
     """
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
@@ -184,38 +195,42 @@ def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date
 
 
 def main_pipeline(mode="daily"):
-    """
-    Main orchestration function for the stateless Harvester & Refinery pipeline.
-    Connects scraping directly to cleaning and embedding.
-    """
+    """Main orchestration with batch processing."""
     logging.info(f"🚀 Hybrid Pipeline Started (Mode: {mode})")
-    
-    # Reset course tracking for new run
     navigation.reset_course_tracking()
-
+    
     # Determine cutoff date based on mode
     if mode == "daily":
-        # Process anything from the last 24 hours (rolling window)
         cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
         logging.info(f"Processing resources from the last 24 hours (since {cutoff_date.isoformat()})")
     elif mode == "backlog":
-        cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc) # Get everything
+        cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
         logging.info("Processing all historical resources (backlog mode).")
     else:
         raise ValueError(f"Unsupported pipeline mode: {mode}")
-
-    # Use context manager to guarantee cleanup
+    
+    # Configuration
+    batch_size = getattr(config.SETTINGS, "resource_batch_size", 50)
+    logging.info(f"Batch processing enabled: {batch_size} resources per batch")
+    
     try:
         with navigation.launch_and_login() as driver:
-
-            # Store resources found during navigation phase
-            resources_to_process = []  # (url, title, date_obj, class_name, section_tag)
+            # Caches remain at pipeline scope
             recent_check_cache: dict[str, bool] = {}
-            seen_urls: set[str] = set()
             db_url_exists_cache: dict[str, bool] = {}
-
+            seen_urls: set[str] = set()
+            
+            # Statistics tracking
+            stats = {
+                "courses_attempted": 0,
+                "courses_successful": 0,
+                "resources_discovered": 0,
+                "resources_processed": 0,
+                "resources_failed": 0,
+            }
+            
             logging.info("\n--- Starting Navigation Phase ---")
-
+            
             # Optional: filter which courses to run via env var (comma-separated codes)
             course_filter_env = os.environ.get("COURSE_CODES") or os.environ.get("COURSE_FILTER")
             if course_filter_env:
@@ -244,15 +259,23 @@ def main_pipeline(mode="daily"):
                     logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
             except Exception as detect_err:
                 logging.warning(f"Failed to detect available courses: {detect_err}")
-
+            
+            # Process courses one at a time (lighter memory footprint)
             for course_code, course_details in course_items:
                 class_name = course_details["name"]
                 group_name = course_details.get("group")
-
-                logging.info(f"\n--- Checking Course: {class_name} ({course_code}) ---")
+                stats["courses_attempted"] += 1
+                
+                logging.info(f"\n{'='*60}")
+                logging.info(f"Course {stats['courses_attempted']}/{len(course_items)}: {class_name} ({course_code})")
+                logging.info(f"{'='*60}")
+                
+                # Batch for this course
+                course_resources = []
+                
                 try:
                     navigation.find_and_click_course_link(driver, course_code, group_name)
-
+                    
                     if navigation.navigate_to_resources_section(driver):
                         sections = [
                             ("pre_read", config.PRE_READ_SECTION_TITLE),
@@ -260,12 +283,13 @@ def main_pipeline(mode="daily"):
                             ("post_class", config.POST_CLASS_SECTION_TITLE),
                             ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
                         ]
-
+                        
                         for section_tag, title_text in sections:
-                            logging.info(f"--- Scraping Section: {section_tag} ---")
+                            logging.info(f"--- Section: {section_tag} ---")
                             try:
                                 container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
-                                logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
+                                logging.info(f"   Found {len(items)} items")
+                                
                                 for idx in range(len(items)):
                                     url, title, date_text = None, None, None
                                     try:
@@ -350,34 +374,63 @@ def main_pipeline(mode="daily"):
                                                 if url in seen_urls:
                                                     logging.info(f"      Duplicate URL (this run), skipping: {url}")
                                                 else:
-                                                    logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                                    resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                    course_resources.append((url, title, parsed_date, class_name, section_tag))
                                                     seen_urls.add(url)
+                                                    stats["resources_discovered"] += 1
+                                                        
                                     except Exception as item_err:
                                         logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
                                         continue
+                                        
                             except Exception as section_err:
-                                logging.warning(f"   Skipping section '{section_tag}'. Error: {section_err}")
+                                logging.warning(f"   Section '{section_tag}' failed: {section_err}")
                                 continue
-
+                        
+                        stats["courses_successful"] += 1
+                        
                 except Exception as course_err:
-                    logging.warning(f"Skipping course {class_name} due to critical navigation error: {course_err}")
+                    logging.error(f"❌ Course {class_name} failed: {course_err}")
                     try:
                         driver.get(config.COURSES_URL)
                     except Exception:
-                        logging.error("Failed to navigate back to courses page after error.")
+                        pass
                     continue
-
-            logging.info(f"\n--- Navigation complete. Found {len(resources_to_process)} candidate resources to process. ---")
-
-            logging.info("\n--- Starting Processing Phase ---")
-            for url, title, date_obj, class_name, section_tag in resources_to_process:
-                process_single_resource(driver, url, title, date_obj, class_name, section_tag)
-
+                
+                # Process this course's resources in batches
+                if course_resources:
+                    logging.info(f"\n--- Processing {len(course_resources)} resources for {class_name} ---")
+                    
+                    for batch_start in range(0, len(course_resources), batch_size):
+                        batch_end = min(batch_start + batch_size, len(course_resources))
+                        batch = course_resources[batch_start:batch_end]
+                        
+                        logging.info(f"Batch {batch_start//batch_size + 1}: Processing resources {batch_start+1}-{batch_end}/{len(course_resources)}")
+                        
+                        for url, title, date_obj, class_name_item, section_tag in batch:
+                            try:
+                                process_single_resource(driver, url, title, date_obj, class_name_item, section_tag)
+                                stats["resources_processed"] += 1
+                            except Exception as e:
+                                logging.error(f"❌ Failed to process {title}: {e}")
+                                stats["resources_failed"] += 1
+                        
+                        # Log progress
+                        log_progress_bar(stats["resources_processed"] + stats["resources_failed"], 
+                                       stats["resources_discovered"], 
+                                       "Overall Progress")
+            
+            # Final statistics
+            logging.info("\n" + "="*60)
+            logging.info("PIPELINE STATISTICS")
+            logging.info("="*60)
+            for key, value in stats.items():
+                logging.info(f"{key.replace('_', ' ').title()}: {value}")
+            logging.info("="*60)
+            
     except Exception as pipeline_err:
-        logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
+        logging.critical(f"Pipeline failed: {pipeline_err}", exc_info=True)
     finally:
-        logging.info("🚀 Hybrid Pipeline Finished.")
+        logging.info("🚀 Pipeline Finished")
 
 # --- Allow running the script directly ---
 if __name__ == "__main__":
