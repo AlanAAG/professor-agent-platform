@@ -276,8 +276,10 @@ def main_pipeline(mode="daily"):
 
     errors: List[Dict[str, str]] = []
     
-    # Tracks URLs processed *successfully* or *attempted* to avoid running them twice in one pipeline execution.
-    processed_resource_urls: set[str] = set()
+    # Tracks URLs attempted in this run to avoid duplicate processing attempts
+    attempted_resource_urls: set[str] = set()
+    # Tracks URLs successfully processed in this run for reporting
+    successfully_processed_urls: set[str] = set()
 
     try:
         with navigation.launch_and_login() as driver:
@@ -415,12 +417,15 @@ def main_pipeline(mode="daily"):
                                                     logging.info(f"      Duplicate URL already in DB, skipping: {url}")
                                                     continue
 
-                                            # CRITICAL FIX: Check against the master set of processed URLs for this run
-                                            if url in processed_resource_urls:
+                                            # Check against attempted URLs to prevent duplicate processing attempts
+                                            if url in attempted_resource_urls:
                                                 logging.info(f"      Duplicate URL (this run), skipping: {url}")
                                                 continue
                                             
                                             stats["resources_discovered"] += 1
+                                            
+                                            # Mark URL as attempted to prevent duplicate processing attempts
+                                            attempted_resource_urls.add(url)
                                             
                                             # --- PROCESS RESOURCE IMMEDIATELY ---
                                             logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
@@ -431,8 +436,8 @@ def main_pipeline(mode="daily"):
                                                 )
                                                 if success:
                                                     stats["resources_processed"] += 1
-                                                    # Track URL as successfully processed to prevent duplicate processing
-                                                    processed_resource_urls.add(url) 
+                                                    # Track URL as successfully processed for reporting
+                                                    successfully_processed_urls.add(url) 
                                             except Exception as e:
                                                 logging.error(f"❌ Failed to process {title}: {e}")
                                                 stats["resources_failed"] += 1
