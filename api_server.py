@@ -12,14 +12,13 @@ import os
 import json
 from typing import List, Dict, Optional
 
-# Rate limiter
+# --- Rate Limiter Setup (Uses Request object) ---
 limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS
+# --- CORS Setup (Robust, Environment-based) ---
 # Read allowed origins from environment variable `ALLOWED_ORIGINS`.
 # Supports JSON array or comma-separated string.
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
@@ -27,6 +26,7 @@ try:
     if allowed_origins_env.strip().startswith("["):
         allowed_origins = json.loads(allowed_origins_env)
     else:
+        # Fallback to comma-separated list
         allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
 except Exception:
     allowed_origins = []
@@ -36,19 +36,18 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
+    # Allow Content-Type, Authorization, and the custom X-API-Key header
     allow_headers=["x-api-key", "content-type", "authorization"],
 )
 
-# Initialize clients
+# --- Initialize clients ---
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
-
-# Configure re-ranking and embedding model name for consistency
 
 # IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
 
-# API Key auth
+# --- API Key Authentication Setup ---
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
 
 def get_api_key(api_key: str = Security(api_key_header)) -> str:
@@ -57,6 +56,7 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
         # Service misconfiguration; reject until configured
         raise HTTPException(status_code=500, detail="API key not configured")
     if api_key != expected:
+        # Use 403 Forbidden since the key is likely just wrong
         raise HTTPException(status_code=403, detail="Invalid API key")
     return api_key
 
@@ -83,7 +83,7 @@ async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
             match_count=5,
             match_threshold=0.7,
         )
-        # Optional re-ranking (no-op if Cohere not configured)
+        # Optional re-ranking (will use Cross-Encoder logic once implemented)
         documents = cohere_rerank(payload.query, documents)
         return {"documents": documents}
     except Exception as e:
@@ -97,13 +97,14 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         user_messages = [m for m in payload.messages if m.get("role") == "user"]
         last_query = user_messages[-1]["content"] if user_messages else ""
 
-        # Retrieve documents directly to avoid dependency injection issues
+        # Retrieve documents directly
         documents = retrieve_rag_documents(
             query=last_query,
             selected_class=payload.selectedClass,
             match_count=5,
             match_threshold=0.7,
         )
+        # Optional re-ranking (will use Cross-Encoder logic once implemented)
         documents = cohere_rerank(last_query, documents)
         
         # Build context
