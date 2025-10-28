@@ -5,6 +5,7 @@ import os
 import random
 import time
 from typing import Optional, Iterator
+from urllib.parse import urlparse, parse_qs
 from contextlib import contextmanager
 
 from selenium import webdriver
@@ -19,6 +20,16 @@ from selenium.common.exceptions import (
 )
 
 from . import config
+# --- Screenshot helper ---
+def _save_screenshot(driver: webdriver.Chrome, filename: str) -> None:
+    try:
+        dir_path = getattr(config.SETTINGS, "screenshot_dir", "logs/error_screenshots")
+        os.makedirs(dir_path, exist_ok=True)
+        full_path = os.path.join(dir_path, filename)
+        driver.save_screenshot(full_path)
+    except Exception:
+        pass
+
 
 
 # --- Driver setup ---
@@ -286,7 +297,7 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
         logging.warning(f"Session validation failed: {e}")
         try:
             os.makedirs("logs/error_screenshots", exist_ok=True)
-            driver.save_screenshot("logs/error_screenshots/session_validation_fail.png")
+            _save_screenshot(driver, "session_validation_fail.png")
         except Exception:
             pass
         return False
@@ -347,7 +358,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
     except Exception as e:
         logging.error(f"Login failed: {e}")
         try:
-            driver.save_screenshot("logs/error_screenshots/login_error.png")
+            _save_screenshot(driver, "login_error.png")
         except Exception:
             pass
         raise
@@ -408,44 +419,66 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
             logging.error("Could not find any visible courses. Page may be empty or changed.")
             pass # Don't raise here, let the next block try
 
+    # Strategy: try direct link first; if not clickable, expand the group and retry
+    target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
     try:
-        if course_code in config.DEFAULT_VISIBLE_COURSES:
-            target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-            safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
-            logging.info(f"Opened course {course_code}")
-            return
+        logging.info("Trying direct course link click...")
+        safe_click(driver, (By.XPATH, target_xpath))
+        _wait(driver, 60).until(EC.url_contains("/course"))
+        logging.info(f"Opened course {course_code}")
+        return
+    except Exception as direct_err:
+        logging.info(f"Direct click failed for {course_code} ({direct_err}). Attempting via group expansion...")
 
+    try:
         # Expand group then click
         effective_group = group_name or (config.COURSE_MAP.get(course_code, {}).get("group"))
         if not effective_group:
-            logging.warning(f"No group defined for {course_code}; trying direct link click")
-            target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
+            logging.warning(f"No group defined for {course_code}; retrying direct link click as fallback")
             safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
+            _wait(driver, 60).until(EC.url_contains("/course"))
+            logging.info(f"Opened course {course_code}")
             return
 
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
         safe_click(driver, (By.XPATH, header_xpath))
         logging.info(f"Expanded group '{effective_group}'")
-        
-        # --- START: CRITICAL FIX ---
-        # Add the time.sleep(5) from the working Colab script.
-        # This is the most reliable way to handle the animation/lazy load.
         logging.info("Pausing for 5 seconds to allow course group to expand...")
         time.sleep(5)
-        # --- END: CRITICAL FIX ---
 
-        target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
-        
-        # Click course link after expansion (the new safe_click will wait)
-        safe_click(driver, (By.XPATH, target_xpath))
-        _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
-        logging.info(f"Opened course {course_code}")
-    except Exception as e:
-        logging.error(f"Course navigation failed for {course_code}: {e}")
+        # Retry clicking course link after expansion
         try:
-            driver.save_screenshot(f"logs/error_screenshots/course_nav_error_{course_code}.png")
+            safe_click(driver, (By.XPATH, target_xpath))
+            _wait(driver, 60).until(EC.url_contains("/course"))
+            logging.info(f"Opened course {course_code}")
+            return
+        except Exception as click_after_expand_err:
+            logging.info(f"Click after expanding group failed for {course_code} ({click_after_expand_err}). Trying href navigation fallback...")
+
+        # Fallback: navigate directly via the link's href
+        try:
+            link_el = safe_find(driver, (By.XPATH, target_xpath), timeout=15, attempts=2)
+            href = link_el.get_attribute("href") if link_el else None
+            if href:
+                if not href.startswith(("http://", "https://")):
+                    href = config.BASE_URL.rstrip('/') + '/' + href.lstrip('/')
+                logging.info(f"Opening course via href: {href}")
+                driver.get(href)
+                # Wait for course details page heuristics
+                _wait(driver, 60).until(
+                    EC.any_of(
+                        EC.url_contains("courseCode="),
+                        EC.visibility_of_element_located((By.XPATH, config.RESOURCES_TAB_XPATH)),
+                    )
+                )
+                logging.info(f"Opened course {course_code}")
+                return
+        except Exception as href_nav_err:
+            logging.info(f"Href navigation fallback failed for {course_code} ({href_nav_err}).")
+    except Exception as e:
+        logging.error(f"Course navigation failed for {course_code}: {type(e).__name__}: {e}")
+        try:
+            _save_screenshot(driver, f"course_nav_error_{course_code}.png")
         except Exception:
             pass
         raise
@@ -474,7 +507,7 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     except Exception as e:
         logging.error(f"Failed to open Resources section: {e}")
         try:
-            driver.save_screenshot("logs/error_screenshots/resources_nav_error.png")
+            _save_screenshot(driver, "resources_nav_error.png")
         except Exception:
             pass
         return False
@@ -505,4 +538,75 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
         pass
     items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
     return container_xpath, items
+
+
+def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
+    """Detect available course codes on the Courses page by scanning anchor hrefs.
+
+    Expands visible groups to surface lazy-loaded links. Returns a set of codes.
+    """
+    logging.info("Detecting available courses on the Courses page...")
+    codes: set[str] = set()
+
+    driver.get(config.COURSES_URL)
+    try:
+        _wait(driver, 20).until(
+            EC.any_of(
+                EC.url_contains("/courses"),
+                EC.url_contains("/login"),
+            )
+        )
+    except Exception:
+        pass
+    if "/login" in (driver.current_url or ""):
+        logging.warning("Cannot detect courses: redirected to login")
+        return codes
+
+    def _collect_codes_from_links() -> None:
+        try:
+            links = safe_find_all(driver, (By.XPATH, "//a[contains(@href, 'courseCode=')]"), timeout=10, attempts=2)
+        except Exception:
+            links = []
+        for a in links:
+            try:
+                href = a.get_attribute("href") or ""
+                if not href:
+                    continue
+                parsed = urlparse(href)
+                q = parse_qs(parsed.query or "")
+                code = (q.get("courseCode") or [None])[0]
+                if not code:
+                    # Fallback: manual parse
+                    marker = "courseCode="
+                    if marker in href:
+                        frag = href.split(marker, 1)[1]
+                        code = frag.split("&", 1)[0]
+                if code:
+                    codes.add(code)
+            except Exception:
+                continue
+
+    # Initial collection from default-visible area
+    _collect_codes_from_links()
+
+    # Expand any visible groups to load more courses, then collect again
+    try:
+        group_titles = [
+            el.text.strip()
+            for el in driver.find_elements(By.XPATH, "//div[contains(@class,'domainHeader')]//p[contains(@class,'title')]")
+            if (el.text or "").strip()
+        ]
+        for group_name in group_titles:
+            try:
+                header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=group_name)
+                safe_click(driver, (By.XPATH, header_xpath))
+                time.sleep(1)
+                _collect_codes_from_links()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    logging.info(f"Detected {len(codes)} available courses on page: {sorted(codes)}")
+    return codes
     

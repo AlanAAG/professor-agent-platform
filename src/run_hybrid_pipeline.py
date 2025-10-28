@@ -212,7 +212,37 @@ def main_pipeline(mode="daily"):
             db_url_exists_cache: dict[str, bool] = {}
 
             logging.info("\n--- Starting Navigation Phase ---")
-            for course_code, course_details in config.COURSE_MAP.items():
+
+            # Optional: filter which courses to run via env var (comma-separated codes)
+            course_filter_env = os.environ.get("COURSE_CODES") or os.environ.get("COURSE_FILTER")
+            if course_filter_env:
+                selected_codes = [code.strip() for code in course_filter_env.split(",") if code.strip()]
+                course_items = [
+                    (code, config.COURSE_MAP[code]) for code in selected_codes if code in config.COURSE_MAP
+                ]
+                missing = [code for code in selected_codes if code not in config.COURSE_MAP]
+                if missing:
+                    logging.warning(f"Requested course codes not in COURSE_MAP and will be skipped: {missing}")
+            else:
+                course_items = list(config.COURSE_MAP.items())
+
+            # Auto-detect available courses on the page and filter out missing ones
+            try:
+                available_codes = navigation.get_available_course_codes(driver)
+                if available_codes:
+                    before = len(course_items)
+                    course_items = [(c, d) for (c, d) in course_items if c in available_codes]
+                    after = len(course_items)
+                    skipped = sorted(set(code for code, _ in config.COURSE_MAP.items()) - set(available_codes))
+                    logging.info(f"Filtering courses by availability: {before} -> {after}")
+                    if skipped:
+                        logging.warning(f"Skipping courses not present on page: {skipped}")
+                else:
+                    logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
+            except Exception as detect_err:
+                logging.warning(f"Failed to detect available courses: {detect_err}")
+
+            for course_code, course_details in course_items:
                 class_name = course_details["name"]
                 group_name = course_details.get("group")
 
