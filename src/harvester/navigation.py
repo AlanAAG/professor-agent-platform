@@ -207,11 +207,21 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
             logging.warning("Session invalid: redirected to /login")
             return False
 
+        # --- START: MODIFIED CODE ---
         # Verify visible content on the courses page
+        # Make this check more robust: look for EITHER the default course OR the dashboard indicator
+        logging.info("Verifying session by looking for dashboard or course content...")
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         link_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
-        _wait(driver, 20).until(EC.visibility_of_element_located((By.XPATH, link_xpath)))
-        logging.info("Session valid: courses page content visible")
+
+        _wait(driver, 20).until(
+            EC.any_of(
+                EC.visibility_of_element_located((By.XPATH, link_xpath)),
+                EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS))
+            )
+        )
+        logging.info("Session valid: dashboard or course content is visible.")
+        # --- END: MODIFIED CODE ---
         return True
     except Exception as e:
         logging.warning(f"Session validation failed: {e}")
@@ -347,12 +357,12 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
 
         target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
         
-        # --- START: MODIFIED CODE ---
+        # --- THIS IS THE PREVIOUS FIX (IT IS STILL NEEDED) ---
         # Add an explicit wait for the link to become clickable *after*
         # the group has been expanded. This replaces the time.sleep(5).
         logging.info(f"Waiting for course link '{course_code}' to appear...")
         safe_find(driver, (By.XPATH, target_xpath), timeout=30, clickable=True)
-        # --- END: MODIFIED CODE ---
+        # --- END OF PREVIOUS FIX ---
 
         # Click course link after expansion
         safe_click(driver, (By.XPATH, target_xpath))
