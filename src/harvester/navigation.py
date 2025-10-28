@@ -23,27 +23,32 @@ from . import config
 
 # --- Driver setup ---
 def _create_driver() -> webdriver.Chrome:
+    """
+    MODIFIED: Simplified this function to match the working Colab script.
+    Removed all anti-bot detection and experimental options.
+    """
     options = webdriver.ChromeOptions()
-    # Prefer structured settings via Pydantic Settings
+    
+    # Check headless setting
     try:
         headless = bool(getattr(config.SETTINGS, "selenium_headless", True))
     except Exception:
-        # Fallback to environment variables if settings unavailable
         env_val = (os.environ.get("HARVESTER_SELENIUM_HEADLESS") or os.environ.get("SELENIUM_HEADLESS") or "true").strip().lower()
         headless = env_val in ("1", "true", "yes")
+    
+    # Use the same arguments as the working Colab script
     if headless:
-        options.add_argument("--headless=new")
+        # Use "--headless" (older) or "--headless=new" (newer).
+        # The Colab script used "--headless", let's stick to that for compatibility.
+        options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+
+    # Add back a few useful (but non-suspicious) options
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1440,900")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--lang=en-US,en")
-    options.add_argument("--accept-lang=en-US,en;q=0.9")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-
-    # Allow CI/providers (e.g., browser-actions/setup-chrome) to specify Chrome binary
+    
+    # Allow CI/providers to specify Chrome binary
     chrome_binary = (
         os.environ.get("CHROME_PATH")
         or os.environ.get("GOOGLE_CHROME_SHIM")
@@ -53,41 +58,31 @@ def _create_driver() -> webdriver.Chrome:
         options.binary_location = chrome_binary
 
     driver = webdriver.Chrome(options=options)
-    # Ensure implicit waits are disabled; we rely on explicit waits
+
+    # Set timeouts
     try:
-        driver.implicitly_wait(0)
+        driver.implicitly_wait(0) # We use explicit waits
     except Exception:
-        pass
-    try:
-        # Reduce webdriver fingerprints
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});",
-            },
-        )
-    except Exception:
-        # Best-effort; continue if CDP not available
         pass
     try:
         driver.set_page_load_timeout(int(getattr(config.SETTINGS, "page_load_timeout", 60)))
     except Exception:
         driver.set_page_load_timeout(60)
 
-    # Log versions to help diagnose driver-browser mismatches in CI
+    # Log versions
     try:
         caps = getattr(driver, "capabilities", {}) or {}
         browser_version = caps.get("browserVersion") or caps.get("version")
         chrome_info = caps.get("chrome") or {}
         chromedriver_version = (chrome_info.get("chromedriverVersion") or "").split(" ")[0]
-        logging.info(f"Selenium session: Chrome {browser_version} / chromedriver {chromedriver_version}")
+        logging.info(f"Selenium session (Simple Mode): Chrome {browser_version} / chromedriver {chromedriver_version}")
     except Exception:
         pass
     return driver
 
 
 def _wait(driver: webdriver.Chrome, seconds: int = 60) -> WebDriverWait:
-    """MODIFIED: Increased default wait to 60 seconds."""
+    """Increased default wait to 60 seconds."""
     return WebDriverWait(driver, seconds)
 
 
@@ -107,7 +102,7 @@ def safe_find(
     attempts: int = 3,
     clickable: bool = False,
 ):
-    """MODIFIED: Increased default timeout to 60 seconds."""
+    """Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -134,7 +129,7 @@ def safe_find_all(
     timeout: int = 60,
     attempts: int = 2,
 ):
-    """MODIFIED: Increased default timeout to 60 seconds."""
+    """Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -166,8 +161,7 @@ def safe_click(
     scroll: bool = True,
 ) -> None:
     """
-    MODIFIED: Click an element robustly, mimicking the logic from the working Colab script.
-    Uses scrollIntoView, a short sleep, and a JavaScript click.
+    Robust click: scrolls, pauses, and uses a JS click.
     """
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
@@ -183,7 +177,6 @@ def safe_click(
             time.sleep(1) 
             
             # 4. Re-find element just in case scroll made it stale (quick)
-            #    We find it as 'present' not 'clickable' since JS click doesn't care
             el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=False) 
             
             # 5. Click with JavaScript (more robust)
@@ -222,12 +215,10 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
         # Verify visible content on the courses page
         logging.info("Verifying session by looking for dashboard or course content...")
         
-        # This check is now robust. It will look for AIML101 (a default course)
-        # OR the general dashboard indicator.
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         link_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
 
-        # MODIFIED: Increased timeout from 20 to 60
+        # Increased timeout from 20 to 60
         _wait(driver, 60).until(
             EC.any_of(
                 EC.visibility_of_element_located((By.XPATH, link_xpath)),
@@ -265,7 +256,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
         # Wait for redirect away from login
         try:
-            # MODIFIED: Increased timeout from 30 to 60
+            # Increased timeout from 30 to 60
             _wait(driver, 60).until(EC.url_contains("/courses"))
         except TimeoutException:
             # Fallback: dashboard indicator visible
@@ -340,12 +331,12 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     try:
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         check_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
-        # MODIFIED: Increased timeout from 10 to 60
+        # Increased timeout from 10 to 60
         _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
     except Exception:
         logging.warning("Courses content not immediately visible; waiting briefly for elements")
         try:
-            # MODIFIED: Increased timeout from 5 to 10
+            # Increased timeout from 5 to 10
             _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
         except Exception:
             logging.error("Could not find any visible courses. Page may be empty or changed.")
@@ -410,7 +401,7 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
             + " | "
             + config.SECTION_HEADER_XPATH_TPL.format(section_title=config.SESSION_RECORDINGS_SECTION_TITLE)
         )
-        # MODIFIED: Increased timeout from 20 to 60
+        # Increased timeout from 20 to 60
         _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, any_selector)))
         logging.info("Resources section loaded")
         return True
@@ -432,7 +423,7 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
     safe_click(driver, (By.XPATH, header_xpath))
     
-    # MODIFIED: Add a small pause after clicking the section header
+    # Add a small pause after clicking the section header
     time.sleep(2) 
     
     # Items are in next sibling div. Wait for it to populate.
