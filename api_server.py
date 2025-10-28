@@ -58,10 +58,28 @@ EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
 
 def get_api_key(api_key: str = Security(api_key_header)) -> str:
+    """
+    Robust API key validation with immediate rejection of invalid requests.
+    
+    Returns:
+        str: Valid API key
+        
+    Raises:
+        HTTPException: 500 if SECRET_API_KEY not configured
+        HTTPException: 403 if API key is invalid
+    """
     expected = os.getenv("SECRET_API_KEY")
     if not expected:
         # Service misconfiguration; reject until configured
         raise HTTPException(status_code=500, detail="API key not configured")
+    
+    # Handle whitespace issues (common with copy/paste)
+    api_key = api_key.strip() if api_key else ""
+    
+    # Validate minimum length to prevent empty/trivial keys
+    if len(api_key) < 8:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
     if api_key != expected:
         # Use 403 Forbidden since the key is likely just wrong
         raise HTTPException(status_code=403, detail="Invalid API key")
