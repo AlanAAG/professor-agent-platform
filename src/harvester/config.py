@@ -27,26 +27,28 @@ LOGIN_BUTTON_BY = ("css", '#gtmLoginStd')
 DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
-# Group header: div.domainHeader containing p.title == {group_name}
+
+# MODIFIED: Selector from working Colab script
+# Updated selector for group headers, looking for a div with class 'domainHeader ' (note trailing space)
 GROUP_HEADER_XPATH_TEMPLATE = (
-    "//div[contains(concat(' ', normalize-space(@class), ' '), ' domainHeader ')]"
-    "[.//p[contains(concat(' ', normalize-space(@class), ' '), ' title ') and normalize-space(text())='{group_name}']]"
+    "//div[@class='domainHeader '][.//p[@class='title ' and text()='{group_name}']]"
 )
 
 # Course link: anchor whose href contains courseCode={course_code}
+# This selector was correct and matches the logic in the Colab script.
 COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
-# Resources tab header: partner-provided structure using container class
+
+# MODIFIED: Selector from working Colab script
 RESOURCES_TAB_XPATH = (
-    "//div[contains(@class,'sc-ckEbSK')]"
-    "[.//img[contains(@src,'resources.svg')] and .//p[normalize-space(text())='Resources']]"
+    "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]"
 )
 
-# Section headers inside resources
+# MODIFIED: Selector from working Colab script
+# Simpler XPath that finds the p tag by text inside the correct div container
 SECTION_HEADER_XPATH_TPL = (
-    "//div[contains(@class,'sc-kRJjUj')][.//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
-    " and normalize-space(text())='{section_title}']]"
+    "//div[contains(@class, 'sc-kRJjUj')]//p[contains(text(), '{section_title}')]"
 )
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"
@@ -55,6 +57,7 @@ POST_CLASS_SECTION_TITLE = "Post Class Materials"
 SESSION_RECORDINGS_SECTION_TITLE = "Session Recordings"
 
 # Resource items and sub-elements
+# This selector ('fileBox') was correct and matches the Colab script.
 RESOURCE_ITEM_CSS = "div.fileBox"
 RESOURCE_TITLE_CSS = "div.fileContentCol p"
 RESOURCE_DATE_CSS = "div.fileContentCol span"
@@ -86,7 +89,10 @@ LEGACY_COURSE_MAP = {
     # Quantitative Tools for Business
     "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
     "PRTC301": {"name": "Statistics", "group": "Quantitative Tools for Business"},
-    "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
+    
+    # --- MODIFIED: Moved PRTC201 ---
+    # "PRTC201": {"name": "Excel", "group": "Quantitative Tools for Business"},
+    
     # Mathematics for Engineers
     "CAL101": {"name": "Calculus", "group": "Mathematics for Engineers"},
     # Management Project - I
@@ -99,6 +105,7 @@ LEGACY_COURSE_MAP = {
     # Management Accounting
     "FIFI101": {"name": "FinanceBasics", "group": "Management Accounting"},
     "MAST102": {"name": "MarketAnalysis", "group": "Management Accounting"},
+    "PRTC201": {"name": "Excel", "group": "Management Accounting"}, # --- MODIFIED: Added PRTC201 here ---
     # Marketing Strategies
     "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
     "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
@@ -124,7 +131,10 @@ _PARTNER_SUBJECTS = [
 PARTNER_COURSE_TO_GROUP = {
     "AIML101": "Quantitative Tools for Business",
     "PRTC301": "Quantitative Tools for Business",
-    "PRTC201": "Quantitative Tools for Business",
+    
+    # --- MODIFIED: Changed group for PRTC201 ---
+    "PRTC201": "Management Accounting", 
+    
     "MAST401": "Management Project - I",
     "FIFI101": "Management Accounting",
     "LA101": "Microeconomics",
@@ -163,8 +173,8 @@ for code in sorted(all_codes):
     }
     COURSE_MAP[code] = merged
 
-# Default visible courses (from partner script)
-DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
+# --- MODIFIED: Removed PRTC201 from this set ---
+DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline

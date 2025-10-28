@@ -86,7 +86,8 @@ def _create_driver() -> webdriver.Chrome:
     return driver
 
 
-def _wait(driver: webdriver.Chrome, seconds: int = 30) -> WebDriverWait:
+def _wait(driver: webdriver.Chrome, seconds: int = 60) -> WebDriverWait:
+    """MODIFIED: Increased default wait to 60 seconds."""
     return WebDriverWait(driver, seconds)
 
 
@@ -102,11 +103,11 @@ def _scroll_into_view_center(driver: webdriver.Chrome, element) -> None:
 def safe_find(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
-    timeout: int = 20,
+    timeout: int = 60,
     attempts: int = 3,
     clickable: bool = False,
 ):
-    """Find an element, retrying on staleness. Optionally wait until clickable."""
+    """MODIFIED: Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -117,6 +118,7 @@ def safe_find(
             return element
         except StaleElementReferenceException as e:
             last_err = e
+            time.sleep(0.5) # Brief pause before retry on stale
             continue
         except TimeoutException as e:
             last_err = e
@@ -129,10 +131,10 @@ def safe_find(
 def safe_find_all(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
-    timeout: int = 10,
+    timeout: int = 60,
     attempts: int = 2,
 ):
-    """Find a list of elements, retrying on staleness."""
+    """MODIFIED: Increased default timeout to 60 seconds."""
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
@@ -160,26 +162,36 @@ def safe_click(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
     attempts: int = 3,
-    timeout: int = 20,
+    timeout: int = 60,
     scroll: bool = True,
 ) -> None:
-    """Click an element robustly by re-finding right before the action."""
+    """
+    MODIFIED: Click an element robustly, mimicking the logic from the working Colab script.
+    Uses scrollIntoView, a short sleep, and a JavaScript click.
+    """
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
-            el = safe_find(driver, locator, timeout=timeout, attempts=attempts, clickable=True)
+            # 1. Wait for the element to be at least present/clickable
+            el = safe_find(driver, locator, timeout=timeout, attempts=1, clickable=True)
+            
+            # 2. Scroll into view
             if scroll:
                 _scroll_into_view_center(driver, el)
-                el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=True)
-            try:
-                el.click()
-            except ElementClickInterceptedException:
-                # Fallback to JS click if intercepted
-                driver.execute_script("arguments[0].click();", el)
-            # Optionally ensure the element was acted upon; success if no exception
-            return
+                
+            # 3. Pause (as seen in working Colab script)
+            time.sleep(1) 
+            
+            # 4. Re-find element just in case scroll made it stale (quick)
+            #    We find it as 'present' not 'clickable' since JS click doesn't care
+            el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=False) 
+            
+            # 5. Click with JavaScript (more robust)
+            driver.execute_script("arguments[0].click();", el)
+            return # Success
         except (StaleElementReferenceException, ElementClickInterceptedException) as e:
             last_err = e
+            time.sleep(1) # Wait a bit before retrying
             continue
         except TimeoutException as e:
             last_err = e
@@ -207,21 +219,22 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
             logging.warning("Session invalid: redirected to /login")
             return False
 
-        # --- START: MODIFIED CODE ---
         # Verify visible content on the courses page
-        # Make this check more robust: look for EITHER the default course OR the dashboard indicator
         logging.info("Verifying session by looking for dashboard or course content...")
+        
+        # This check is now robust. It will look for AIML101 (a default course)
+        # OR the general dashboard indicator.
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         link_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
 
-        _wait(driver, 20).until(
+        # MODIFIED: Increased timeout from 20 to 60
+        _wait(driver, 60).until(
             EC.any_of(
                 EC.visibility_of_element_located((By.XPATH, link_xpath)),
                 EC.visibility_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS))
             )
         )
         logging.info("Session valid: dashboard or course content is visible.")
-        # --- END: MODIFIED CODE ---
         return True
     except Exception as e:
         logging.warning(f"Session validation failed: {e}")
@@ -252,7 +265,8 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
         # Wait for redirect away from login
         try:
-            _wait(driver, 30).until(EC.url_contains("/courses"))
+            # MODIFIED: Increased timeout from 30 to 60
+            _wait(driver, 60).until(EC.url_contains("/courses"))
         except TimeoutException:
             # Fallback: dashboard indicator visible
             try:
@@ -326,19 +340,22 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     try:
         first_default = next(iter(config.DEFAULT_VISIBLE_COURSES))
         check_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=first_default)
-        _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
+        # MODIFIED: Increased timeout from 10 to 60
+        _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
     except Exception:
         logging.warning("Courses content not immediately visible; waiting briefly for elements")
         try:
-            _wait(driver, 5).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
+            # MODIFIED: Increased timeout from 5 to 10
+            _wait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, check_xpath)))
         except Exception:
-            pass
+            logging.error("Could not find any visible courses. Page may be empty or changed.")
+            pass # Don't raise here, let the next block try
 
     try:
         if course_code in config.DEFAULT_VISIBLE_COURSES:
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
             safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 30).until(EC.url_contains("/course"))
+            _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
             logging.info(f"Opened course {course_code}")
             return
 
@@ -348,25 +365,25 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
             logging.warning(f"No group defined for {course_code}; trying direct link click")
             target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
             safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 30).until(EC.url_contains("/course"))
+            _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
             return
 
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
         safe_click(driver, (By.XPATH, header_xpath))
         logging.info(f"Expanded group '{effective_group}'")
+        
+        # --- START: CRITICAL FIX ---
+        # Add the time.sleep(5) from the working Colab script.
+        # This is the most reliable way to handle the animation/lazy load.
+        logging.info("Pausing for 5 seconds to allow course group to expand...")
+        time.sleep(5)
+        # --- END: CRITICAL FIX ---
 
         target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
         
-        # --- THIS IS THE PREVIOUS FIX (IT IS STILL NEEDED) ---
-        # Add an explicit wait for the link to become clickable *after*
-        # the group has been expanded. This replaces the time.sleep(5).
-        logging.info(f"Waiting for course link '{course_code}' to appear...")
-        safe_find(driver, (By.XPATH, target_xpath), timeout=30, clickable=True)
-        # --- END OF PREVIOUS FIX ---
-
-        # Click course link after expansion
+        # Click course link after expansion (the new safe_click will wait)
         safe_click(driver, (By.XPATH, target_xpath))
-        _wait(driver, 30).until(EC.url_contains("/course"))
+        _wait(driver, 60).until(EC.url_contains("/course")) # Increased 30 -> 60
         logging.info(f"Opened course {course_code}")
     except Exception as e:
         logging.error(f"Course navigation failed for {course_code}: {e}")
@@ -393,7 +410,8 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
             + " | "
             + config.SECTION_HEADER_XPATH_TPL.format(section_title=config.SESSION_RECORDINGS_SECTION_TITLE)
         )
-        _wait(driver, 20).until(EC.visibility_of_element_located((By.XPATH, any_selector)))
+        # MODIFIED: Increased timeout from 20 to 60
+        _wait(driver, 60).until(EC.visibility_of_element_located((By.XPATH, any_selector)))
         logging.info("Resources section loaded")
         return True
     except Exception as e:
@@ -413,6 +431,10 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
     """
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
     safe_click(driver, (By.XPATH, header_xpath))
+    
+    # MODIFIED: Add a small pause after clicking the section header
+    time.sleep(2) 
+    
     # Items are in next sibling div. Wait for it to populate.
     container_xpath = header_xpath + "/parent::div/following-sibling::div[1]"
     _wait(driver, 10).until(EC.presence_of_element_located((By.XPATH, container_xpath)))
