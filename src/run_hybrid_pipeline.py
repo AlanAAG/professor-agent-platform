@@ -189,6 +189,9 @@ def main_pipeline(mode="daily"):
     Connects scraping directly to cleaning and embedding.
     """
     logging.info(f"🚀 Hybrid Pipeline Started (Mode: {mode})")
+    
+    # Reset course tracking for new run
+    navigation.reset_course_tracking()
 
     # Determine cutoff date based on mode
     if mode == "daily":
