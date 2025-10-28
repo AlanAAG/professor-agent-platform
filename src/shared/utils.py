@@ -333,9 +333,9 @@ def _get_supabase_client():
 def _ensure_genai():
     if genai is None:
         raise RuntimeError("google-generativeai not available. Install 'google-generativeai'.")
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("Missing GOOGLE_API_KEY or GEMINI_API_KEY for embeddings.")
+        raise RuntimeError("Missing GEMINI_API_KEY for embeddings.")
     genai.configure(api_key=api_key)
 
 
