@@ -1,53 +1,64 @@
-from fastapi import FastAPI, HTTPException, Security, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from pydantic import BaseModel
 import google.generativeai as genai
 from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
 import os
 import json
 from typing import List, Dict, Optional
 
-app = FastAPI()
-
-# Rate limiting setup
+# --- Rate Limiter Setup (Uses Request object) ---
 limiter = Limiter(key_func=get_remote_address)
+app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# API Key authentication setup
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+# --- CORS Setup (Robust, Environment-based) ---
+# Read allowed origins from environment variable `ALLOWED_ORIGINS`.
+# Supports JSON array or comma-separated string.
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+try:
+    if allowed_origins_env.strip().startswith("["):
+        allowed_origins = json.loads(allowed_origins_env)
+    else:
+        # Fallback to comma-separated list
+        allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+except Exception:
+    allowed_origins = []
 
-def get_api_key(api_key: str = Security(api_key_header)):
-    SECRET_API_KEY = os.getenv("SECRET_API_KEY")
-    if not SECRET_API_KEY:
-        raise HTTPException(status_code=500, detail="API key not configured")
-    if api_key != SECRET_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return api_key
-
-# CORS with environment-based origins
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", "X-API-Key"],
+    # Allow Content-Type, Authorization, and the custom X-API-Key header
+    allow_headers=["x-api-key", "content-type", "authorization"],
 )
 
-# Initialize clients
+# --- Initialize clients ---
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# Configure re-ranking and embedding model name for consistency
-
 # IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
+
+# --- API Key Authentication Setup ---
+api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
+
+def get_api_key(api_key: str = Security(api_key_header)) -> str:
+    expected = os.getenv("SECRET_API_KEY")
+    if not expected:
+        # Service misconfiguration; reject until configured
+        raise HTTPException(status_code=500, detail="API key not configured")
+    if api_key != expected:
+        # Use 403 Forbidden since the key is likely just wrong
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    return api_key
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
@@ -63,34 +74,38 @@ async def health_check():
     return {"status": "healthy", "service": "AI Tutor API"}
 
 @app.post("/api/rag-search")
-async def rag_search(request: RAGRequest, api_key: str = Depends(get_api_key)):
+async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
     try:
         # Standardized retrieval via shared utility (Supabase RPC + Gemini embeddings)
         documents = retrieve_rag_documents(
-            query=request.query,
-            selected_class=request.selectedClass,
+            query=payload.query,
+            selected_class=payload.selectedClass,
             match_count=5,
             match_threshold=0.7,
         )
-        # Optional re-ranking (no-op if Cohere not configured)
-        documents = cohere_rerank(request.query, documents)
+        # Optional re-ranking (will use Cross-Encoder logic once implemented)
+        documents = cohere_rerank(payload.query, documents)
         return {"documents": documents}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
 @limiter.limit("10/minute")
-async def chat_stream(request: Request, chat_request: ChatRequest, api_key: str = Depends(get_api_key)):
+async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Depends(get_api_key)):
     try:
         # Get RAG context
-        user_messages = [m for m in chat_request.messages if m.get("role") == "user"]
+        user_messages = [m for m in payload.messages if m.get("role") == "user"]
         last_query = user_messages[-1]["content"] if user_messages else ""
-        
-        rag_response = await rag_search(RAGRequest(
+
+        # Retrieve documents directly
+        documents = retrieve_rag_documents(
             query=last_query,
-            selectedClass=chat_request.selectedClass
-        ), api_key)
-        documents = rag_response["documents"]
+            selected_class=payload.selectedClass,
+            match_count=5,
+            match_threshold=0.7,
+        )
+        # Optional re-ranking (will use Cross-Encoder logic once implemented)
+        documents = cohere_rerank(last_query, documents)
         
         # Build context
         context = "\n\n".join([
@@ -106,7 +121,7 @@ async def chat_stream(request: Request, chat_request: ChatRequest, api_key: str 
             "balanced": "You are a balanced tutor..."
         }
         
-        system_prompt = f"""{personas.get(chat_request.persona, personas['balanced'])}
+        system_prompt = f"""{personas.get(payload.persona, personas['balanced'])}
 
 COURSE MATERIALS:
 {context}
@@ -119,7 +134,7 @@ RULES:
         
         # Prepare messages
         messages = [{"role": "system", "content": system_prompt}]
-        for msg in chat_request.messages:
+        for msg in payload.messages:
             messages.append({"role": msg["role"], "content": msg["content"]})
         
         # Stream response
