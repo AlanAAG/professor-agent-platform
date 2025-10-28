@@ -144,7 +144,6 @@ zstandard==0.25.0
 fastapi
 uvicorn[standard]
 python-multipart
-pydantic
 httpx
-slowapi # REQUIRED for Rate Limiting
+slowapi  # REQUIRED for Rate Limiting
 gunicorn  # For production WSGI server (optional, uvicorn is fine)

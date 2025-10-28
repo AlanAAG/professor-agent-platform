@@ -10,8 +10,8 @@ from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_d
 import google.generativeai as genai
 import os
 import json
-from typing import List, Dict, Optional
 from datetime import datetime
+from typing import List, Dict, Optional
 
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -44,17 +44,12 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # Optional Supabase client for health checks
+supabase = None
 try:
     from src.shared.utils import _get_supabase_client
+    supabase = _get_supabase_client()
 except Exception:
-    _get_supabase_client = None  # type: ignore
-
-supabase = None
-if _get_supabase_client is not None:
-    try:
-        supabase = _get_supabase_client()
-    except Exception:
-        supabase = None
+    supabase = None
 
 # IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
@@ -91,6 +86,11 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "supabase_connected": supabase is not None,
         "model_loaded": model is not None,
+        "endpoints": {
+            "chat": "/api/chat",
+            "rag_search": "/api/rag-search",
+            "health": "/health"
+        }
     }
 
 @app.get("/health")
