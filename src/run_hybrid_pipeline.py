@@ -233,93 +233,93 @@ def main_pipeline(mode="daily"):
                             try:
                                 container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
                                 logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
-                for idx in range(len(items)):
+                                for idx in range(len(items)):
                                     url, title, date_text = None, None, None
                                     try:
                                         # Re-find current item by index to avoid staleness during iteration
-                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                        # Link: handle both descendant and ancestor <a> structures
-                        href = None
-                        link_el = None
-                        try:
-                            # Common case: anchor wraps the contents (ancestor of fileBox)
-                            link_el = item.find_element(By.XPATH, ".//ancestor::a[1]")
-                        except Exception:
-                            try:
-                                # Fallback: anchor inside the fileBox
-                                link_el = item.find_element(By.TAG_NAME, "a")
-                            except Exception:
-                                link_el = None
-
-                        if link_el is None:
-                            # Last resort: locate the Nth anchor that contains a fileBox under the same container
-                            try:
-                                link_el = driver.find_element(
-                                    By.XPATH,
-                                    f"({container_xpath}//a[.//div[contains(@class,'fileBox')]])[{idx+1}]"
-                                )
-                            except Exception:
-                                link_el = None
-
-                        if link_el is not None:
-                            href = link_el.get_attribute("href")
-                                        if href and not href.startswith("http"):
-                                            href = config.BASE_URL + href.lstrip('/')
-                                        url = href
-                                        # Title
+                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
+                                        # Link: handle both descendant and ancestor <a> structures
+                                        href = None
+                                        link_el = None
                                         try:
-                                            title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                            title = title_el.text
+                                            # Common case: anchor wraps the contents (ancestor of fileBox)
+                                            link_el = item.find_element(By.XPATH, ".//ancestor::a[1]")
                                         except Exception:
-                                            title = url or ""
-                                        # Date
-                                        try:
-                                            date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                            date_text = date_el.text
-                                        except Exception:
-                                            date_text = None
+                                            try:
+                                                # Fallback: anchor inside the fileBox
+                                                link_el = item.find_element(By.TAG_NAME, "a")
+                                            except Exception:
+                                                link_el = None
 
-                                        if not url or not title:
-                                            logging.info("      Skipping item (missing URL or Title)")
-                                            continue
+                                        if link_el is None:
+                                            # Last resort: locate the Nth anchor that contains a fileBox under the same container
+                                            try:
+                                                link_el = driver.find_element(
+                                                    By.XPATH,
+                                                    f"({container_xpath}//a[.//div[contains(@class,'fileBox')]])[{idx+1}]"
+                                                )
+                                            except Exception:
+                                                link_el = None
 
-                                        if "youtube.com" in url or "youtu.be" in url:
-                                            logging.info(f"      Skipping YouTube video: {title}")
-                                            continue
+                                        if link_el is not None:
+                                            href = link_el.get_attribute("href")
+                                            if href and not href.startswith("http"):
+                                                href = config.BASE_URL + href.lstrip('/')
+                                            url = href
+                                            # Title
+                                            try:
+                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                                title = title_el.text
+                                            except Exception:
+                                                title = url or ""
+                                            # Date
+                                            try:
+                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                                date_text = date_el.text
+                                            except Exception:
+                                                date_text = None
 
-                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                        should_process = False
-                                        if parsed_date:
-                                            if parsed_date >= cutoff_date:
-                                                should_process = True
+                                            if not url or not title:
+                                                logging.info("      Skipping item (missing URL or Title)")
+                                                continue
+
+                                            if "youtube.com" in url or "youtu.be" in url:
+                                                logging.info(f"      Skipping YouTube video: {title}")
+                                                continue
+
+                                            parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                            should_process = False
+                                            if parsed_date:
+                                                if parsed_date >= cutoff_date:
+                                                    should_process = True
+                                                else:
+                                                    logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
                                             else:
-                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                        else:
-                                            exists_recently = recent_check_cache.get(url)
-                                            if exists_recently is None:
-                                                exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
-                                            recent_check_cache[url] = exists_recently
-                                            should_process = not exists_recently
-                                            if not should_process:
-                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+                                                exists_recently = recent_check_cache.get(url)
+                                                if exists_recently is None:
+                                                    exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
+                                                recent_check_cache[url] = exists_recently
+                                                should_process = not exists_recently
+                                                if not should_process:
+                                                    logging.info(f"      Skipping undated resource (found in recent DB): {url}")
 
-                                        if should_process:
-                                            if DEDUP_BY_URL:
-                                                exists_in_db = db_url_exists_cache.get(url)
-                                                if exists_in_db is None:
-                                                    # We only have async version; best-effort skip extra DB roundtrip here
-                                                    exists_in_db = embedding.url_exists_in_db_sync(url)
-                                                db_url_exists_cache[url] = exists_in_db
-                                                if exists_in_db:
-                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-                                                    continue
+                                            if should_process:
+                                                if DEDUP_BY_URL:
+                                                    exists_in_db = db_url_exists_cache.get(url)
+                                                    if exists_in_db is None:
+                                                        # We only have async version; best-effort skip extra DB roundtrip here
+                                                        exists_in_db = embedding.url_exists_in_db_sync(url)
+                                                    db_url_exists_cache[url] = exists_in_db
+                                                    if exists_in_db:
+                                                        logging.info(f"      Duplicate URL already in DB, skipping: {url}")
+                                                        continue
 
-                                            if url in seen_urls:
-                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                            else:
-                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                                resources_to_process.append((url, title, parsed_date, class_name, section_tag))
-                                                seen_urls.add(url)
+                                                if url in seen_urls:
+                                                    logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                                else:
+                                                    logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                    resources_to_process.append((url, title, parsed_date, class_name, section_tag))
+                                                    seen_urls.add(url)
                                     except Exception as item_err:
                                         logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
                                         continue
