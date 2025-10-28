@@ -1,7 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import google.generativeai as genai
 from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
 import os
@@ -10,13 +14,30 @@ from typing import List, Dict, Optional
 
 app = FastAPI()
 
-# CORS
+# Rate limiting setup
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# API Key authentication setup
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def get_api_key(api_key: str = Security(api_key_header)):
+    SECRET_API_KEY = os.getenv("SECRET_API_KEY")
+    if not SECRET_API_KEY:
+        raise HTTPException(status_code=500, detail="API key not configured")
+    if api_key != SECRET_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return api_key
+
+# CORS with environment-based origins
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-API-Key"],
 )
 
 # Initialize clients
@@ -42,7 +63,7 @@ async def health_check():
     return {"status": "healthy", "service": "AI Tutor API"}
 
 @app.post("/api/rag-search")
-async def rag_search(request: RAGRequest):
+async def rag_search(request: RAGRequest, api_key: str = Depends(get_api_key)):
     try:
         # Standardized retrieval via shared utility (Supabase RPC + Gemini embeddings)
         documents = retrieve_rag_documents(
@@ -58,16 +79,17 @@ async def rag_search(request: RAGRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
-async def chat_stream(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat_stream(request: Request, chat_request: ChatRequest, api_key: str = Depends(get_api_key)):
     try:
         # Get RAG context
-        user_messages = [m for m in request.messages if m.get("role") == "user"]
+        user_messages = [m for m in chat_request.messages if m.get("role") == "user"]
         last_query = user_messages[-1]["content"] if user_messages else ""
         
         rag_response = await rag_search(RAGRequest(
             query=last_query,
-            selectedClass=request.selectedClass
-        ))
+            selectedClass=chat_request.selectedClass
+        ), api_key)
         documents = rag_response["documents"]
         
         # Build context
@@ -84,7 +106,7 @@ async def chat_stream(request: ChatRequest):
             "balanced": "You are a balanced tutor..."
         }
         
-        system_prompt = f"""{personas.get(request.persona, personas['balanced'])}
+        system_prompt = f"""{personas.get(chat_request.persona, personas['balanced'])}
 
 COURSE MATERIALS:
 {context}
@@ -97,7 +119,7 @@ RULES:
         
         # Prepare messages
         messages = [{"role": "system", "content": system_prompt}]
-        for msg in request.messages:
+        for msg in chat_request.messages:
             messages.append({"role": msg["role"], "content": msg["content"]})
         
         # Stream response
