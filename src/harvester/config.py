@@ -255,6 +255,13 @@ class HarvesterSettings(BaseSettings):
         validation_alias=AliasChoices("HARVESTER_DOWNLOADS_DIR"),
     )
 
+    # Batch processing configuration
+    resource_batch_size: int = Field(
+        default=50,
+        validation_alias=AliasChoices("HARVESTER_BATCH_SIZE", "RESOURCE_BATCH_SIZE"),
+        description="Number of resources to process per batch (reduces memory usage)"
+    )
+
 
 # Instantiate settings once for module-level access
 SETTINGS = HarvesterSettings()
