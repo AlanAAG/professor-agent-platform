@@ -387,6 +387,34 @@ def launch_and_login() -> Iterator[webdriver.Chrome]:
             pass
 
 
+# --- Page readiness helpers ---
+def wait_for_course_page_ready(driver: webdriver.Chrome, timeout: int = 60) -> None:
+    """Wait until a course detail page is considered loaded.
+
+    Heuristics: URL contains '/course' or 'courseCode=', OR a visible element
+    strongly indicative of the course page exists (Resources tab, Course Details
+    header, or Course Brief nav entry). This helps avoid brittle waits.
+    """
+    course_header_fallback = (
+        "//h1[contains(normalize-space(.), 'Course Details')]"
+        " | //h2[contains(normalize-space(.), 'Course Details')]"
+        " | //h3[contains(normalize-space(.), 'Course Details')]"
+    )
+    course_brief_nav = (
+        "//a[contains(normalize-space(.), 'Course Brief')]"
+        " | //button[contains(normalize-space(.), 'Course Brief')]"
+    )
+    _wait(driver, timeout).until(
+        EC.any_of(
+            EC.url_contains("/course"),
+            EC.url_contains("courseCode="),
+            EC.visibility_of_element_located((By.XPATH, config.RESOURCES_TAB_XPATH)),
+            EC.visibility_of_element_located((By.XPATH, course_header_fallback)),
+            EC.visibility_of_element_located((By.XPATH, course_brief_nav)),
+        )
+    )
+
+
 # --- Course Navigation ---
 def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group_name: Optional[str]) -> None:
     logging.info(f"Navigating to course: {course_code} (group: {group_name or 'unknown'})")
@@ -424,7 +452,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
     try:
         logging.info("Trying direct course link click...")
         safe_click(driver, (By.XPATH, target_xpath))
-        _wait(driver, 60).until(EC.url_contains("/course"))
+        wait_for_course_page_ready(driver, timeout=60)
         logging.info(f"Opened course {course_code}")
         return
     except Exception as direct_err:
@@ -436,7 +464,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         if not effective_group:
             logging.warning(f"No group defined for {course_code}; retrying direct link click as fallback")
             safe_click(driver, (By.XPATH, target_xpath))
-            _wait(driver, 60).until(EC.url_contains("/course"))
+            wait_for_course_page_ready(driver, timeout=60)
             logging.info(f"Opened course {course_code}")
             return
 
@@ -465,12 +493,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
                 logging.info(f"Opening course via href: {href}")
                 driver.get(href)
                 # Wait for course details page heuristics
-                _wait(driver, 60).until(
-                    EC.any_of(
-                        EC.url_contains("courseCode="),
-                        EC.visibility_of_element_located((By.XPATH, config.RESOURCES_TAB_XPATH)),
-                    )
-                )
+                wait_for_course_page_ready(driver, timeout=60)
                 logging.info(f"Opened course {course_code}")
                 return
         except Exception as href_nav_err:
