@@ -39,9 +39,13 @@ COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}')]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
 
-# MODIFIED: Selector from working Colab script
+# MODIFIED: Broadened selector to match both header tab and side nav item
+# Prefer anchor/button elements that contain the text 'Resources', but keep the
+# earlier header-based selector as a fallback to support older DOMs.
 RESOURCES_TAB_XPATH = (
-    "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]"
+    "//a[contains(normalize-space(.), 'Resources')]"
+    " | //button[contains(normalize-space(.), 'Resources')]"
+    " | //div[contains(@class, 'sc-Rbkqr')]//h4[contains(normalize-space(.), 'Resources')]"
 )
 
 # MODIFIED: Selector from working Colab script
