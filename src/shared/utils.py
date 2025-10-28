@@ -241,12 +241,25 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
     # Expand queries
     queries = expand_query(query)
 
-    # Retrieve candidates for each query
+    # OPTIMIZATION: Batch embed all query variants in a single API call
+    try:
+        query_embeddings = embed_queries_batch(queries)
+    except Exception as e:
+        logging.warning(f"Batch embedding failed, falling back to individual calls: {e}")
+        query_embeddings = [None] * len(queries)  # Will trigger individual embedding in retrieve_rag_documents
+
+    # Retrieve candidates for each query using pre-computed embeddings
     results_per_query: List[List[Dict[str, Any]]] = []
-    for q in queries:
+    for q, q_embedding in zip(queries, query_embeddings):
         try:
-            # We call retrieve_rag_documents with the expanded query
-            retrieved = retrieve_rag_documents(q, selected_class=class_name if class_name else None, match_count=30, match_threshold=0.7)
+            # Pass pre-computed embedding to avoid redundant API calls
+            retrieved = retrieve_rag_documents(
+                q, 
+                selected_class=class_name if class_name else None, 
+                match_count=30, 
+                match_threshold=0.7,
+                query_embedding=q_embedding
+            )
         except Exception as e:
             logging.warning(f"Retrieval failed for variant '{q}': {e}")
             retrieved = []
@@ -351,15 +364,65 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
     return result.get("embedding") or result["embedding"]
 
 
+def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List[float]]:
+    """Embed multiple query strings in a single API call using Gemini embeddings.
+    
+    Args:
+        texts: List of query strings to embed
+        model: Optional model name override
+        
+    Returns:
+        List of embeddings in the same order as input texts
+    """
+    if not texts:
+        return []
+    
+    _ensure_genai()
+    embedding_model = model or EMBEDDING_MODEL_NAME
+    
+    # Single API call for all queries
+    result = genai.embed_content(
+        model=embedding_model,
+        content=texts,  # Pass list of queries
+        task_type="retrieval_query",
+    )
+    
+    # Extract embeddings - the API returns a list when given a list
+    if isinstance(result.get("embedding"), list) and len(result["embedding"]) > 0:
+        # Check if it's a list of embeddings or a single embedding
+        if isinstance(result["embedding"][0], list):
+            return result["embedding"]
+        else:
+            # Single embedding case - wrap in list
+            return [result["embedding"]]
+    
+    # Fallback: if batch fails, fall back to individual calls
+    logging.warning("Batch embedding failed, falling back to individual calls")
+    return [embed_query(text, model) for text in texts]
+
+
 def retrieve_rag_documents(
     query: str,
     selected_class: str | None = None,
     match_count: int = 20,
     match_threshold: float = 0.7,
+    query_embedding: List[float] | None = None,
 ) -> list[dict]:
-    """Retrieve documents via Supabase 'match_documents' RPC."""
+    """Retrieve documents via Supabase 'match_documents' RPC.
+    
+    Args:
+        query: Query string (used for embedding if query_embedding not provided)
+        selected_class: Optional class filter
+        match_count: Number of documents to retrieve
+        match_threshold: Similarity threshold
+        query_embedding: Pre-computed embedding (if provided, skips embedding step)
+    """
     supabase = _get_supabase_client()
-    query_embedding = embed_query(query)
+    
+    # Use pre-computed embedding if provided, otherwise compute it
+    if query_embedding is None:
+        query_embedding = embed_query(query)
+    
     payload = {
         "query_embedding": query_embedding,
         "match_threshold": float(match_threshold),
