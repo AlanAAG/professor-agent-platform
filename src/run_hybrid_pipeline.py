@@ -233,14 +233,36 @@ def main_pipeline(mode="daily"):
                             try:
                                 container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
                                 logging.info(f"   Found {len(items)} items in section '{section_tag}'.")
-                                for idx in range(len(items)):
+                for idx in range(len(items)):
                                     url, title, date_text = None, None, None
                                     try:
                                         # Re-find current item by index to avoid staleness during iteration
-                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                                        # Link
-                                        link_el = item.find_element(By.TAG_NAME, "a")
-                                        href = link_el.get_attribute("href")
+                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
+                        # Link: handle both descendant and ancestor <a> structures
+                        href = None
+                        link_el = None
+                        try:
+                            # Common case: anchor wraps the contents (ancestor of fileBox)
+                            link_el = item.find_element(By.XPATH, ".//ancestor::a[1]")
+                        except Exception:
+                            try:
+                                # Fallback: anchor inside the fileBox
+                                link_el = item.find_element(By.TAG_NAME, "a")
+                            except Exception:
+                                link_el = None
+
+                        if link_el is None:
+                            # Last resort: locate the Nth anchor that contains a fileBox under the same container
+                            try:
+                                link_el = driver.find_element(
+                                    By.XPATH,
+                                    f"({container_xpath}//a[.//div[contains(@class,'fileBox')]])[{idx+1}]"
+                                )
+                            except Exception:
+                                link_el = None
+
+                        if link_el is not None:
+                            href = link_el.get_attribute("href")
                                         if href and not href.startswith("http"):
                                             href = config.BASE_URL + href.lstrip('/')
                                         url = href
