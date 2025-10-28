@@ -5,10 +5,16 @@ import os
 import math
 import hashlib
 import logging
-from typing import List, Dict, Any
 import numpy as np
+from typing import List, Dict, Any, Optional
+import datetime
+from dateutil import parser # Use dateutil for flexible parsing
+from dateutil import tz
 
+# Shared constants
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")
+
+# --- Helper Functions for RRF/MMR/Boosting (Option A) ---
 
 def expand_query(query: str) -> List[str]:
     """Return original query plus simple rule-based variants to diversify retrieval."""
@@ -66,19 +72,21 @@ def apply_rrf_and_boost(results_per_query: List[List[Dict]], query: str, class_n
     for result_list in results_per_query:
         for rank, doc in enumerate(result_list, start=1):
             doc_id = _get_doc_id(doc)
+            # RRF formula: score(doc) = sum(1 / (60 + rank_in_query_i))
             fused_scores[doc_id] = fused_scores.get(doc_id, 0.0) + 1.0 / (60.0 + float(rank))
 
     # Metadata boosts
+    # Note: Iterate through all documents to find boostable metadata
     for result_list in results_per_query:
         for doc in result_list:
             doc_id = _get_doc_id(doc)
             if doc_id not in fused_scores:
                 continue
             boost = 0.0
-            # Exact class match
+            # Exact class match: +0.15
             if class_name and _get_doc_class(doc) == class_name:
                 boost += 0.15
-            # Section priorities
+            # Section priorities (sessions > in_class > others)
             section = _get_doc_section(doc)
             if section == "sessions":
                 boost += 0.10
@@ -109,7 +117,7 @@ def compute_cosine_similarity(embedding_a: List[float], embedding_b: List[float]
 
 def _extract_doc_embedding(doc: Dict[str, Any]) -> List[float] | None:
     """Extract embedding from document dict, if present."""
-    # Common keys
+    # Common keys returned by the Supabase RPC
     for key_path in (
         ("embedding",),
         ("metadata", "embedding"),
@@ -141,12 +149,12 @@ def maximal_marginal_relevance(
     if not doc_scores:
         return []
 
-    # Prepare candidate set sorted by relevance first
+    # Prepare candidate set sorted by relevance (boosted RRF score) first
     candidates = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
     selected: List[str] = []
     selected_docs: List[Dict] = []
 
-    # Cache document embeddings
+    # Cache document embeddings for rapid similarity lookups
     embedding_cache: Dict[str, List[float] | None] = {}
     for doc_id, _ in candidates:
         doc = all_documents.get(doc_id)
@@ -177,18 +185,112 @@ def maximal_marginal_relevance(
                         sel_emb = embedding_cache.get(sel_id)
                         if sel_emb:
                             max_sim = max(max_sim, compute_cosine_similarity(cand_emb, sel_emb))
+                    # MMR diversity penalty calculation
                     diversity_penalty = (1.0 - lambda_param) * max_sim
+            
+            # MMR Score: (Lambda * Relevance) - ( (1 - Lambda) * Max Similarity)
             score = lambda_param * relevance - diversity_penalty
+            
             if score > best_score:
                 best_score = score
                 best_doc_id = doc_id
+        
         if best_doc_id is None:
             break
         selected.append(best_doc_id)
         selected_docs.append(all_documents[best_doc_id])
 
     return selected_docs
- 
+
+
+def _normalize_doc_input(obj: Any) -> Dict[str, Any]:
+    """Normalize various document inputs (dict, LangChain Document, str) to a dict."""
+    if isinstance(obj, dict):
+        return obj
+    # LangChain Document-like
+    if hasattr(obj, "page_content") and hasattr(obj, "metadata"):
+        return {
+            "content": getattr(obj, "page_content", ""),
+            "metadata": getattr(obj, "metadata", {}) or {},
+        }
+    if isinstance(obj, str):
+        return {"content": obj, "metadata": {}}
+    # Fallback
+    return {"content": str(obj), "metadata": {}}
+
+
+def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reranking orchestrator using Query Expansion + RRF + Boosting + MMR.
+    
+    This function acts as a zero-cost drop-in replacement for Cohere.
+    """
+    # Track whether caller passed LangChain Documents (for faithful return type)
+    input_is_langchain = bool(documents) and hasattr(documents[0], "page_content") and hasattr(documents[0], "metadata")
+    # Normalize input docs in case caller passes LangChain Documents
+    normalized_input_docs: List[Dict[str, Any]] = [_normalize_doc_input(d) for d in (documents or [])]
+    
+    class_name = ""
+    # Attempt to infer class from provided docs as a fallback boost context
+    for d in normalized_input_docs:
+        c = _get_doc_class(d)
+        if c:
+            class_name = c
+            break
+
+    # Expand queries
+    queries = expand_query(query)
+
+    # Retrieve candidates for each query
+    results_per_query: List[List[Dict[str, Any]]] = []
+    for q in queries:
+        try:
+            # We call retrieve_rag_documents with the expanded query
+            retrieved = retrieve_rag_documents(q, selected_class=class_name if class_name else None, match_count=30, match_threshold=0.7)
+        except Exception as e:
+            logging.warning(f"Retrieval failed for variant '{q}': {e}")
+            retrieved = []
+        results_per_query.append(retrieved)
+
+    # Build master map of id -> doc for all retrieved
+    all_docs_map: Dict[str, Dict[str, Any]] = {}
+    for lst in results_per_query:
+        for d in lst:
+            all_docs_map[_get_doc_id(d)] = d
+    # Also include any originals not in retrieval results
+    for d in normalized_input_docs:
+        all_docs_map.setdefault(_get_doc_id(d), d)
+
+    # Compute RRF with boosting
+    fused_scores = apply_rrf_and_boost(results_per_query, query=query, class_name=class_name)
+
+    # --- Fallback: Return top RRF score only if query embedding fails ---
+    if not fused_scores:
+        # Fall back to original documents if retrieval was completely empty
+        selected_dicts = normalized_input_docs[:7]
+        if input_is_langchain and Document is not None:
+            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
+        return selected_dicts
+
+    # Embed the original query for MMR
+    try:
+        q_emb = embed_query(query)
+    except Exception as e:
+        logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
+        # If embedding fails, return top-7 by fused score without MMR
+        top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
+        selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
+        if input_is_langchain and Document is not None:
+            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
+        return selected_dicts
+
+    # --- Final Step: Run MMR selection ---
+    mmr_selected_dicts = maximal_marginal_relevance(q_emb, all_docs_map, fused_scores, lambda_param=0.7, k=7)
+    
+    # Return in the format the caller expected (dict or LangChain Document)
+    if input_is_langchain and Document is not None:
+        return _to_langchain_documents(mmr_selected_dicts)  # type: ignore[return-value]
+    return mmr_selected_dicts
+
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
 try:
     import google.generativeai as genai
@@ -297,96 +399,6 @@ def retrieve_rag_documents_langchain(
     )
     return _to_langchain_documents(raw)
 
-
-def _normalize_doc_input(obj: Any) -> Dict[str, Any]:
-    """Normalize various document inputs (dict, LangChain Document, str) to a dict."""
-    if isinstance(obj, dict):
-        return obj
-    # LangChain Document-like
-    if hasattr(obj, "page_content") and hasattr(obj, "metadata"):
-        return {
-            "content": getattr(obj, "page_content", ""),
-            "metadata": getattr(obj, "metadata", {}) or {},
-        }
-    if isinstance(obj, str):
-        return {"content": obj, "metadata": {}}
-    # Fallback
-    return {"content": str(obj), "metadata": {}}
-
-
-def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Reranking orchestrator using Query Expansion + RRF + Boosting + MMR.
-
-    - Expands query with rule-based variants
-    - Retrieves fresh candidates for each variant (top 30)
-    - Fuses with RRF and applies metadata boosts
-    - Applies MMR to select final diverse top-7
-    """
-    # Track whether caller passed LangChain Documents; if so, return that type for compatibility
-    input_is_langchain = bool(documents) and hasattr(documents[0], "page_content") and hasattr(documents[0], "metadata")
-    # Normalize input docs in case caller passes LangChain Documents
-    normalized_input_docs: List[Dict[str, Any]] = [_normalize_doc_input(d) for d in (documents or [])]
-    class_name = ""
-    # Attempt to infer class from provided docs as a fallback boost context
-    for d in normalized_input_docs:
-        c = _get_doc_class(d)
-        if c:
-            class_name = c
-            break
-
-    # Expand queries
-    queries = expand_query(query)
-
-    # Retrieve candidates for each query
-    results_per_query: List[List[Dict[str, Any]]] = []
-    for q in queries:
-        try:
-            retrieved = retrieve_rag_documents(q, selected_class=class_name if class_name else None, match_count=30, match_threshold=0.7)
-        except Exception as e:
-            logging.warning(f"Retrieval failed for variant '{q}': {e}")
-            retrieved = []
-        results_per_query.append(retrieved)
-
-    # Build master map of id -> doc for all retrieved
-    all_docs_map: Dict[str, Dict[str, Any]] = {}
-    for lst in results_per_query:
-        for d in lst:
-            all_docs_map[_get_doc_id(d)] = d
-    # Also include any originals not in retrieval results
-    for d in normalized_input_docs:
-        all_docs_map.setdefault(_get_doc_id(d), d)
-
-    # Compute RRF with boosting
-    fused_scores = apply_rrf_and_boost(results_per_query, query=query, class_name=class_name)
-
-    # If no scores (retrieval empty), fall back to original order up to 7
-    if not fused_scores:
-        selected_dicts = normalized_input_docs[:7]
-        if input_is_langchain and Document is not None:
-            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
-        return selected_dicts
-
-    # Embed the original query for MMR
-    try:
-        q_emb = embed_query(query)
-    except Exception as e:
-        logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
-        # Return top-7 by fused score without MMR
-        top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
-        selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
-        if input_is_langchain and Document is not None:
-            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
-        return selected_dicts
-
-    # Run MMR selection
-    mmr_selected_dicts = maximal_marginal_relevance(q_emb, all_docs_map, fused_scores, lambda_param=0.7, k=7)
-    if input_is_langchain and Document is not None:
-        return _to_langchain_documents(mmr_selected_dicts)  # type: ignore[return-value]
-    return mmr_selected_dicts
-import datetime
-from typing import Optional
-from dateutil import parser # Use dateutil for flexible parsing
-from dateutil import tz
 
 # --- Setup Logging ---
 # Ensure logging is configured if run directly or imported early
