@@ -178,6 +178,25 @@ for code in sorted(all_codes):
     }
     COURSE_MAP[code] = merged
 
+# After COURSE_MAP definition, add validation
+def validate_course_map():
+    """Validate critical courses are configured correctly."""
+    import logging
+    critical_courses = {
+        "PRTC201": "Management Accounting",  # Excel - moved here
+        "AIML101": "Quantitative Tools for Business",
+        "PRTC301": "Quantitative Tools for Business",
+    }
+    
+    for code, expected_group in critical_courses.items():
+        if code not in COURSE_MAP:
+            logging.error(f"CRITICAL: {code} missing from COURSE_MAP")
+        elif COURSE_MAP[code].get("group") != expected_group:
+            actual = COURSE_MAP[code].get("group")
+            logging.warning(f"Group mismatch for {code}: expected '{expected_group}', got '{actual}'")
+
+validate_course_map()  # Run on import
+
 # Corrected: PRTC201 is not visible by default
 DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
 

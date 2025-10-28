@@ -20,6 +20,16 @@ from selenium.common.exceptions import (
 )
 
 from . import config
+
+# --- Course Deduplication Tracking ---
+# Add near top of file, after imports
+_COURSES_PROCESSED_THIS_RUN: set[str] = set()
+
+def reset_course_tracking():
+    """Call this at start of each pipeline run."""
+    global _COURSES_PROCESSED_THIS_RUN
+    _COURSES_PROCESSED_THIS_RUN = set()
+    logging.info("Course tracking reset for new pipeline run")
 # --- Screenshot helper ---
 def _save_screenshot(driver: webdriver.Chrome, filename: str) -> None:
     try:
@@ -417,6 +427,13 @@ def wait_for_course_page_ready(driver: webdriver.Chrome, timeout: int = 60) -> N
 
 # --- Course Navigation ---
 def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group_name: Optional[str]) -> None:
+    global _COURSES_PROCESSED_THIS_RUN
+    
+    # Check if already processed
+    if course_code in _COURSES_PROCESSED_THIS_RUN:
+        logging.warning(f"Course {course_code} already processed this run. Skipping duplicate.")
+        return
+    
     logging.info(f"Navigating to course: {course_code} (group: {group_name or 'unknown'})")
     driver.get(config.COURSES_URL)
     # Wait for either courses or a redirect to login
@@ -454,6 +471,8 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         safe_click(driver, (By.XPATH, target_xpath))
         wait_for_course_page_ready(driver, timeout=60)
         logging.info(f"Opened course {course_code}")
+        _COURSES_PROCESSED_THIS_RUN.add(course_code)
+        logging.info(f"Successfully opened and tracked {course_code}")
         return
     except Exception as direct_err:
         logging.info(f"Direct click failed for {course_code} ({direct_err}). Attempting via group expansion...")
@@ -466,6 +485,8 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
             safe_click(driver, (By.XPATH, target_xpath))
             wait_for_course_page_ready(driver, timeout=60)
             logging.info(f"Opened course {course_code}")
+            _COURSES_PROCESSED_THIS_RUN.add(course_code)
+            logging.info(f"Successfully opened and tracked {course_code}")
             return
 
         header_xpath = config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=effective_group)
@@ -479,6 +500,8 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
             safe_click(driver, (By.XPATH, target_xpath))
             _wait(driver, 60).until(EC.url_contains("/course"))
             logging.info(f"Opened course {course_code}")
+            _COURSES_PROCESSED_THIS_RUN.add(course_code)
+            logging.info(f"Successfully opened and tracked {course_code}")
             return
         except Exception as click_after_expand_err:
             logging.info(f"Click after expanding group failed for {course_code} ({click_after_expand_err}). Trying href navigation fallback...")
@@ -495,6 +518,8 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
                 # Wait for course details page heuristics
                 wait_for_course_page_ready(driver, timeout=60)
                 logging.info(f"Opened course {course_code}")
+                _COURSES_PROCESSED_THIS_RUN.add(course_code)
+                logging.info(f"Successfully opened and tracked {course_code}")
                 return
         except Exception as href_nav_err:
             logging.info(f"Href navigation fallback failed for {course_code} ({href_nav_err}).")
