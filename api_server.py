@@ -85,6 +85,14 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
         raise HTTPException(status_code=403, detail="Invalid API key")
     return api_key
 
+# --- Graceful Fallback Message when no documents are found ---
+NO_DOCUMENTS_ANSWER = (
+    "I couldn't find relevant materials. This could be because:\n"
+    "- The content hasn't been uploaded yet\n"
+    "- Try rephrasing your question\n"
+    "- Contact alanayalag@gmail.com if this persists"
+)
+
 class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
     selectedClass: Optional[str] = None
@@ -128,6 +136,12 @@ async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
         )
         # Re-ranking using the zero-cost RRF/MMR implementation
         documents = cohere_rerank(payload.query, documents)
+        # Graceful fallback when no documents are found
+        if not documents:
+            return {
+                "answer": NO_DOCUMENTS_ANSWER,
+                "sources": [],
+            }
         return {"documents": documents}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -200,6 +214,12 @@ RULES:
                     ]
                 }
                 yield f"data: {json.dumps(sources_data)}\n\n"
+            else:
+                # Graceful fallback when no documents are found
+                yield f"data: {json.dumps({'sources': []})}\n\n"
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': NO_DOCUMENTS_ANSWER}}]})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
             
             # Stream AI response
             response = model.generate_content(
