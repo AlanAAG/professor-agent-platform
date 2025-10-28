@@ -346,6 +346,14 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         logging.info(f"Expanded group '{effective_group}'")
 
         target_xpath = config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)
+        
+        # --- START: MODIFIED CODE ---
+        # Add an explicit wait for the link to become clickable *after*
+        # the group has been expanded. This replaces the time.sleep(5).
+        logging.info(f"Waiting for course link '{course_code}' to appear...")
+        safe_find(driver, (By.XPATH, target_xpath), timeout=30, clickable=True)
+        # --- END: MODIFIED CODE ---
+
         # Click course link after expansion
         safe_click(driver, (By.XPATH, target_xpath))
         _wait(driver, 30).until(EC.url_contains("/course"))
@@ -408,3 +416,4 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
         pass
     items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
     return container_xpath, items
+    
