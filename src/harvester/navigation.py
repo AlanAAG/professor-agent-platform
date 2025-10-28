@@ -14,9 +14,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException,
-    NoSuchElementException,
-    StaleElementReferenceException,
-    ElementClickInterceptedException,
 )
 
 from . import config
@@ -165,98 +162,81 @@ def safe_find(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
     timeout: int = 60,
-    attempts: int = 3,
     clickable: bool = False,
 ):
-    """Increased default timeout to 60 seconds."""
-    last_err: Exception | None = None
-    for _ in range(max(1, attempts)):
+    """
+    Simplified element finder - single attempt, clear error messages.
+    """
+    try:
+        wait = WebDriverWait(driver, timeout)
+        condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
+        element = wait.until(condition)
+        return element
+    except TimeoutException as e:
         try:
-            condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
-            element = _wait(driver, timeout).until(condition)
-            # Touch a property to assert non-stale
-            _ = element.is_enabled()
-            return element
-        except StaleElementReferenceException as e:
-            last_err = e
-            time.sleep(0.5) # Brief pause before retry on stale
-            continue
-        except TimeoutException as e:
-            last_err = e
-            break
-    if last_err:
-        raise last_err
-    raise NoSuchElementException(f"Element not found for locator: {locator}")
+            _save_screenshot(driver, f"find_timeout_{locator[1][:30]}_{int(time.time())}.png")
+        except Exception:
+            pass
+        raise TimeoutException(f"Element not found within {timeout}s: {locator}") from e
 
 
 def safe_find_all(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
     timeout: int = 60,
-    attempts: int = 2,
 ):
-    """Increased default timeout to 60 seconds."""
-    last_err: Exception | None = None
-    for _ in range(max(1, attempts)):
-        try:
-            _wait(driver, timeout).until(EC.presence_of_element_located(locator))
-            elements = driver.find_elements(*locator)
-            # Touch each element lightly to ensure not stale
-            for el in elements:
-                try:
-                    _ = el.tag_name
-                except StaleElementReferenceException:
-                    raise
-            return elements
-        except StaleElementReferenceException as e:
-            last_err = e
-            continue
-        except TimeoutException as e:
-            last_err = e
-            break
-    if last_err:
-        raise last_err
-    return []
+    """Find all matching elements. Returns empty list if none found."""
+    try:
+        wait = WebDriverWait(driver, timeout)
+        wait.until(EC.presence_of_element_located(locator))
+        return driver.find_elements(*locator)
+    except TimeoutException:
+        logging.debug(f"No elements found for {locator} within {timeout}s")
+        return []
 
 
 def safe_click(
     driver: webdriver.Chrome,
     locator: tuple[str, str],
-    attempts: int = 3,
     timeout: int = 60,
     scroll: bool = True,
 ) -> None:
     """
-    Robust click: scrolls, pauses, and uses a JS click.
+    Simplified click matching Colab script approach.
+    Single attempt with JS click - no complex retry loops.
     """
-    last_err: Exception | None = None
-    for _ in range(max(1, attempts)):
+    try:
+        # Wait for element to be present and clickable
+        wait = WebDriverWait(driver, timeout)
+        el = wait.until(EC.element_to_be_clickable(locator))
+        
+        # Scroll into view if requested
+        if scroll:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+        
+        # Simple pause like Colab script (proven to work)
+        time.sleep(1)
+        
+        # Use JS click for reliability (avoids interception issues)
+        driver.execute_script("arguments[0].click();", el)
+        
+        logging.debug(f"Successfully clicked element: {locator}")
+        
+    except TimeoutException as e:
+        # Save screenshot for debugging
         try:
-            # 1. Wait for the element to be at least present/clickable
-            el = safe_find(driver, locator, timeout=timeout, attempts=1, clickable=True)
-            
-            # 2. Scroll into view
-            if scroll:
-                _scroll_into_view_center(driver, el)
-                
-            # 3. Pause (as seen in working Colab script)
-            time.sleep(1) 
-            
-            # 4. Re-find element just in case scroll made it stale (quick)
-            el = safe_find(driver, locator, timeout=min(timeout, 10), attempts=1, clickable=False) 
-            
-            # 5. Click with JavaScript (more robust)
-            driver.execute_script("arguments[0].click();", el)
-            return # Success
-        except (StaleElementReferenceException, ElementClickInterceptedException) as e:
-            last_err = e
-            time.sleep(1) # Wait a bit before retrying
-            continue
-        except TimeoutException as e:
-            last_err = e
-            break
-    if last_err:
-        raise last_err
+            _save_screenshot(driver, f"click_timeout_{locator[1][:30]}_{int(time.time())}.png")
+        except Exception:
+            pass
+        raise TimeoutException(f"Element not clickable within {timeout}s: {locator}") from e
+    
+    except Exception as e:
+        logging.error(f"Click failed for {locator}: {type(e).__name__}: {e}")
+        try:
+            _save_screenshot(driver, f"click_error_{locator[1][:30]}_{int(time.time())}.png")
+        except Exception:
+            pass
+        raise
 
 
 # --- Session and Login ---
@@ -485,7 +465,7 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
 
         # Fallback: navigate directly via the link's href
         try:
-            link_el = safe_find(driver, (By.XPATH, target_xpath), timeout=15, attempts=2)
+            link_el = safe_find(driver, (By.XPATH, target_xpath), timeout=15)
             href = link_el.get_attribute("href") if link_el else None
             if href:
                 if not href.startswith(("http://", "https://")):
@@ -537,30 +517,32 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
 
 
 def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str):
-    """Click a Resources accordion section and return (container_xpath, item elements).
-
-    Returning the container XPath allows callers to re-fetch items by index to avoid
-    StaleElementReferenceException when iterating dynamically-loaded content.
-    """
+    """Click a Resources accordion section and return container + items."""
     header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
+    
+    # Simple click without retries
     safe_click(driver, (By.XPATH, header_xpath))
     
-    # Add a small pause after clicking the section header
-    time.sleep(2) 
+    # Wait for section to expand (consistent with Colab)
+    time.sleep(2)
     
-    # Items are in next sibling div. Wait for it to populate.
+    # Get container and items
     container_xpath = header_xpath + "/parent::div/following-sibling::div[1]"
-    _wait(driver, 10).until(EC.presence_of_element_located((By.XPATH, container_xpath)))
-    container = driver.find_element(By.XPATH, container_xpath)
-    # Wait until at least one resource item is present (best-effort)
+    
     try:
-        _wait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS))
-        )
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.presence_of_element_located((By.XPATH, container_xpath)))
+        container = driver.find_element(By.XPATH, container_xpath)
+        
+        # Wait for at least one item to be present
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)))
+        items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
+        
+        return container_xpath, items
+        
     except TimeoutException:
-        pass
-    items = container.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
-    return container_xpath, items
+        logging.warning(f"Section '{section_title}' expanded but no items loaded")
+        return container_xpath, []
 
 
 def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
@@ -587,7 +569,7 @@ def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
 
     def _collect_codes_from_links() -> None:
         try:
-            links = safe_find_all(driver, (By.XPATH, "//a[contains(@href, 'courseCode=')]"), timeout=10, attempts=2)
+            links = safe_find_all(driver, (By.XPATH, "//a[contains(@href, 'courseCode=')]"), timeout=10)
         except Exception:
             links = []
         for a in links:
