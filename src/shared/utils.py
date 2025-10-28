@@ -241,16 +241,30 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
     # Expand queries
     queries = expand_query(query)
 
-    # Retrieve candidates for each query
-    results_per_query: List[List[Dict[str, Any]]] = []
-    for q in queries:
-        try:
-            # We call retrieve_rag_documents with the expanded query
-            retrieved = retrieve_rag_documents(q, selected_class=class_name if class_name else None, match_count=30, match_threshold=0.7)
-        except Exception as e:
-            logging.warning(f"Retrieval failed for variant '{q}': {e}")
-            retrieved = []
-        results_per_query.append(retrieved)
+    # Retrieve candidates for each query using a single batch embedding request
+    try:
+        results_per_query, query_embeddings = retrieve_rag_documents_batch(
+            queries,
+            selected_class=class_name if class_name else None,
+            match_count=30,
+            match_threshold=0.7,
+        )
+    except Exception as e:
+        logging.warning(f"Batch retrieval failed; falling back to per-variant loop: {e}")
+        results_per_query = []
+        query_embeddings = []
+        for q in queries:
+            try:
+                retrieved = retrieve_rag_documents(
+                    q,
+                    selected_class=class_name if class_name else None,
+                    match_count=30,
+                    match_threshold=0.7,
+                )
+            except Exception as inner_e:
+                logging.warning(f"Retrieval failed for variant '{q}': {inner_e}")
+                retrieved = []
+            results_per_query.append(retrieved)
 
     # Build master map of id -> doc for all retrieved
     all_docs_map: Dict[str, Dict[str, Any]] = {}
@@ -272,17 +286,23 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
             return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
         return selected_dicts
 
-    # Embed the original query for MMR
-    try:
-        q_emb = embed_query(query)
-    except Exception as e:
-        logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
-        # If embedding fails, return top-7 by fused score without MMR
-        top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
-        selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
-        if input_is_langchain and Document is not None:
-            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
-        return selected_dicts
+    # Use the already-computed embedding of the original query for MMR when available
+    q_emb = None
+    if 'query_embeddings' in locals() and isinstance(query_embeddings, list) and query_embeddings:
+        first = query_embeddings[0]
+        if isinstance(first, list) and first:
+            q_emb = first
+    if q_emb is None:
+        try:
+            q_emb = embed_query(query)
+        except Exception as e:
+            logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
+            # If embedding fails, return top-7 by fused score without MMR
+            top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
+            selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
+            if input_is_langchain and Document is not None:
+                return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
+            return selected_dicts
 
     # --- Final Step: Run MMR selection ---
     mmr_selected_dicts = maximal_marginal_relevance(q_emb, all_docs_map, fused_scores, lambda_param=0.7, k=7)
@@ -351,6 +371,43 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
     return result.get("embedding") or result["embedding"]
 
 
+def embed_queries(texts: list[str], model: str | None = None) -> list[list[float]]:
+    """Batch-embed multiple query strings in a single API call.
+
+    Returns a list of embedding vectors aligned with the input order. If a
+    particular embedding fails, an empty list is placed in that position.
+    """
+    if not texts:
+        return []
+    _ensure_genai()
+    embedding_model = model or EMBEDDING_MODEL_NAME
+    try:
+        result = genai.embed_content(
+            model=embedding_model,
+            content=texts,
+            task_type="retrieval_query",
+        )
+        # google-generativeai returns {"embeddings": [{"embedding": [...]}, ...]} for batch
+        raw_list = result.get("embeddings") if isinstance(result, dict) else None
+        if isinstance(raw_list, list):
+            vectors: list[list[float]] = []
+            for item in raw_list:
+                vec = item.get("embedding") if isinstance(item, dict) else None
+                vectors.append(vec if isinstance(vec, list) else [])
+            return vectors
+    except Exception as e:
+        logging.warning(f"Batch embedding failed; falling back to per-item calls: {e}")
+
+    # Fallback: attempt per-item embedding to avoid hard failure
+    vectors: list[list[float]] = []
+    for t in texts:
+        try:
+            vectors.append(embed_query(t, model=embedding_model))
+        except Exception:
+            vectors.append([])
+    return vectors
+
+
 def retrieve_rag_documents(
     query: str,
     selected_class: str | None = None,
@@ -369,6 +426,43 @@ def retrieve_rag_documents(
         payload["filter_class"] = selected_class
     response = supabase.rpc("match_documents", payload).execute()
     return getattr(response, "data", None) or []
+
+
+def retrieve_rag_documents_batch(
+    queries: list[str],
+    selected_class: str | None = None,
+    match_count: int = 20,
+    match_threshold: float = 0.7,
+    model: str | None = None,
+) -> tuple[list[list[dict]], list[list[float]]]:
+    """Retrieve documents for multiple queries using a single batch embed call.
+
+    Returns a tuple of (results_per_query, query_embeddings).
+    Each element of results_per_query corresponds to the aligned input query.
+    """
+    supabase = _get_supabase_client()
+    query_embeddings = embed_queries(queries, model=model)
+
+    results_per_query: list[list[dict]] = []
+    for emb in query_embeddings:
+        if not emb:
+            results_per_query.append([])
+            continue
+        payload: dict[str, object] = {
+            "query_embedding": emb,
+            "match_threshold": float(match_threshold),
+            "match_count": int(match_count),
+        }
+        if selected_class:
+            payload["filter_class"] = selected_class
+        try:
+            response = supabase.rpc("match_documents", payload).execute()
+            results_per_query.append(getattr(response, "data", None) or [])
+        except Exception as e:
+            logging.warning(f"Retrieval failed for one variant: {e}")
+            results_per_query.append([])
+
+    return results_per_query, query_embeddings
 
 
 def _to_langchain_documents(raw_docs: list[dict]) -> list[Document]:
