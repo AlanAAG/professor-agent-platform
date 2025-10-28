@@ -1,0 +1,1694 @@
+How to use statistics to build a better business
+
+
+
+The Power of Averages: Making Smarter Business Decisions with CLT & LLN”
+16/10/2025 | 10:15 AM - 11:45 AM
+ Mrs. Shivangi Rajora
+0:01
+So what was variability? What was what measures did we discuss
+0:07
+for variability? The spread of the numbers,
+0:17
+the range. So we had a few measures of variability,
+0:21
+right? Which were I'll change it.
+0:26
+um range then standard deviation
+0:32
+standard deviation variance
+0:38
+IQR anybody has any doubt as to the purpose
+0:43
+they serve what are they telling us yes
+0:52
+okay Okay, sorry.
+1:00
+They allow you to understand the variability in the spread of your data.
+1:07
+Okay, you have to pay attention now when I'm saying again.
+1:11
+Using these measures, we tried to understand how the data was spread out.
+1:18
+Right? So in the first two classes we discussed central tendency
+1:28
+which was what it was a point around which your data
+1:33
+was spread right mean median mode
+1:38
+we had arrived at a singular point around which your data was spread right
+1:44
+they were calculated differently they had different purposes right I'm not
+1:48
+going to cover that again. Go back to the recordings if you need to. But we
+1:54
+realize the central point is not enough to understand the data.
+1:59
+Right? And therefore we need to understand about the central point. How
+2:04
+does my data vary? Right? How far away is my data from the
+2:11
+central point? And therefore we had the measures of variability. We talked about
+2:17
+range which were maximum and minima values. We talked about standard
+2:22
+deviation. What what how was standard deviation calculated?
+2:30
+Sorry. Well, Excel. Yes.
+2:33
+You remember this divide by
+2:46
+For the n for the s n minus one for sample
+2:53
+if it was population it would just be n
+2:58
+was what? Number of data points.
+3:02
+n was the number of data points. Clear? Right. Variance.
+3:10
+What was variance? Standard deviation squared. standard
+3:13
+deviation squared, right? Variance was simply standard deviation
+3:20
+squared, right? IQR interal range.
+3:28
+Yes. Q3 minus Q1. How did we arrive at Q3 and
+3:34
+Q1? Right? 25. We divided our data the
+3:40
+spread of our data into four quarters right and the positions at which the 25
+3:47
+first 25% ended and the last 25% began gave us the values Q3 and Q1
+3:56
+right and that helped us calculate where did the middle 50% of our data lie
+4:05
+right so now we have essential points defining our data and we know how data
+4:13
+is spread about that point. Yes.
+4:21
+IQR I IQR interile range. Thank you.
+4:27
+Okay. Right. So we have a central point and we
+4:33
+have some idea as to how data is spread around that central point. Right?
+4:42
+Now say for example I give you two numbers guys please I give you two
+4:49
+numbers. Say the mean is mean age for my customers
+4:55
+is 25 and standard deviation is 3 years.
+5:02
+What does this mean? What does this mean? If I say that the
+5:08
+mean age or average age of my customer is 25 years and the standard deviation
+5:14
+is 3 years to
+5:18
+20 to 28. Right? Your the customer the ages of your customers are spread about
+5:25
+25 but most of the data most of the ages
+5:29
+are from 25 to 28 or from 22 to so essentially majority of your data is
+5:39
+going to lie about in this range. Got it? Right.
+5:45
+Now does that mean that you will not have a customer who is 21 years of age?
+5:54
+Sorry. It's
+5:58
+for this range. Yes, it seems like an outlier but does that mean it will never
+6:04
+happen? It will happen. Right? Remember that
+6:08
+example from uh from mega mart sales right? we have discussed for
+6:14
+understanding median and the difference between median and mean. So there were
+6:19
+on one day somebody bought $500 worth of goods and on the same day somebody
+6:25
+bought $55 worth of goods, right? And this day,
+6:32
+right, we had another day which had $197 worth of goods being sold on an average
+6:38
+to all customers. Right? Just because the mean was 197 and
+6:44
+we would have calculated the median also. I think the median came about $20
+6:49
+or something, right? Does not mean that this extreme
+6:54
+events would not have happened, right?
+7:00
+If you have say for example a supplier with shipping time 4 days and the
+7:05
+standard deviation of shipping times as 1 day, does it mean that never ever will
+7:12
+they delay your shipment by 10 days? Never.
+7:18
+They can. They can.
+7:21
+Sometimes it can happen. There is never say never sort of a
+7:26
+thing, right? Are we comfortable with this?
+7:31
+Are we comfortable with 10 days of certain day?
+7:36
+What are you comfortable with? I am glad that you're comfortable in the
+7:43
+concept and not comfortable with the fact that your supplier is uh delaying
+7:47
+the shipping by 10 days. So you're not comfortable with the supplier delaying
+7:52
+your shipment by 10 days. You're not comfortable this with this one person
+7:56
+who's buying $500 worth of groceries on a day when your mean was just $200.
+8:02
+Right? Which means right now you are curious to know what are the chances of
+8:09
+these outliers happening. Yes.
+8:18
+It's more profit. Correct. Right. Please.
+8:23
+Yes. The reason you're not comfortable with
+8:30
+somebody buying $500 worth of groceries on a single day is because you have only
+8:35
+anticipated people buying on an average $200 worth of groceries.
+8:41
+Right? The reason you're not comfortable with somebody 21 years of uh age uh you
+8:48
+know falling in your as your customer coming out as your customer because you
+8:52
+have only prepared for this right which means these outliers are not
+8:59
+comfortable for us. We want to know right what was the objective of
+9:03
+variability? The objective of understanding
+9:07
+variability in data was to reduce our risk,
+9:14
+right? We wanted to know as much about the data as possible and variability
+9:20
+helped us to some extent, right? But it does not explain it does
+9:26
+not help us understand everything about the data. Even if you know the standard
+9:31
+deviation, somebody somebody in your customer pool
+9:35
+could be falling outside that standard deviation range.
+9:40
+Right? Even even if you know the standard deviation of supply lines,
+9:45
+sometimes your supply could fall, your supply time could increase by much
+9:50
+larger than what you had expected, right? And therefore
+9:56
+now you are really really curious to understand what are the chances of these
+10:04
+outliers happening. What are the chances that somebody
+10:09
+outside your standard deviation age come uh tries to buy your product online?
+10:17
+Some sorry unlikely. Unlikely but does it never happen?
+10:24
+Right? You still want to So remember um
+10:30
+we have some information, right? Mean gave us some information,
+10:34
+standard deviation gave us some information and they prepared us for
+10:40
+major chunk of what was happening either in terms of ages, either in terms of
+10:45
+sales per person, either in terms of shipping depths, right?
+10:53
+It's okay. It's okay. But it does not prepare us for all of
+11:05
+the times events which could happen but are not covered by mean or the standard
+11:12
+deviation. Right? You could still have events
+11:17
+happening outside of this range. range provided to you by the standard
+11:23
+deviation or IQR right and you still want to prepare for
+11:28
+that right you want to take I mean come on just think of it by the way if you
+11:32
+remember I told you if you have the standard deviation technically about 70%
+11:37
+of your data lies in this bracket right so mean plus minus
+11:45
+standard deviation is almost 70% of the data
+11:50
+30% is still a very large chunk for you to not care about.
+11:57
+Do you think you would run a business successfully by not caring about the
+12:00
+remaining 30%. Not really.
+12:04
+Right. So the so which means one we're curious about outliers. Agreed.
+12:12
+Right. Anybody who thinks that they can get away with not caring about
+12:28
+so we care about our Okay. Now let's go back inside this
+12:42
+bracket of mean plus minus standard deviation.
+12:46
+Our 70% of the data occurs here. Right? If it was say customer ages, 70% of your
+12:55
+customers are lying in this age bracket. If the shipping time 70% of the times
+13:02
+your supplier will ship with a certainty that okay fine my shipping time will be
+13:07
+from 3 to 6 days with some maybe 4.5 70% of the times
+13:15
+but other than this information that 70% of the times my data will lie here do I
+13:22
+actually know that in that 70% of the time what is the exact number number of
+13:28
+times that they will deliver in 4.5 days. What is the exact number of time
+13:34
+that they will deliver in 3.5 days or what is the exact number of times that
+13:39
+they will deliver in 4 days I also want to know that why
+13:49
+to prevent any kind of vulnerability right to contain my risk to be very sure
+13:56
+right how well I can deliver to my customers or how well I can target my
+14:01
+ads to the customers, right? So, not just that I'm curious
+14:05
+about what happens with outliers, I am also curious what the spread of data in
+14:12
+this range looks like, right? I still care about that.
+14:21
+So, I need to now know two things. What the outliers are doing. What my 70% of
+14:29
+the data what does it look like? What are the chances that if you have a
+14:37
+range of customers from 22 to 28, how many of them are going to be 26
+14:43
+years of age, right? Because definitely the way you
+14:48
+target 23 year olds might be a little different from targeting 26 years, 26
+14:55
+year olds, right? The way you promise shipping,
+14:59
+right? On your website, you will promise shipping that our product will ship in
+15:04
+like 3 to 5 days and will be delivered to you in less than 2 weeks.
+15:09
+Right? You need to be sure that what is happening within that 70% of the data
+15:16
+points. Agreed?
+15:21
+This brings us to the idea of probability.
+15:26
+What are the chances of something happening?
+15:32
+Okay, because we have some data. We have some data as to that some data told us
+15:40
+the mean that some data told us the standard deviation
+15:45
+right but we want to be even more specific about the information we can
+15:50
+get from that data which means that from that some data we are now going to try
+15:56
+to find out the chances of very specific events occurring.
+16:03
+All right, given that my mean age of customer was 25 and the standard
+16:07
+deviation was three, what are the chances that
+16:12
+um 10% of my customers are going to be over 25 years of age?
+16:20
+Given that my mean supply time is 4 days,
+16:25
+what are the chances that 50% of the times the supply would happen before 4
+16:32
+days? Right? Supply means the supplier will actually ship
+16:40
+below the below the mean. Right?
+16:45
+Do you now understand why we will go into probability?
+16:51
+Yeah. Questions.
+17:01
+Same goes for sampling by the way. Okay. Say for example,
+17:07
+you have you have taken out a pilot survey, right? You've conducted a pilot
+17:11
+survey for your customers and some of them have said that they like your
+17:16
+product. in that service some others said they did not like your product. So
+17:20
+let's assume the proportion was 60/40. Now given the information that in this
+17:27
+class 60% of the people like my product I want to know what is what are the
+17:33
+chances that if I sold to section two 40% of the people there will buy my
+17:41
+product given that I have this information what
+17:46
+are the chances that that materializes we have some information and we are
+17:52
+using that information to make educated guesses about some other events
+17:58
+happening. Okay.
+18:01
+So, how many of you have had some sort of an introduction to probability?
+18:08
+How did we study probability? Sorry.
+18:17
+Three diagrams. Okay. So,
+18:29
+Cards, dice, please. Coins.
+18:42
+Yes. Real life movie uses.
+18:47
+Yeah, we'll do that. That's the objective.
+18:51
+Yeah, business examples. We'll do all of that.
+18:56
+Of course, by the way, I have that's what I've been talking about,
+19:03
+right? So, very basic example. First question,
+19:09
+you can see this, right? There's green balls and orange balls.
+19:14
+If I told you, if I told you, if I asked you to draw one ball out of this, one
+19:20
+ball out of this bucket, what is the probability that it is going to be
+19:23
+green? 6 out of 15,
+19:34
+right? Probability of green ball, right? Do we understand? Probability is
+19:41
+simply favorable outcomes upon total outcomes.
+19:54
+Okay. If I told you to draw two balls out of this bucket,
+20:00
+what is the probability that both of them will be green?
+20:08
+So why did you say 5? Yeah.
+20:16
+Very good. Right. It depends whether I put the ball back or not. So if when you
+20:22
+said 5 by 14, you made the assumption that I did not pull the put the first
+20:28
+ball back into the bucket. You can do that right. I have not made
+20:36
+that clear to you right now whether I'm asking you to pull up draw two balls
+20:41
+together or I'm asking you to draw two balls one after the other and then also
+20:46
+I could tell you either put the ball first ball back or don't put put the
+20:50
+first ball back. In both situations the probability of drawing green balls is
+20:56
+going to be different. Is anybody clear on that? Any
+21:03
+questions, doubts? No. Fine.
+21:08
+Okay. If I from this bucket
+21:13
+asked you that I want to draw one green ball and one orange ball,
+21:18
+what is the probability of that? One green ball and one orange ball. We
+21:27
+have to use what is permutation.
+21:31
+Okay. Can you can you explain what that is?
+21:37
+Sorry. combination combination.
+21:50
+Uh why why are you saying combination combination?
+21:54
+There are two different number of outputs.
+21:56
+What are the two different outputs? One means
+22:05
+the number of outcomes divided by number of outcomes.
+22:10
+That's always okay. Now
+22:19
+technically you're right and there is some scope of improvement in the
+22:24
+probabilities that you have told me for drawing out one green and one orange
+22:29
+ball. Yes.
+22:40
+So which means that one order matters. Two you need to know whether I put the
+22:47
+ball back or not. Right? Or matters is clear to everyone that technically me
+22:54
+drawing first ball I drew is green and the second ball I draw is orange. And
+23:01
+then I do uh another repeat the experiment again and I draw first orange
+23:06
+and then green. These are two different events,
+23:11
+right? These are two different events. To understand it better, say for example
+23:18
+you are interested in credit card histories of three people,
+23:23
+right? say Shivangi, Gha and
+23:30
+right. So consider those two walls as
+23:34
+independent. Right? Which means that if I was to ask
+23:39
+that two out of these three people will default this month.
+23:44
+What are the chances of that happening? 534
+23:53
+default like they don't pay their credit card
+23:56
+bill. What are the chances that two out of
+24:07
+these three people will not pay their credit card bill this month?
+24:14
+Good question, right? I don't know what are the chances of one person not
+24:19
+paying. So first I need that information. Right? So I have calculated
+24:24
+I've done the credit history of you know work with the credit history of all
+24:28
+three and I've arrived at the conclusion that for each of them there is a 20%
+24:34
+chance that they failed. For each of them means
+24:39
+if you looked at me individually there's a 20% chance that I don't pay back my
+24:43
+credit card bill. If you looked at individually, 20% chance he will not pay
+24:48
+back the credit card bill. You looked at Karma, 20% chance he will not pay back.
+24:54
+What are the chances that any two of us will not pay back our credit card bills?
+25:10
+SGB and SPG
+25:17
+SV. Okay.
+25:24
+Why does order not matter? Is meing but is me defaulting or bes defaulting
+25:36
+the same event? No, no, not you and not really
+25:41
+but the odds of both of you like there's no there's no who defaults
+25:47
+first. No if you define
+26:06
+20 * 20 * 3. Yeah. Plus
+26:12
+it's easier to say plus all. So it's 2020 plus 2020 + 20. Okay. All of the
+26:17
+discussion that is happening here. Uh who are not following at all? If some
+26:23
+people are sleeping, um I I can see that that's okay. Not
+26:27
+following. Okay. Not following. Anybody else not
+26:31
+following at all? What's happened? Fine. So the first thing we do here is
+26:39
+list out all of the possibilities that could happen. Right?
+26:45
+So first possibility all of us pay right? Second possibility
+26:55
+none of us pay right we have six more possibilities.
+27:01
+Can somebody help me? Okay.
+27:11
+cross. Uh
+27:15
+stick cross take cross
+27:22
+take sorry cross tick cross and take cross tick. How many? 3 4 5 6 7 8
+27:32
+Any other possibility? Any other possibility?
+27:38
+Cross cross one tick tick tick done x right
+27:50
+all possibilities are listed out in how many of these possibilities
+27:56
+only two people exactly two people default
+28:00
+three possibilities so 1 2
+28:10
+and three. So number of favorable outcomes search
+28:17
+the one who is not following. What did I do?
+28:26
+Mhm. The most favorable outcomes.
+28:28
+Why? What are the favorable outcomes? Why are they favorable?
+28:36
+This is the only What was my question?
+28:45
+What are the cases when only two people fail to pay?
+28:51
+Out of all of these, right? I have a list here of all of the possibilities
+28:57
+that could happen of which I have defined for myself that I want to know
+29:03
+what is the possibility that two people will fail. So my favorable outcomes are
+29:08
+consists of outcomes where two people are failing to pay.
+29:15
+Favorable outcomes three
+29:20
+unfavorable total number of outcomes eight. Is that how it works? So what
+29:27
+what do I do this with 3x8? How how do I actually calculate the
+29:34
+probability? You have given you probability of one person failing.
+29:40
+How do I Yes. So now we know 20% we know three. So if
+29:46
+it's 2% 1 by 5 1 so 5 1 by 5. Okay.
+29:58
+So when I'm talking about three events
+30:02
+happening together, right? What I'm essentially doing is I'm
+30:09
+going to multiply their probability, right? So when two events happen
+30:14
+together, right? Say for example, if you tossed a coin and you want to toss a
+30:19
+coin twice, you want to calculate the probability of two heads occurring.
+30:23
+Technically, the probability is 1x2 * 1x2
+30:29
+Right. Similarly, now I have these three outcomes which I want to calculate the
+30:35
+probability of. For my first outcome, what is the probability of Shivangi
+30:41
+failing? 2 probability of GMA failing
+30:48
+2 probability of making the payment.8 date. So the probability of this event
+30:57
+particular this particular event happening that shamani and fail and
+31:02
+makes the payment on time is2 into 2 into8
+31:09
+right but that is not the only event I'm interested in it could also happen that
+31:14
+shamani and faith right which means now I have two events
+31:22
+that could happen right two different events that I'm
+31:27
+interested in because they have a different order which means now I add
+31:32
+the probability of Shivangi failing GMA making the payment and failing
+31:43
+plus we add all the possibilities
+31:46
+we add all of the possibilities yes every time you say the word and you
+31:51
+should multiply every time you say the or you just
+31:54
+correct right?
+31:57
+So a very good short hand for remembering when to multiply
+32:00
+probabilities and when to add them is if you want to see two events happening
+32:06
+together right this and this happening you multiply the probabilities
+32:13
+right but I am interested in seeing could this happen or this happen
+32:19
+right in that case I add the probabilities
+32:27
+Sorry like in this case it's the same like
+32:31
+different order. Yeah.
+32:36
+Yeah. I'm just trying to visualize. Right. So technically yes this into
+32:40
+three right but but be clear the reason it
+32:47
+it's it's multiplied by three is because these are all different events.
+32:55
+Right? Which means now technically all right.
+32:59
+So I have done all of this mumbo jumbo. All right. If I was a person interested
+33:06
+in understanding the payback capacities of the clients,
+33:13
+right? I say suppose I work in SMT or movies,
+33:19
+right? And I am rating the mortgage back securities.
+33:24
+What are mortgage back securities? Nobody's nobody's watch that um make
+33:32
+sure our mortgage security is the capability
+33:37
+to pay back the mortgage. It's a it's a financial instrument. Yes.
+33:44
+So whe
+34:12
+right so basically Guys, guys, guys, just a small
+34:18
+uh segue to uh the markets of financial institutions.
+34:24
+When a bank gives you a loan, it's usually against something. It's a
+34:28
+collateral, right? When people use take loans to buy houses, they essentially
+34:35
+get a mortgage against the house, right? Right. you you take a loan
+34:42
+against your house. Now what financial institutions then do is right say banks
+34:48
+because banks really want to keep making money right and now the way bank is
+34:53
+making money by giving you loan how does banks make money when they give you loan
+34:58
+interest everybody understands that right so bank gives you money they make
+35:04
+interest but they also want to free up some capital
+35:09
+right because they want to make new loans right dependent on just interest
+35:15
+technically they had some limited $100 amount they've given 50 to you 50 to
+35:20
+right they can't make new loans they can't generate new income for them so
+35:25
+what banks do is bank sells that loan to a third party
+35:32
+do you understand what happens so then essentially if I am a home owner who has
+35:37
+taken a loan for my house I pay my interest more to the bank but to that
+35:44
+third party who has bought my mortgage right now.
+35:51
+Imagine you're working in that third party institution.
+35:56
+When do they buy my mortgage? Why would they want to buy my mortgage?
+36:04
+If I am a good if I am a good creditor, right? If I am very good at paying back
+36:11
+my mortgage, say for example, bank held my mortgage for 2 years and every month
+36:17
+I made my mortgage payments. Then after 2 years, bank decides to sell
+36:23
+that mortgage to a third party institution because they want to
+36:26
+increase their money. Then they want to make more loans, they want to do more
+36:29
+business. So they sell it to a third party. Now that third party will
+36:34
+evaluate whether this mortgage we sold to them is even a good customer or not.
+36:43
+Right. Right. They have made payment to the bank for the last 2 years but will
+36:49
+they continue to do so as I hold their mortgage for the next 20 years?
+36:56
+We don't know right. But I can do some calculations,
+37:04
+right? And usually, so I would I would ask you to go back and watch that movie
+37:10
+maybe a little bit or um just read about mortgage back securities, right? So
+37:17
+mortgage back securities are essentially clo. It's not that the third institution
+37:21
+just buys my mortgage. Essentially that mortgage back security is mortgages of a
+37:27
+lot of people with hundreds and thousands of people clubed together into
+37:31
+one instrument. Right? So now as a person sitting in
+37:36
+that usually this the financial institution that buys the mortgage back
+37:41
+securities will uh will get somebody like Moody's or S&P to evaluate the risk
+37:49
+of the mortgage back security. Right? In that security, let us assume
+37:56
+today that I have 1,000 people's mortgages.
+38:02
+Guys, are you following me or is this getting too complex?
+38:06
+Following, right? This is interesting stuff. Come on, real life.
+38:10
+I have a question about mortgage. Super attractive. I'm even have the
+38:16
+funds that can say I for 1 million. Yeah. and I have €2 million in the bank.
+38:23
+Isn't that either way more attractive to take out a mortgage or a loan to finance
+38:27
+my house? Yeah, I mean that's that's more a
+38:30
+question of personal finance whether you want to use your personal wealth to buy
+38:35
+an asset or whether you want to take a loan. So yes, say for example right now
+38:39
+in India if you invested in the financial markets on an average you will
+38:42
+get a return of 15% annually. Most home loans are 8 to 10%.
+38:48
+15%. Some of the stocks will give you almost 15%. Oh guys, why you not what's
+38:54
+happening in India? India is crazy right now. Like
+39:01
+15%. By the way, guys, guys, guys, this is
+39:14
+not this is not
+39:21
+all right. Come on. Settle down.
+39:28
+There are some fundamental issues with the economy. So that 15% is not going to
+39:32
+last and we can have a separate discussion outside the class why I think
+39:37
+that. Of course, there will be other economists who might think otherwise.
+39:41
+Okay. But I think that 15% is not going to last. And so I am going to be taking
+39:45
+out some money from the markets very soon.
+39:50
+Okay. Okay. Okay. Mortgage back securities.
+39:54
+Come on. Right. Mortgage back securities. I know I am now Leman
+39:58
+Brothers. You remember you would have been kids. But have you heard of Leman
+40:03
+Brothers? Right. human brothers giant bank failed
+40:09
+right so I'm in 2007 right the economy is looking really hot
+40:14
+mortgage back security interest rates interest rates the housing loans are
+40:18
+really low and I want to get in on that action right house prices are rising
+40:25
+real estate is looking really solid people on an average are we seeing
+40:30
+increase in incomes right so this loan market kind of seemed
+40:35
+very safe, right? But still, I will do do my due diligence. I'm buying a
+40:42
+mortgage back security which essentially consists of
+40:46
+1,000 mortgages,
+40:50
+right? And now as a person doing due diligence
+40:56
+I want to know what is the probability that say for example my bosses have told
+41:03
+me that they're okay if on an average in a month
+41:09
+50 people fail to pay. They're largely okay. This is what
+41:16
+you've been told. You've also been told that in a year if I have 3 months where
+41:25
+about 150 people fail to make their mortgages
+41:29
+I am okay I will absorb that risk but only for any random 3 months in the year
+41:37
+right but it is really right they and they will ask you what if like 50% of
+41:44
+these 1,000 people in this mortgage fail to
+41:48
+Right. So now I have to calculate the probabilities of each of these events
+41:56
+occurring. 50% fail to pay 150% fail to pay 500 people fail to pay because that
+42:04
+means that the mortgage back security that you own
+42:07
+it's value false right it's nothing you're not getting any income back from
+42:12
+it right how would you do it like this 1,000
+42:20
+columns yes
+42:26
+thank There is a quicker way which is called
+42:31
+probability distribution.
+42:44
+And probability distributions essentially allow you
+42:49
+to ascertain what is the level or what is what are
+42:55
+the chances of different levels of events happening. What are the chances
+43:01
+for 50 people failing to pay? What are the chances for 150 people failing to
+43:05
+pay? What are the chances for 5,000 people failing to pay? Going back to our
+43:12
+examples of the mega mark, what are the chances that somebody will buy $500
+43:16
+worth of groceries? What are the chances somebody will buy $200 of groceries?
+43:21
+What are the chances that someone will buy $50 worth of groceries?
+43:26
+I hope that intuitively you can see you can see that all of these events knowing
+43:34
+the chances of happening of all of these events is helping you prepare your
+43:39
+business better. Does anybody disagree?
+43:46
+How is it helping you? Say for example in the case of
+43:50
+the supermarket you understand what get back securities I'm not going to discuss
+43:55
+for supermarket what are the chances knowing what are the chances of somebody
+44:00
+buying $500 worth of groceries how does it help you
+44:07
+efficiency efficiency right how much to order from
+44:11
+the supplier you look like you look where most people
+44:15
+have and like Once a week by whatever one puts your one day and when one
+44:22
+product pops on another one drops. Exactly. Right. So now in Yes.
+44:28
+then gives you
+44:34
+Yeah, of course you will have to go. The price doesn't help you.
+44:40
+If I just have the price as what do you mean by that? And you go
+44:45
+for high price. Yeah. Okay. So, for example, you would
+44:49
+want to know how many people people are interested in. Say we have two brands of
+44:53
+uh shower gels. One is expensive, one is not, right? One is maybe $5, the other
+44:59
+is 100, right? What are the chances that somebody will buy $100 worth of shower
+45:05
+gel versus what are the chances that yeah I'm just trying to explain to you
+45:13
+in very basic forms you could do these exercises for like very detailed
+45:19
+questions right who is going to how many people are going to prefer a more
+45:24
+expensive product compared to how many people are going to prefer a less
+45:27
+expensive product right and the The the the way a probability distribution is
+45:34
+going to help you is say for example
+45:47
+remember histogram. Histogram what did histogram allow allow
+45:51
+us to do? Continuous.
+45:55
+Yeah we plotted continuous variable but what did it allow you to see? compare
+46:01
+different what level of
+46:05
+frequency histograms allowed you to compare
+46:10
+frequency of different data points. Remember we we do this
+46:16
+uh we have like ages bins right say for example 22 22 22 to 24 and so on and you
+46:26
+could compare How many number of times a certain data
+46:32
+point occurred in your data? Right? Is there a question?
+46:38
+Instagram. Oh god. No. In his Instagram does not
+46:41
+help you a lot. Histograms do histograms. I'm sorry if my uh
+46:48
+annunciations are not very clear. Histograms.
+46:59
+Right. So,
+47:05
+histogram technically allowed you to see how many number of times an event was
+47:10
+happening, right? Probability distributions look
+47:14
+similar as in on the x-axis I am plotting the event.
+47:23
+Say for example for that credit card default
+47:26
+zero people fail to pay one person fails to pay 2 3 4 5 to 1,000
+47:35
+right and now what I will do is create the entire sample space
+47:42
+right for all of the events happening right which is like I don't even realize
+47:47
+it's a ginormous matrix the the entire sample space for all of
+47:53
+these events but I can then calculate individual
+47:58
+probabilities. So for example, probability here will be from 0 to one.
+48:03
+I hope it is clear. Probability is always between 0 and one.
+48:07
+Does does anybody have a doubt regarding that?
+48:11
+Right. Basics. Yes. Oh, I'll tell you how it's just too
+48:19
+much. Right. Essentially,
+48:23
+at some point I will have points with which I can create lines.
+48:32
+Right? Have you heard that your lines can have equations? Lines can be
+48:39
+represented by equations. You know that,
+48:43
+right? Y= MX + C is what? Equation of a line, a straight line,
+48:53
+right? Some of you who did maybe advanced math in high school, you would
+48:58
+have done equations for parabas, circles,
+49:03
+quadratic equation. Quadratic equation, what does it look like?
+49:09
+Right? So technically there can be equations which can represent these
+49:15
+probability distributions. Right?
+49:19
+So the way probability distributions help you is that if you knew certain
+49:25
+characteristics of the distribution, you could model it mathematically here.
+49:32
+Don't worry, we're not going into the modeling. We're not going to cover the
+49:35
+mathematical part of it. But it was important for me to discuss all of this
+49:40
+because at some point when you do operations management, I don't want that
+49:44
+class to hate me for not discussing this.
+49:50
+and also you will find it very useful. Anyway,
+49:54
+so you can have say for example, if you
+49:58
+knew the mean and standard deviation, right? You could create the probability
+50:05
+distribution for a normal curve. It's called normal or bell curve or washing
+50:12
+curve caution distribution, right? And that would allow you to see
+50:27
+Right? So say for example, let us assume that
+50:32
+I will I will give you the uh spellings. Say for example, you have been told that
+50:38
+the probability distribution of people defaulting on their home loans looks
+50:44
+like a bell curve, right? with a mean of 20%
+50:52
+or 2% people 2 for everybody failing and a standard deviation of + - 5
+51:03
+right this will allow me to create a bell curve
+51:10
+where we have a mean and we have standard deviation
+51:16
+which will tell that individually what is the probability of say here 5% people
+51:22
+failing what is the probability of 20% people
+51:26
+failing what is the probability of 80% people failing this is a very rough idea
+51:33
+for how probability distributions look like
+51:37
+okay right now you can do this for everything
+51:42
+for example supply lines right supply lines Somebody could tell you that this
+51:49
+average supply time is 3 days. The standard deviation is 1 day, right? And
+51:55
+if they told you that it is going to look like gion or bell cost, right?
+52:01
+Technically, you could draw this curve and then they could you could tell your
+52:05
+boss exactly what is the probability that this person will uh uh ship the
+52:12
+product or deliver the product in 5 days.
+52:16
+an event which is B because we know that average is 3 days uh standard deviation
+52:23
+is one day technically we know this person will
+52:28
+deliver mostly in 3 + - 1 right
+52:38
+technically we know this but we also want to know what are the chances that
+52:41
+they deliver in 5 days an event which we had previously categorized out as
+52:47
+outlier but we're still interested to know because we want to contain our risk
+52:55
+right probability distribution clear what is probability distribution helping
+53:00
+you do figure out the probability of things
+53:07
+that you otherwise would know with just standard deviations once you plot the
+53:12
+graph you can see what five wants to win Can you say
+53:25
+sorry what's Xar
+53:29
+Xar mean right? So now probability distributions
+53:35
+help us. This curve which we will come back to in detail next class as well is
+53:43
+either called a bell curve or normal
+53:52
+or cape. Okay.
+54:03
+Now, do you think probability distributions for all events will look
+54:07
+like this? Okay, I'm glad that you've heard of
+54:20
+these things. Fine. Technically, so what you said,
+54:29
+what? Oh, that's my husband again. I'm going to just not answer this call.
+54:37
+Oh, I wish we could have done like a thing, but okay, fine. Uh, we don't have
+54:41
+time. Okay. Okay. So, what where was I?
+54:48
+Right. Huh? Whether most naturally occuring phenomena will be normal or
+54:53
+not? No. But you're also right. And I will tell you why.
+55:00
+Technically you have a lot of distributions possible for different
+55:05
+phenomena right if you ever want to get into the details of that we will so by
+55:11
+the way you must have gotten the message for like outclass discussions or
+55:14
+anything right I think tomorrow and day after but we can also sit even in more
+55:21
+detail uh discuss why probability distributions for like a lot of other
+55:27
+events can be different from this I will be different from this
+55:31
+and like they can be plotted normally if they have like more than two if it's
+55:36
+just two it will be one if they're all discrete then it will be this thing but
+55:44
+they can all be normally no one even
+55:48
+that is explained by CL we'll discuss that at the end of this
+55:55
+class and it makes sense right but for the benefit of everyone
+55:59
+Right? We now understand probability distributions. Right? They're helping us
+56:04
+understand what are the chances of different events happening.
+56:10
+Right? I have also told you that you can mathematically model
+56:16
+right. So you can arrive at equations mathematically which will allow you to
+56:22
+give probability distributions for different events. Say for example if you
+56:27
+had a two event trial right say tossing of a coin or a yes and
+56:32
+yes or no question that is so it's a bin trial
+56:39
+so a bmal distribution right sorry
+56:46
+uh so essentially
+56:54
+Five. Binomial distribution constitutes of
+56:59
+multiple Boli trials. If I toss a coin once, right? Bernoli is just the name of
+57:06
+like a fancy scientist, right? Huh? Trial and error. What?
+57:14
+Uh well, it can be if you want to guess and no question, right? So essentially
+57:19
+any event that has two outcomes is termed as a trial crossing of a coin
+57:25
+heads or tails right if I give a product you like it or not yes or no
+57:34
+yeah so if I do do it once if there but if I do it for the entire class and I
+57:40
+map it out right then it is a binomial distribution right say for example I
+57:46
+asked you do you like my product or You said no, right? That's okay. I can I can
+57:52
+make that, right? You said no, right? So, that is one person saying definitely
+57:57
+no for my product. But now I go on and ask everybody else yes or no. Yes or no?
+58:03
+Yes or no? Yes or no, right? And then I will have an idea, right? I will have a
+58:09
+name and I will have the probability of one person liking my product or not,
+58:16
+right? So for example in this class 40 said no 60 said yes. I know there's a
+58:20
+cross possibility 6 that somebody will like my product right that will then
+58:27
+allow me to create a binomial distribution which looks like a skewed
+58:32
+bell curve right and skewed do you understand what skewed means?
+58:38
+No skewed syntax. It's weighted to one side, right? So the property of B is
+58:44
+essentially it's balanced about the name,
+58:48
+right? Equal number of data points here, equal number of data points here. SK
+58:52
+would simply mean say for example like this,
+58:56
+right? The word is shifted a little bit, right? my normal distribution that will
+59:01
+allow me to literally go to the other class and calculate what is the
+59:06
+probability that in this class 90 will buy my product. What is the probability
+59:10
+that a will buy product? What is the probability that 50 product
+59:16
+right? So binomial distribution is one such example. There is also as we said
+59:22
+this poison right poison distribution is essentially
+59:27
+when you try to calculate how many times an event occurs in a
+59:34
+given interval. Say for example you run a customer
+59:40
+service office. How many calls do you get in 1 hour can
+59:46
+be modeled as perform. Right now you do not need to care about the details of
+59:52
+what event can be modeled through which distribution. For that you will have a
+59:57
+more advanced course. But
+1:00:01
+do we now agree that have I convinced you to some degree
+1:00:06
+that not everything will be normal? probability distributions will be varied
+1:00:15
+right then. Yes. It's it's cute. It's technically yes it
+1:00:26
+is still it's still normal and uh I'm just telling you because if you want to
+1:00:32
+explore you can so technically there are different levels of moments you can
+1:00:36
+describe for a distribution right so normal distribution when balanced you
+1:00:41
+are only talking about mean standard deviation but there is a separate moment
+1:00:45
+called um stress and there is a third moment
+1:00:51
+calledis wall did not get
+1:00:56
+nothing I'm not discussing that okay because
+1:01:02
+that's that's outside the scope of what we are discussing what the objective of
+1:01:05
+this course is cortosis and skewness again help you understand distribution
+1:01:11
+even better okay for now that is enough for you to
+1:01:15
+know you can explore it on your own right but so technically still normal
+1:01:21
+but then you add more characteristics to define it probably. Yes.
+1:01:28
+And uh yeah. So skeless.
+1:01:46
+Okay. If you're interested in trying to understand what that is. All right.
+1:01:53
+So so many distributions to try to understand what could happen.
+1:01:58
+So technically over the course of last 15 minutes or so I have only made your
+1:02:04
+life more difficult. This has not simplified anything for us has it?
+1:02:11
+Not really. No. Yeah.
+1:02:13
+A little bit. How like
+1:02:18
+classes now it's like oh that's why. Okay. Okay. I'm glad it makes sense. Uh
+1:02:23
+so I have put in the slides some descriptions of and bol
+1:02:28
+and boli. You can go through it. You don't need to remember it for any exam
+1:02:32
+or anything. All right? So if you're interested,
+1:02:36
+you can like research for yourself. But statisticians
+1:02:43
+are clever people. We don't want to do so much hard work. Right? No. So we have
+1:02:52
+two laws that help us simplify everything for us. Okay. The first is
+1:03:01
+the law of large numbers. The law of large numbers tells you that
+1:03:14
+if you repeated an experiment multiple times, say for example, you're
+1:03:22
+interested in knowing the ages of possible potential customers.
+1:03:26
+You did multiple surveys. You gave a survey in each of the four sections. You
+1:03:31
+also gave surveys to students of other universities uh in academic city. You
+1:03:35
+gave surveys to people in back home in your countries,
+1:03:41
+right? If you did that and then you arrived at the measures of central
+1:03:48
+tendency especially the mean that mean is going to be very close to
+1:03:56
+your population means after election.
+1:04:03
+Exit polls after elections. A very good example right. So what exit PS do is
+1:04:10
+essentially talk to some people coming back from they can't talk to everyone
+1:04:15
+right for a country like India it's 800 million people
+1:04:22
+huh the 800 people of ving age come on right
+1:04:30
+so 800 million people not possible to interview but if I to meet as many
+1:04:38
+people as possible, right? I went to one poll, I talked to some people, I went to
+1:04:45
+another polling booth, I talked to some people, I I went to hundreds of polling
+1:04:49
+groups across the country, right? And the main sentiment that I gather from
+1:04:57
+there mean sentiment for which party people are voting for the mean sentiment
+1:05:02
+related to the product that you are selling out in the market is going to
+1:05:07
+approximately be close to the true population mean.
+1:05:14
+So what does this tell you for your product?
+1:05:19
+Yes. You have to
+1:05:24
+you have to collect a lot of data as much as possible.
+1:05:31
+Exactly. Right. So say for example we have we
+1:05:38
+don't have time but I was going to actually do the coin tosses right. So if
+1:05:42
+I toss one coin technically the probability is.5
+1:05:47
+but when you actually look at the event that event could be heads or tails
+1:05:53
+right which means now I can also have I could
+1:05:57
+do three point losses right and even though my probability for head or tail
+1:06:02
+is.5 I could still end up with two heads
+1:06:08
+right just because the probability of something is a given
+1:06:12
+doesn't necessarily mean that it will happen that many times
+1:06:17
+right just because I say the probability of something happening is 90% does it
+1:06:22
+are you sure that it will happen no right it could not happen
+1:06:29
+right and therefore you need to have a large sample either you have a very
+1:06:37
+large sample right or you have a lot small samples.
+1:06:43
+Both of these for you are going to do the work that they will tell you how
+1:06:51
+that you are very close to the population mean.
+1:06:56
+Right? So if you want to sell a pair of jeans to people, college students,
+1:07:02
+talk to as many people as possible, right? That is the logic behind
+1:07:08
+sampling. Right? You try as many samples as
+1:07:13
+possible, right? And essentially then law of large
+1:07:19
+numbers will tell you that if you've tried a lot of samples, those samples
+1:07:24
+are going to mimic the characteristics of the true population.
+1:07:35
+Right? Questions about law of large numbers?
+1:07:39
+No. Right. But again, does this help you in
+1:07:44
+terms how how easy is it to do a lot of surveys?
+1:07:49
+Not very, right? Doesn't really help you because
+1:07:53
+all I've told you is do more work, right? Not easy. So, what do we do now?
+1:08:04
+This brings us to The central limit clear
+1:08:17
+the text till I clear the board. So it's multiple samples, right? It's
+1:08:27
+not just one sample distribution. Multiple samples.
+1:08:31
+Yes. Does the text make sense at all?
+1:08:47
+So for you does does it now help you understand why
+1:08:53
+we almost always model real life phenomena as a bell curve?
+1:09:00
+What is what is CLT telling us? Yeah, you can. But what you're saying is
+1:09:10
+that the probability distribution itself is a B. Is that what he said?
+1:09:24
+That's not the C is telling you. The CNT is telling you that irrespective
+1:09:31
+of what the population distribution was, if I just kept picking out samples from
+1:09:39
+it, sample s I picked samples, calculated
+1:09:44
+the sample means and created a probability distribution of those sample
+1:09:50
+means, those are normally distributed.
+1:09:56
+Right? irrespective of what the real phenomena look like.
+1:10:12
+Thank you. Did you understand? Right. So if I tossed coins my normal for sure but
+1:10:19
+in that I keep picking out samples. Right. So say for example you did 1
+1:10:26
+million coin tosses and you plotted that by normal distribution. Right? Of those
+1:10:32
+1 million coin tosses you picked first 100 and you plotted the mean of that.
+1:10:38
+that is going to give you one say some mean right?
+1:10:45
+Then you put it back. You put the 100 uh samples back. You pick some other 100
+1:10:51
+random samples. You plot that and you keep plotting that and what you will get
+1:10:59
+is a balanced normal distribution.
+1:11:17
+Well, there is a mathematical derivation for
+1:11:22
+it which I am certain is not useful for any
+1:11:27
+of you but I can show it to you on Excel.
+1:11:33
+That's the best I can do to explain this particular thing which involves some
+1:11:38
+math of it. There is a mathematical proof to it that why millions of samples
+1:11:45
+will look like a normal course. It's kind of advanced.
+1:11:51
+I don't want to touch for the benefit of everyone is not interested. If you're
+1:11:56
+really interested, I'll take the class. Okay.
+1:12:01
+Questions. Will this happen every time?
+1:12:16
+How big? Very good.
+1:12:21
+So for data to solve a CLT
+1:12:27
+you have some conditions. First sampling is done with replacement.
+1:12:35
+You understand replacement remember that basket of balls right? We
+1:12:43
+put the balls back after we pick one ball. put the put the ball back so that
+1:12:49
+my entire population stays the same. Right? Think of it also like this. Say
+1:12:54
+for example, you are at the checkout counter for a uh for a supermarket or an
+1:12:59
+apparel store. Right? In that store, you have one person coming who has a 60%
+1:13:06
+chance that they will like your product, right? And ultimately they have decided
+1:13:12
+that they will buy it. So they come to you, they get uh they get the product
+1:13:16
+checked out. Uh they pay you fine. Has this person
+1:13:22
+affected the chances of the next customer buying or not buying your
+1:13:27
+product? Not really. Though psych in psychology
+1:13:35
+sometimes you will be explained that you know some things are really flying off
+1:13:39
+the shelves really fast. uh that sort of has an impact on people in terms of
+1:13:44
+whether something is good or not. Right? That is true. But say for example, if
+1:13:50
+two customers do not interact with each other at all, right? Technically,
+1:13:56
+the first customer buying or not buying your product does not affect
+1:14:03
+the chances of the second customer buying or not buying your product.
+1:14:08
+Right? It's very easy to visualize when you have um an ad based selling
+1:14:13
+platform, right? Like you have for a drop shipping business. Technically, I
+1:14:17
+can't see whether other customer has bought or not bought, right? Sometimes
+1:14:22
+websites will try to manipulate customers by saying, "Oh, 543 people
+1:14:27
+using this product right now, right? Because they're sort of trying to play
+1:14:31
+manipulate you a little bit." But technically, these are independent
+1:14:36
+events. The condition for making a sample
+1:14:51
+independent of each other is that technically a sampling is done by
+1:14:58
+replacement. Right? Knowing that if I was to sample
+1:15:02
+people from the school of better students 200 people and I decided that
+1:15:08
+for a really robust idea of what college students like I will pick samples of 30
+1:15:14
+people for samples of 30 people. Right?
+1:15:21
+The four samples that I create should not be independent of you. It should not
+1:15:27
+be dependent on each other. meaning that if you feature in the first sample that
+1:15:31
+should not affect your chances of featuring in the second sample. So
+1:15:36
+technically I could have one person featuring in all samples all the four
+1:15:41
+samples or I could have people who don't feature in any
+1:15:46
+right and this brings in the quality of randomness in your sample.
+1:15:53
+Right? Because you've done the experiment, each trial has been
+1:15:58
+conducted independently, right? And for your data to exhibit this
+1:16:05
+normal distribution of means of the sample, your samples have to be
+1:16:11
+independent of each other. They have been drawn. The samples have been
+1:16:15
+created with replacement.
+1:16:22
+Okay. So random independent with replacement
+1:16:29
+and what is sufficiently large
+1:16:34
+n is equal to 30 right? Those samples
+1:16:41
+has to be of the size at least 30. This number again has been arrived at
+1:16:48
+with a lot of trial and errors. Okay, so basically we'll see this even more
+1:16:55
+when we actually delve into the probability
+1:16:59
+distribution of a normal curve. Okay, so
+1:17:05
+does this help you at all? Remember in the first class when we were talking
+1:17:11
+about how sometimes your sample can be inadequate.
+1:17:17
+How does CL help you? It makes it less
+1:17:28
+a little bit, right? If you did your due diligence, right? If you did your due
+1:17:33
+diligence and figured out that I have to randomly pick out people, technically to
+1:17:38
+some extent, you could weed out bias, right? To some extent there will be
+1:17:47
+other ways of removing biases from your data which some of which we will learn
+1:17:52
+some of which you will learn in marketing methodologies qualitative
+1:17:56
+research all of that. Okay. But ensuring that I have done
+1:18:03
+independent sampling of people with replacement and have chosen people at
+1:18:08
+randomly. There is no systemic reason for people to be in a particular sample.
+1:18:15
+Right? That will ensure that I can sufficiently
+1:18:22
+make logical conclusions about any piece of population. Say for
+1:18:28
+example, I am interested in knowing whether 21 to
+1:18:34
+25 year olds are interested. I'm I'm I'm selling protein powder.
+1:18:41
+Whether 21 to 25 year olds are interested in buying protein powder
+1:18:47
+and I go to a high school football team. Oh, sorry. Not not high school, college
+1:18:53
+football team. Sorry. Yeah, college football team. Is it about sambar?
+1:18:59
+Not really. Why? Because the sambar has been chosen
+1:19:03
+systemically. Yeah, obviously. Yeah, correct.
+1:19:24
+I don't know music. Yeah.
+1:19:27
+Right. And then you so so your randomness
+1:19:31
+so basically the objective is yeah there should not be systematic
+1:19:38
+choosing of the sample right that people should not be a part of the sample
+1:19:42
+because they were part of the music club right that is absolutely bad way of
+1:19:49
+sampling right okay question
+1:19:53
+are better group of students a good sample for you to guess the
+1:20:00
+characteristics of college students around the world.
+1:20:04
+Why no? Very good. Most of you are interested in
+1:20:11
+business, right? Say for example, if my question was if my question was how
+1:20:17
+interested are students of 18 to 21 years uh uh about learning uh
+1:20:24
+theoretical physics. So
+1:20:30
+you want to make a sample to approximate the population right
+1:20:43
+it's just how you are as a person that is a good way
+1:20:48
+different so say for example
+1:20:52
+if my question was that I have to sell I'm designing a product to sell for 18
+1:20:57
+to 21. Then data is a good example. Maybe we have a lot of people from a lot
+1:21:03
+of countries, right? We have some variations in age groups and
+1:21:09
+expectations of what they might like, right? It's not the best sample, but it
+1:21:15
+could be a good sample, right? Could be. On the other hand, people who like
+1:21:21
+physics are not a great great place to start, right? I
+1:21:27
+need to talk to all kinds of college students to get an understanding of who
+1:21:32
+will like this or not. Right, questions?
+1:21:42
+Okay, we have 2 minutes left. So, I will discuss one tiny topic as well. All
+1:21:49
+right, which is expectations, right?
+1:21:55
+I actually technically made an error. I was supposed to discuss it when we were
+1:21:59
+discussing probability. Say for example, you have a product,
+1:22:05
+right? Which could 6% 60% of the people would like,
+1:22:11
+40% of the people don't like, right? and you stand to make a profit of
+1:22:18
+$100 if you sell that product or a loss of
+1:22:25
+$10 if you don't sell the product, right?
+1:22:30
+Why why a loss of $10? Because technically then you have to store it,
+1:22:35
+you have to pay for warehousing, all of those things. You have to spend some
+1:22:38
+money. So there is some loss in not selling the product, right? So you stand
+1:22:43
+for every product you stand to make $100 for the sale
+1:22:49
+and lose $10 for not making the sale.
+1:22:55
+Possibility of buying is 60% and 40% of not buying.
+1:23:02
+So if I was this is the information I have. If I come to you,
+1:23:10
+what are my expectations from this transaction? How much money do I stand
+1:23:14
+to make or lose for every transaction that I make?
+1:23:24
+Yeah. So, can you give me the exact numbers?
+1:23:31
+So, 6 into 100 uh minus
+1:23:38
+uh what this is my expectation from each
+1:23:46
+transaction right whatever whatever this comes out
+1:23:51
+to be so on an average this means if I went to any random person on an average
+1:23:56
+I stand to make some money right do you now see how realizing
+1:24:04
+expectations S helps us understand for each event my risk.
+1:24:14
+So what is the risk? Risk is say for example
+1:24:19
+if these probabilities were 20% sorry 10% and 90%.
+1:24:26
+Right? So this would become 10 and 90. So - 90 and 30 for every transaction I
+1:24:35
+will stand to lose some money right which means this is not a great product
+1:24:43
+right I can do the same calculations remember when we did uh credit pay back
+1:24:49
+capability to pay back credit right if I start to lose more money
+1:24:58
+for every time I lend to those three people then those are really bad
+1:25:03
+customers right
+1:25:06
+how how do I use it right so in the financial markets this
+1:25:14
+is used for giving credit ratings to individuals and countries
+1:25:20
+and institutions right so for example credit rating
+1:25:26
+agency gives me a so I know in US it's FICO In India, it is some civil rating
+1:25:31
+or something, right? You would have for each of your countries individual
+1:25:35
+institutes who assign credit ratings to individuals,
+1:25:40
+right? And that information would be based on the expectations,
+1:25:47
+right? How likely an event is to happen and if that event happened, what is the
+1:25:53
+payoff from that event? All right. Oh yeah, I'm sorry I I
+1:25:59
+plugged this plugged this in in the last of the class because we were discussing
+1:26:03
+probability distribution. I saw a lot to discuss in this flow but essentially
+1:26:10
+setting so understanding these expectations allow us to see how each
+1:26:15
+transaction is beneficial for us or not. Right? something like me
+1:26:23
+but a little better because now I can see exactly from each transaction or
+1:26:29
+trial how much do I stand to benefit or lose.
+1:26:34
+Got it? Okay. So what all we have discussed today? Probability clear,
+1:26:39
+distributions clear, expectations clear, law of large numbers.
+1:26:46
+Tell us what is law of large numbers. Yes, please.
+1:27:01
+Yeah. If your sample was large or you had a
+1:27:06
+lot of samples, you would very closely approximate the true population
+1:27:11
+characteristics right and because I can't deal with all
+1:27:17
+those samples large samples and all then we had central limit theorem. central
+1:27:23
+limit theorem told us that if I pick out samples of at least 30 from any
+1:27:30
+probability distribution technically I would get a gshian or a normal
+1:27:37
+distribution. So this is what statisticians do. Any base probability
+1:27:43
+distribution our value distribution is gshian or
+1:27:49
+normal because we will see in next class. Gshian distributions are terribly
+1:27:56
+easy to deal with very simple and that is what we will use for almost
+1:28:03
+all of our data analysis. Okay. Thank you.
+
+
+
