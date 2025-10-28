@@ -147,3 +147,4 @@ uvicorn[standard]
 python-multipart
 pydantic
 httpx
+sentence-transformers
