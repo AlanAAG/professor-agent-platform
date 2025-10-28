@@ -20,17 +20,20 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- CORS Setup (Robust, Environment-based) ---
-# Read allowed origins from environment variable `ALLOWED_ORIGINS`.
-# Supports comma-separated string.
+# Get Lovable frontend URL from environment
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+
+# Add Lovable preview URLs pattern if needed
+if not allowed_origins:
+    # Fallback for development
+    allowed_origins = ["http://localhost:3000", "http://localhost:5173"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    # Allow Content-Type, Authorization, and the custom X-API-Key header
     allow_headers=["x-api-key", "content-type", "authorization"],
 )
 
