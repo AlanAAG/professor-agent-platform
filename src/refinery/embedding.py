@@ -62,6 +62,42 @@ except Exception as e:
     logging.error("Please double-check your .env file for correct SUPABASE_URL, SUPABASE_KEY, and GEMINI_API_KEY.")
     # Do not exit here; allow importing modules that handle missing clients gracefully.
 
+def verify_indexes() -> bool:
+    """Check if performance indexes exist. Log warning if missing."""
+    if not supabase:
+        return False
+    
+    try:
+        result = supabase.rpc("exec_sql", {
+            "query": """
+            SELECT COUNT(*) as index_count 
+            FROM pg_indexes 
+            WHERE tablename = 'documents' 
+            AND indexname LIKE 'idx_documents_metadata_%'
+            """
+        }).execute()
+        
+        count = result.data[0].get("index_count", 0) if result.data else 0
+        
+        if count < 4:  # Expecting at least 4 metadata indexes
+            logging.warning(
+                f"⚠️  Only {count}/4 recommended indexes found on 'documents' table. "
+                f"Performance may be degraded. Run database/add_indexes.sql in Supabase SQL Editor."
+            )
+            return False
+        else:
+            logging.info(f"✅ Database indexes verified ({count} found)")
+            return True
+            
+    except Exception as e:
+        logging.debug(f"Could not verify indexes (non-critical): {e}")
+        return False
+
+
+# Call index verification after supabase client creation
+if supabase:
+    verify_indexes()
+
 # --- 3. Initialize the Text Splitter ---
 # This object is responsible for "chunking" your large text
 text_splitter = RecursiveCharacterTextSplitter(
