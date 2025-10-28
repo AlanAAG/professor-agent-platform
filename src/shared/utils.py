@@ -6,30 +6,36 @@ import logging
 from typing import List, Any
 
 try:
-    import cohere
+    from sentence_transformers import CrossEncoder
 except Exception:
-    cohere = None  # Optional dependency
-    # Warn once at import time if user expects Cohere
-    if os.environ.get("COHERE_API_KEY"):
-        logging.warning("Cohere API key is set but 'cohere' package is not available. Install 'cohere' to enable re-ranking.")
+    CrossEncoder = None  # Optional dependency
+    logging.warning("sentence-transformers package is not available. Install 'sentence-transformers' to enable re-ranking.")
+
+# Initialize Cross-Encoder model globally
+cross_encoder = None
+try:
+    if CrossEncoder is not None:
+        cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        logging.info("Cross-Encoder model loaded successfully for re-ranking.")
+except Exception as e:
+    cross_encoder = None
+    logging.critical(f"Failed to load Cross-Encoder model: {e}. Re-ranking will fall back to simple similarity sorting.")
 
 # Shared constants
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")
 
 
 def cohere_rerank(query: str, documents: List[Any]) -> List[Any]:
-    """Re-rank a list of documents using Cohere, if configured.
+    """Re-rank a list of documents using Cross-Encoder model, if available.
 
     - Accepts either list of strings or objects with 'page_content'/'content'.
-    - Returns list reordered by relevance. If Cohere is not configured or
+    - Returns list reordered by relevance. If Cross-Encoder is not available or
       an error occurs, returns the input order.
     """
-    api_key = os.environ.get("COHERE_API_KEY")
-    if not api_key or not cohere or not documents:
+    if not cross_encoder or not documents:
         return documents
 
     try:
-        client = cohere.Client(api_key)
         # Normalize to strings list and keep mapping
         texts: List[str] = []
         index_to_doc: dict[int, Any] = {}
@@ -43,15 +49,20 @@ def cohere_rerank(query: str, documents: List[Any]) -> List[Any]:
             texts.append(content)
             index_to_doc[i] = doc
 
-        results = client.rerank(
-            query=query,
-            documents=texts,
-            top_n=len(texts),
-            model=os.environ.get("COHERE_RERANK_MODEL", "rerank-english-v3.0"),
-        )
-        return [index_to_doc[r.index] for r in results.results]
+        # Create query-document pairs for Cross-Encoder
+        pairs = [(query, text) for text in texts]
+        
+        # Get relevance scores
+        scores = cross_encoder.predict(pairs)
+        
+        # Create list of (score, index) pairs and sort by score (descending)
+        scored_indices = [(scores[i], i) for i in range(len(scores))]
+        scored_indices.sort(key=lambda x: x[0], reverse=True)
+        
+        # Return documents in order of relevance
+        return [index_to_doc[idx] for _, idx in scored_indices]
     except Exception as e:
-        logging.warning(f"Cohere re-ranking failed, using original order: {e}")
+        logging.warning(f"Cross-Encoder re-ranking failed, using original order: {e}")
         return documents
  
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---

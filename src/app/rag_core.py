@@ -10,7 +10,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document # For type hinting
 from langchain_core.messages import HumanMessage, AIMessage # Added message types
 import logging
-import cohere # Import Cohere library
 from src.shared.utils import cohere_rerank, EMBEDDING_MODEL_NAME, retrieve_rag_documents_langchain
 
 # --- Setup Logging ---
@@ -43,18 +42,7 @@ try:
 except Exception as e:
     logging.error(f"RAG Core: Error initializing Gemini model: {e}")
 
-# --- Initialize Cohere Client (for Re-ranking) ---
-co = None
-try:
-    cohere_api_key = os.environ.get("COHERE_API_KEY")
-    if cohere_api_key:
-        co = cohere.Client(cohere_api_key)
-        logging.info("RAG Core: Cohere client initialized for re-ranking.")
-    else:
-        # Log a warning if the key is missing, re-ranking will be skipped
-        logging.warning("RAG Core: COHERE_API_KEY not found. Re-ranking will be skipped.")
-except Exception as e:
-    logging.error(f"RAG Core: Error initializing Cohere client: {e}")
+# --- Re-ranking handled by shared utils (Cross-Encoder) ---
 
 # --- Constants ---
 INITIAL_RETRIEVAL_K = 20 # Number of chunks to fetch initially from vector store
