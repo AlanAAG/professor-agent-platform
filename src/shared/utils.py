@@ -2,68 +2,192 @@
 
 import re
 import os
+import math
+import hashlib
 import logging
-from typing import List, Any
+from typing import List, Dict, Any
+import numpy as np
 
-try:
-    from sentence_transformers import CrossEncoder
-except Exception:
-    CrossEncoder = None  # Optional dependency
-    logging.warning("sentence-transformers package is not available. Install 'sentence-transformers' to enable re-ranking.")
-
-# Initialize Cross-Encoder model globally
-cross_encoder = None
-try:
-    if CrossEncoder is not None:
-        cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        logging.info("Cross-Encoder model loaded successfully for re-ranking.")
-except Exception as e:
-    cross_encoder = None
-    logging.critical(f"Failed to load Cross-Encoder model: {e}. Re-ranking will fall back to simple similarity sorting.")
-
-# Shared constants
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")
 
+def expand_query(query: str) -> List[str]:
+    """Return original query plus simple rule-based variants to diversify retrieval."""
+    base = query.strip()
+    if not base:
+        return [""]
+    variants = [
+        base,
+        f"{base} explanation",
+        f"{base} definition",
+        f"{base} examples",
+        f"{base} in practice",
+    ]
+    # Ensure uniqueness while preserving order
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            deduped.append(v)
+    return deduped
 
-def cohere_rerank(query: str, documents: List[Any]) -> List[Any]:
-    """Re-rank a list of documents using Cross-Encoder model, if available.
 
-    - Accepts either list of strings or objects with 'page_content'/'content'.
-    - Returns list reordered by relevance. If Cross-Encoder is not available or
-      an error occurs, returns the input order.
+def _get_doc_id(doc: Dict[str, Any]) -> str:
+    """Best-effort stable identifier for a document dictionary."""
+    for key in ("id", "doc_id", "chunk_id"):
+        if key in doc and doc[key] is not None:
+            return str(doc[key])
+    meta = doc.get("metadata") or {}
+    for key in ("id", "doc_id", "chunk_id"):
+        if key in meta and meta[key] is not None:
+            return str(meta[key])
+    # Fallback: hash of core fields
+    basis = (doc.get("url") or "") + "|" + (doc.get("title") or "") + "|" + (doc.get("section") or "") + "|" + (doc.get("content") or doc.get("page_content") or "")
+    return hashlib.md5(basis.encode("utf-8")).hexdigest()
+
+
+def _get_doc_class(doc: Dict[str, Any]) -> str:
+    meta = doc.get("metadata") or {}
+    return str(doc.get("class_name") or meta.get("class_name") or "").strip()
+
+
+def _get_doc_section(doc: Dict[str, Any]) -> str:
+    meta = doc.get("metadata") or {}
+    return str(doc.get("section") or meta.get("section") or "").strip().lower()
+
+
+def apply_rrf_and_boost(results_per_query: List[List[Dict]], query: str, class_name: str) -> Dict[str, float]:
+    """Fuse ranked lists via RRF and apply simple metadata boosts.
+
+    Returns mapping of doc_id -> final score.
     """
-    if not cross_encoder or not documents:
-        return documents
+    # RRF accumulation
+    fused_scores: Dict[str, float] = {}
+    for result_list in results_per_query:
+        for rank, doc in enumerate(result_list, start=1):
+            doc_id = _get_doc_id(doc)
+            fused_scores[doc_id] = fused_scores.get(doc_id, 0.0) + 1.0 / (60.0 + float(rank))
 
+    # Metadata boosts
+    for result_list in results_per_query:
+        for doc in result_list:
+            doc_id = _get_doc_id(doc)
+            if doc_id not in fused_scores:
+                continue
+            boost = 0.0
+            # Exact class match
+            if class_name and _get_doc_class(doc) == class_name:
+                boost += 0.15
+            # Section priorities
+            section = _get_doc_section(doc)
+            if section == "sessions":
+                boost += 0.10
+            elif section == "in_class":
+                boost += 0.05
+            fused_scores[doc_id] += boost
+
+    return fused_scores
+
+
+def compute_cosine_similarity(embedding_a: List[float], embedding_b: List[float]) -> float:
+    """Cosine similarity between two vectors. Returns 0.0 if invalid."""
     try:
-        # Normalize to strings list and keep mapping
-        texts: List[str] = []
-        index_to_doc: dict[int, Any] = {}
-        for i, doc in enumerate(documents):
-            if isinstance(doc, str):
-                content = doc
-            elif isinstance(doc, dict):
-                content = doc.get("page_content") or doc.get("content") or ""
-            else:
-                content = getattr(doc, "page_content", None) or getattr(doc, "content", None) or ""
-            texts.append(content)
-            index_to_doc[i] = doc
+        a = np.asarray(embedding_a, dtype=float)
+        b = np.asarray(embedding_b, dtype=float)
+        if a.ndim != 1 or b.ndim != 1:
+            return 0.0
+        denom = (np.linalg.norm(a) * np.linalg.norm(b))
+        if denom == 0.0:
+            return 0.0
+        result = float(np.dot(a, b) / denom)
+        if not math.isfinite(result):
+            return 0.0
+        return result
+    except Exception:
+        return 0.0
 
-        # Create query-document pairs for Cross-Encoder
-        pairs = [(query, text) for text in texts]
-        
-        # Get relevance scores
-        scores = cross_encoder.predict(pairs)
-        
-        # Create list of (score, index) pairs and sort by score (descending)
-        scored_indices = [(scores[i], i) for i in range(len(scores))]
-        scored_indices.sort(key=lambda x: x[0], reverse=True)
-        
-        # Return documents in order of relevance
-        return [index_to_doc[idx] for _, idx in scored_indices]
-    except Exception as e:
-        logging.warning(f"Cross-Encoder re-ranking failed, using original order: {e}")
-        return documents
+
+def _extract_doc_embedding(doc: Dict[str, Any]) -> List[float] | None:
+    """Extract embedding from document dict, if present."""
+    # Common keys
+    for key_path in (
+        ("embedding",),
+        ("metadata", "embedding"),
+        ("embedding_vector",),
+        ("metadata", "embedding_vector"),
+        ("vector",),
+        ("metadata", "vector"),
+    ):
+        cur: Any = doc
+        for key in key_path:
+            if isinstance(cur, dict) and key in cur:
+                cur = cur[key]
+            else:
+                cur = None
+                break
+        if isinstance(cur, list) and len(cur) > 0:
+            return cur  # type: ignore[return-value]
+    return None
+
+
+def maximal_marginal_relevance(
+    query_embedding: List[float],
+    all_documents: Dict[str, Dict],
+    doc_scores: Dict[str, float],
+    lambda_param: float = 0.7,
+    k: int = 7,
+) -> List[Dict]:
+    """Select a diverse top-k set using MMR over boosted RRF relevance."""
+    if not doc_scores:
+        return []
+
+    # Prepare candidate set sorted by relevance first
+    candidates = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+    selected: List[str] = []
+    selected_docs: List[Dict] = []
+
+    # Cache document embeddings
+    embedding_cache: Dict[str, List[float] | None] = {}
+    for doc_id, _ in candidates:
+        doc = all_documents.get(doc_id)
+        if doc is None:
+            embedding_cache[doc_id] = None
+        else:
+            embedding_cache[doc_id] = _extract_doc_embedding(doc)
+
+    while len(selected) < min(k, len(candidates)):
+        best_doc_id = None
+        best_score = -float("inf")
+        for doc_id, rel in candidates:
+            if doc_id in selected:
+                continue
+            # Relevance term from boosted RRF
+            relevance = rel
+            # Diversity term: max similarity to any already selected
+            if not selected:
+                diversity_penalty = 0.0
+            else:
+                cand_emb = embedding_cache.get(doc_id)
+                if not cand_emb:
+                    # Without an embedding, we cannot compute similarity; assume zero similarity
+                    diversity_penalty = 0.0
+                else:
+                    max_sim = 0.0
+                    for sel_id in selected:
+                        sel_emb = embedding_cache.get(sel_id)
+                        if sel_emb:
+                            max_sim = max(max_sim, compute_cosine_similarity(cand_emb, sel_emb))
+                    diversity_penalty = (1.0 - lambda_param) * max_sim
+            score = lambda_param * relevance - diversity_penalty
+            if score > best_score:
+                best_score = score
+                best_doc_id = doc_id
+        if best_doc_id is None:
+            break
+        selected.append(best_doc_id)
+        selected_docs.append(all_documents[best_doc_id])
+
+    return selected_docs
  
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
 try:
@@ -172,8 +296,94 @@ def retrieve_rag_documents_langchain(
         match_threshold=match_threshold,
     )
     return _to_langchain_documents(raw)
+
+
+def _normalize_doc_input(obj: Any) -> Dict[str, Any]:
+    """Normalize various document inputs (dict, LangChain Document, str) to a dict."""
+    if isinstance(obj, dict):
+        return obj
+    # LangChain Document-like
+    if hasattr(obj, "page_content") and hasattr(obj, "metadata"):
+        return {
+            "content": getattr(obj, "page_content", ""),
+            "metadata": getattr(obj, "metadata", {}) or {},
+        }
+    if isinstance(obj, str):
+        return {"content": obj, "metadata": {}}
+    # Fallback
+    return {"content": str(obj), "metadata": {}}
+
+
+def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reranking orchestrator using Query Expansion + RRF + Boosting + MMR.
+
+    - Expands query with rule-based variants
+    - Retrieves fresh candidates for each variant (top 30)
+    - Fuses with RRF and applies metadata boosts
+    - Applies MMR to select final diverse top-7
+    """
+    # Track whether caller passed LangChain Documents; if so, return that type for compatibility
+    input_is_langchain = bool(documents) and hasattr(documents[0], "page_content") and hasattr(documents[0], "metadata")
+    # Normalize input docs in case caller passes LangChain Documents
+    normalized_input_docs: List[Dict[str, Any]] = [_normalize_doc_input(d) for d in (documents or [])]
+    class_name = ""
+    # Attempt to infer class from provided docs as a fallback boost context
+    for d in normalized_input_docs:
+        c = _get_doc_class(d)
+        if c:
+            class_name = c
+            break
+
+    # Expand queries
+    queries = expand_query(query)
+
+    # Retrieve candidates for each query
+    results_per_query: List[List[Dict[str, Any]]] = []
+    for q in queries:
+        try:
+            retrieved = retrieve_rag_documents(q, selected_class=class_name if class_name else None, match_count=30, match_threshold=0.7)
+        except Exception as e:
+            logging.warning(f"Retrieval failed for variant '{q}': {e}")
+            retrieved = []
+        results_per_query.append(retrieved)
+
+    # Build master map of id -> doc for all retrieved
+    all_docs_map: Dict[str, Dict[str, Any]] = {}
+    for lst in results_per_query:
+        for d in lst:
+            all_docs_map[_get_doc_id(d)] = d
+    # Also include any originals not in retrieval results
+    for d in normalized_input_docs:
+        all_docs_map.setdefault(_get_doc_id(d), d)
+
+    # Compute RRF with boosting
+    fused_scores = apply_rrf_and_boost(results_per_query, query=query, class_name=class_name)
+
+    # If no scores (retrieval empty), fall back to original order up to 7
+    if not fused_scores:
+        selected_dicts = normalized_input_docs[:7]
+        if input_is_langchain and Document is not None:
+            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
+        return selected_dicts
+
+    # Embed the original query for MMR
+    try:
+        q_emb = embed_query(query)
+    except Exception as e:
+        logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
+        # Return top-7 by fused score without MMR
+        top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
+        selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
+        if input_is_langchain and Document is not None:
+            return _to_langchain_documents(selected_dicts)  # type: ignore[return-value]
+        return selected_dicts
+
+    # Run MMR selection
+    mmr_selected_dicts = maximal_marginal_relevance(q_emb, all_docs_map, fused_scores, lambda_param=0.7, k=7)
+    if input_is_langchain and Document is not None:
+        return _to_langchain_documents(mmr_selected_dicts)  # type: ignore[return-value]
+    return mmr_selected_dicts
 import datetime
-import logging
 from typing import Optional
 from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
