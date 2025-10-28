@@ -228,6 +228,24 @@ def safe_find(
     raise TimeoutException(f"Timed out waiting for element located by {locator}")
 
 
+def safe_find_all(
+    driver: webdriver.Chrome,
+    locator: Tuple[str, str],
+    timeout: int = 30,
+) -> List[webdriver.remote.webelement.WebElement]:
+    """Robust find-all operation with explicit wait. Returns empty list on failure."""
+    try:
+        wait = WebDriverWait(driver, timeout)
+        wait.until(EC.presence_of_element_located(locator))
+        return driver.find_elements(*locator)
+    except TimeoutException:
+        logging.debug(f"No elements found for {locator} within {timeout}s")
+        return []
+    except Exception as e:
+        logging.warning(f"Error finding elements {locator}: {e}")
+        return []
+
+
 def safe_click(driver: webdriver.Chrome, locator: Tuple[str, str], timeout: int = 30):
     """Robust click operation using JavaScript to bypass potential overlays/stale elements."""
     element = safe_find(driver, locator, timeout, clickable=True)
