@@ -11,6 +11,7 @@ import google.generativeai as genai
 import os
 import json
 from typing import List, Dict, Optional
+from datetime import datetime
 
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -42,6 +43,19 @@ app.add_middleware(
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
+# Optional Supabase client for health checks
+try:
+    from src.shared.utils import _get_supabase_client
+except Exception:
+    _get_supabase_client = None  # type: ignore
+
+supabase = None
+if _get_supabase_client is not None:
+    try:
+        supabase = _get_supabase_client()
+    except Exception:
+        supabase = None
+
 # IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
 
@@ -69,7 +83,20 @@ class RAGRequest(BaseModel):
 
 @app.get("/")
 async def health_check():
-    return {"status": "healthy", "service": "AI Tutor API"}
+    """Enhanced health check for Render monitoring"""
+    return {
+        "status": "healthy",
+        "service": "AI Tutor API",
+        "version": "1.0.0-beta",
+        "timestamp": datetime.now().isoformat(),
+        "supabase_connected": supabase is not None,
+        "model_loaded": model is not None,
+    }
+
+@app.get("/health")
+async def health():
+    """Dedicated health endpoint for uptime monitoring"""
+    return {"status": "ok"}
 
 @app.post("/api/rag-search")
 async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
