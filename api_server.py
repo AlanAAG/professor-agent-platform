@@ -6,7 +6,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
-from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents, _get_supabase_client
+from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
 import google.generativeai as genai
 import os
 import json
@@ -21,17 +21,20 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- CORS Setup (Robust, Environment-based) ---
-# Read allowed origins from environment variable `ALLOWED_ORIGINS`.
-# Supports comma-separated string.
+# Get Lovable frontend URL from environment
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+
+# Add Lovable preview URLs pattern if needed
+if not allowed_origins:
+    # Fallback for development
+    allowed_origins = ["http://localhost:3000", "http://localhost:5173"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    # Allow Content-Type, Authorization, and the custom X-API-Key header
     allow_headers=["x-api-key", "content-type", "authorization"],
 )
 
@@ -39,6 +42,14 @@ app.add_middleware(
 # Uses GEMINI_API_KEY environment variable
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
+
+# Optional Supabase client for health checks
+supabase = None
+try:
+    from src.shared.utils import _get_supabase_client
+    supabase = _get_supabase_client()
+except Exception:
+    supabase = None
 
 # IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
@@ -68,21 +79,18 @@ class RAGRequest(BaseModel):
 @app.get("/")
 async def health_check():
     """Enhanced health check for Render monitoring"""
-    # Check if supabase is available
-    supabase_connected = False
-    try:
-        supabase = _get_supabase_client()
-        supabase_connected = supabase is not None
-    except Exception:
-        supabase_connected = False
-    
     return {
         "status": "healthy",
         "service": "AI Tutor API",
         "version": "1.0.0-beta",
         "timestamp": datetime.now().isoformat(),
-        "supabase_connected": supabase_connected,
-        "model_loaded": model is not None
+        "supabase_connected": supabase is not None,
+        "model_loaded": model is not None,
+        "endpoints": {
+            "chat": "/api/chat",
+            "rag_search": "/api/rag-search",
+            "health": "/health"
+        }
     }
 
 @app.get("/health")
