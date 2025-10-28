@@ -86,6 +86,15 @@ jobs:
         run: |
           python -m src.run_hybrid_pipeline
       
+      # Upload run summary JSONs regardless of job result
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary-${{ github.run_number }}
+          path: logs/run_summary_*.json
+          retention-days: 30
+      
       # Step 8: Upload logs and screenshots (on failure)
       - name: Upload logs and screenshots (on failure)
         if: failure()

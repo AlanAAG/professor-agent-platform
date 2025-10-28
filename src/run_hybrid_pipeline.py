@@ -4,6 +4,8 @@ import os
 import datetime
 import logging
 import tempfile
+import json
+from typing import Dict, Any, List
 from dotenv import load_dotenv
 from selenium import webdriver
 
@@ -47,6 +49,61 @@ os.makedirs(RAW_TRANSCRIPT_DIR, exist_ok=True)
 os.makedirs(RAW_STATIC_DIR, exist_ok=True)
 os.makedirs(RAW_PDF_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+
+def save_run_summary(
+    stats: Dict[str, Any],
+    mode: str,
+    start_time: datetime.datetime,
+    errors: List[Dict[str, str]],
+):
+    """Save pipeline run summary to JSON file."""
+    end_time = datetime.datetime.now()
+    duration = (end_time - start_time).total_seconds()
+
+    summary = {
+        "run_metadata": {
+            "timestamp": start_time.isoformat(),
+            "mode": mode,
+            "duration_seconds": round(duration, 2),
+            "duration_human": f"{int(duration // 60)}m {int(duration % 60)}s",
+            "success": stats.get("resources_failed", 0) == 0,
+        },
+        "statistics": stats,
+        "errors": errors[:50],  # Limit to first 50 errors
+        "error_count": len(errors),
+    }
+
+    # Save to timestamped file
+    filename = f"logs/run_summary_{start_time.strftime('%Y%m%d_%H%M%S')}.json"
+    os.makedirs("logs", exist_ok=True)
+
+    with open(filename, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Also save as "latest" for easy access
+    with open("logs/run_summary_latest.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    logging.info(f"📊 Run summary saved to {filename}")
+
+    # Print summary to console
+    logging.info("\n" + "=" * 60)
+    logging.info("RUN SUMMARY")
+    logging.info("=" * 60)
+    logging.info(f"Mode: {mode}")
+    logging.info(f"Duration: {summary['run_metadata']['duration_human']}")
+    logging.info(
+        f"Courses: {stats.get('courses_successful', 0)}/{stats.get('courses_attempted', 0)} successful"
+    )
+    logging.info(
+        f"Resources: {stats.get('resources_processed', 0)} processed, {stats.get('resources_failed', 0)} failed"
+    )
+    if errors:
+        logging.info(
+            f"Errors: {len(errors)} occurred (see {filename} for details)"
+        )
+    logging.info("=" * 60)
 
 
 def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
@@ -175,20 +232,27 @@ def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date
                 logging.warning(f"   No processing logic for content_tag: {content_type_tag}")
 
 
+        # Success
+        return True
+
     except Exception as process_err:
         logging.error(f"❌ Failed to process resource {title} ({url}): {process_err}")
         # Clean up temp file if it exists and processing failed
         if isinstance(raw_content_data, str) and content_type_tag == "pdf" and os.path.exists(raw_content_data):
-            try: os.remove(raw_content_data)
-            except OSError as e: logging.warning(f"   Could not delete failed temp PDF {raw_content_data}: {e}")
+            try:
+                os.remove(raw_content_data)
+            except OSError as e:
+                logging.warning(f"   Could not delete failed temp PDF {raw_content_data}: {e}")
+        # Re-raise so caller can track stats and errors
+        raise
 
 
 def main_pipeline(mode="daily"):
-    """
-    Main orchestration function for the stateless Harvester & Refinery pipeline.
-    Connects scraping directly to cleaning and embedding.
-    """
-    logging.info(f"🚀 Hybrid Pipeline Started (Mode: {mode})")
+    """Main orchestration with summary generation."""
+    start_time = datetime.datetime.now()
+    logging.info(
+        f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode})"
+    )
     
     # Reset course tracking for new run
     navigation.reset_course_tracking()
@@ -203,6 +267,17 @@ def main_pipeline(mode="daily"):
         logging.info("Processing all historical resources (backlog mode).")
     else:
         raise ValueError(f"Unsupported pipeline mode: {mode}")
+
+    # Initialize stats & errors
+    stats: Dict[str, Any] = {
+        "courses_attempted": 0,
+        "courses_successful": 0,
+        "resources_discovered": 0,
+        "resources_processed": 0,
+        "resources_failed": 0,
+    }
+
+    errors: List[Dict[str, str]] = []
 
     # Use context manager to guarantee cleanup
     try:
@@ -245,6 +320,9 @@ def main_pipeline(mode="daily"):
             except Exception as detect_err:
                 logging.warning(f"Failed to detect available courses: {detect_err}")
 
+            # Update course attempts after filtering
+            stats["courses_attempted"] = len(course_items)
+
             for course_code, course_details in course_items:
                 class_name = course_details["name"]
                 group_name = course_details.get("group")
@@ -254,6 +332,7 @@ def main_pipeline(mode="daily"):
                     navigation.find_and_click_course_link(driver, course_code, group_name)
 
                     if navigation.navigate_to_resources_section(driver):
+                        stats["courses_successful"] += 1
                         sections = [
                             ("pre_read", config.PRE_READ_SECTION_TITLE),
                             ("in_class", config.IN_CLASS_SECTION_TITLE),
@@ -353,6 +432,7 @@ def main_pipeline(mode="daily"):
                                                     logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
                                                     resources_to_process.append((url, title, parsed_date, class_name, section_tag))
                                                     seen_urls.add(url)
+                                                    stats["resources_discovered"] += 1
                                     except Exception as item_err:
                                         logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
                                         continue
@@ -372,11 +452,41 @@ def main_pipeline(mode="daily"):
 
             logging.info("\n--- Starting Processing Phase ---")
             for url, title, date_obj, class_name, section_tag in resources_to_process:
-                process_single_resource(driver, url, title, date_obj, class_name, section_tag)
+                try:
+                    success = process_single_resource(
+                        driver, url, title, date_obj, class_name, section_tag
+                    )
+                    if success:
+                        stats["resources_processed"] += 1
+                except Exception as e:
+                    logging.error(f"❌ Failed to process {title}: {e}")
+                    stats["resources_failed"] += 1
+                    errors.append(
+                        {
+                            "resource_title": title,
+                            "resource_url": url,
+                            "class_name": class_name,
+                            "error_type": type(e).__name__,
+                            "error_message": str(e),
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        }
+                    )
 
     except Exception as pipeline_err:
         logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
+        errors.append(
+            {
+                "error_type": "CRITICAL_PIPELINE_FAILURE",
+                "error_message": str(pipeline_err),
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
     finally:
+        # Always save summary, even on failure
+        try:
+            save_run_summary(stats, mode, start_time, errors)
+        except Exception as summary_err:
+            logging.error(f"Failed to save run summary: {summary_err}")
         logging.info("🚀 Hybrid Pipeline Finished.")
 
 # --- Allow running the script directly ---
