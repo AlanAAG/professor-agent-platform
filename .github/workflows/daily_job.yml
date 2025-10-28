@@ -1,0 +1,128 @@
+name: Daily Harvester & Refinery Pipeline
+
+# When to run this workflow
+on:
+  # Run automatically every day at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  
+  # Also allow manual triggering from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Pipeline mode (daily or backlog)'
+        required: false
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - backlog
+
+# Define the jobs to run
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      # Step 1: Download your repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      # Step 3: Install Python dependencies
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
+      - name: Install Google Chrome
+        uses: browser-actions/setup-chrome@v1
+      
+      # Step 5: Create necessary directories
+      - name: Create data directories
+        run: |
+          mkdir -p logs/error_screenshots
+          mkdir -p data/raw_transcripts
+          mkdir -p data/raw_static
+          mkdir -p data/raw_pdfs
+          mkdir -p /tmp/harvester_downloads
+
+      # Step 6: Create a .env file for Pydantic Settings (kept local to runner)
+      - name: Write .env from GitHub Secrets
+        run: |
+          cat > .env << 'EOF'
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          COACH_USERNAME=${{ secrets.COACH_USERNAME }}
+          COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
+          # The re-ranking key is kept for compatibility but the code uses a local model now.
+          COHERE_API_KEY=${{ secrets.COHERE_API_KEY }}
+          HARVESTER_SELENIUM_HEADLESS=true
+          HARVESTER_PAGE_LOAD_TIMEOUT=60
+          HARVESTER_WAIT_TIMEOUT=30
+          HARVESTER_SCREENSHOT_DIR=logs/error_screenshots
+          HARVESTER_DOWNLOADS_DIR=/tmp/harvester_downloads
+          EOF
+      
+      # Step 7: Run the pipeline
+      - name: Run Harvester & Refinery Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
+          COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
+          PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
+          HARVESTER_SELENIUM_HEADLESS: 'true'
+        run: |
+          python -m src.run_hybrid_pipeline
+      
+      # Step 8: Upload logs and screenshots (on failure)
+      - name: Upload logs and screenshots (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-failure-${{ github.run_number }}
+          path: |
+            logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Step 9: Upload logs and screenshots (on success)
+      - name: Upload logs and screenshots (on success)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-success-${{ github.run_number }}
+          path: |
+            logs/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # Step 10: Upload logs and screenshots (on cancellation)
+      - name: Upload logs and screenshots (on cancellation)
+        if: cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-cancelled-${{ github.run_number }}
+          path: |
+            logs/
+          if-no-files-found: ignore
+          retention-days: 7
+      
+      # Step 11: Clean up sensitive files
+      - name: Clean up sensitive files
+        if: always()
+        run: |
+          rm -f data/auth_state.json
+          rm -f .env
+          echo "✅ Cleaned up authentication files"
