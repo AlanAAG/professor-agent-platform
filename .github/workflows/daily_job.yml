@@ -73,8 +73,17 @@ jobs:
           HARVESTER_DOWNLOADS_DIR=/tmp/harvester_downloads
           EOF
       
-      # Step 7: Run the pipeline
-      - name: Run Harvester & Refinery Pipeline
+      # Step 7: Run Pytest Unit/Integration Tests
+      - name: Run Pytest Unit/Integration Tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+          pytest -q -x tests/
+
+      # Step 8: Run Harvester Job
+      - id: run_harvester_job
+        name: Run Harvester Job
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -84,9 +93,9 @@ jobs:
           PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
           HARVESTER_SELENIUM_HEADLESS: 'true'
         run: |
-          python -m src.run_hybrid_pipeline
+          bash ./run_daily_job.sh "$PIPELINE_MODE"
       
-      # Step 8: Upload logs and screenshots (on failure)
+      # Step 9: Upload logs and screenshots (on failure)
       - name: Upload logs and screenshots (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -97,7 +106,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # Step 9: Upload logs and screenshots (on success)
+      # Step 10: Upload logs and screenshots (on success)
       - name: Upload logs and screenshots (on success)
         if: success()
         uses: actions/upload-artifact@v4
@@ -108,7 +117,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      # Step 10: Upload logs and screenshots (on cancellation)
+      # Step 11: Upload logs and screenshots (on cancellation)
       - name: Upload logs and screenshots (on cancellation)
         if: cancelled()
         uses: actions/upload-artifact@v4
@@ -118,8 +127,26 @@ jobs:
             logs/
           if-no-files-found: ignore
           retention-days: 7
+
+      # Step 12: Ping Production API Health
+      - name: Ping Production API Health
+        if: always()
+        env:
+          PROD_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: |
+          if [ -z "${PROD_URL}" ]; then
+            echo "⚠️  PRODUCTION_API_URL not set; skipping health ping." && exit 0
+          fi
+          echo "Pinging ${PROD_URL}/health ..."
+          if curl -fsS --max-time 15 "${PROD_URL}/health" > /dev/null; then
+            echo "✅ Health endpoint OK"
+          else
+            echo "Health endpoint not available; trying root / ..."
+            curl -fsS --max-time 15 "${PROD_URL}/" > /dev/null
+            echo "✅ Root endpoint OK"
+          fi
       
-      # Step 11: Clean up sensitive files
+      # Step 13: Clean up sensitive files
       - name: Clean up sensitive files
         if: always()
         run: |
