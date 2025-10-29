@@ -222,6 +222,23 @@ class HarvesterSettings(BaseSettings):
         validation_alias=AliasChoices("HARVESTER_RESOURCE_BATCH_SIZE"),
     )
 
+    # --- Monitoring & Telemetry Settings ---
+    telemetry_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("HARVESTER_TELEMETRY_ENABLED", "TELEMETRY_ENABLED"),
+    )
+
+    telemetry_log_level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("HARVESTER_TELEMETRY_LOG_LEVEL", "TELEMETRY_LOG_LEVEL"),
+    )
+
+    # Where to persist the last pipeline status JSON
+    metrics_report_path: str = Field(
+        default="data/pipeline_status.json",
+        validation_alias=AliasChoices("HARVESTER_METRICS_REPORT_PATH", "METRICS_REPORT_PATH"),
+    )
+
 
 # Instantiate settings once for module-level access
 SETTINGS = HarvesterSettings()
