@@ -4,7 +4,8 @@ import logging
 import time
 import os
 import random
-from typing import Optional
+import re
+from typing import Optional, List, Dict, Any
 
 import requests
 from requests.exceptions import RequestException
@@ -21,6 +22,7 @@ from selenium.common.exceptions import (
     WebDriverException,
 )
 from selenium import webdriver
+from selenium.webdriver.remote.webelement import WebElement
 from . import config
 from .navigation import safe_find, safe_find_all, safe_click
 
@@ -312,3 +314,188 @@ def scrape_html_content(url: str) -> Optional[str]:
     except RequestException as e:
         logging.error(f"   Error scraping HTML {url}: {e}")
         return None
+
+
+# --- Resource Link Processing ---
+
+def classify_url(url: str) -> str:
+    """Classify a URL into a canonical resource type.
+
+    Types: YOUTUBE_VIDEO, PDF_DOCUMENT, OFFICE_DOCUMENT, RECORDING_LINK, WEB_ARTICLE
+    """
+    if not url:
+        return "WEB_ARTICLE"
+    lower = url.lower()
+    if "youtube.com/watch" in lower or "youtu.be/" in lower:
+        return "YOUTUBE_VIDEO"
+    if lower.endswith(".pdf"):
+        return "PDF_DOCUMENT"
+    if "docs.google.com/presentation" in lower or lower.endswith((".pptx", ".ppt")):
+        return "OFFICE_DOCUMENT"
+    if "docs.google.com/document" in lower or lower.endswith((".doc", ".docx")):
+        return "OFFICE_DOCUMENT"
+    if "docs.google.com/spreadsheets" in lower or lower.endswith((".xls", ".xlsx")):
+        return "OFFICE_DOCUMENT"
+    if "drive.google.com/file" in lower or "zoom.us/rec" in lower or "zoom.us/" in lower:
+        return "RECORDING_LINK"
+    return "WEB_ARTICLE"
+
+
+def process_resource_links(driver: webdriver.Chrome, links: List[WebElement]) -> List[Dict[str, Any]]:
+    """Process a list of <a> WebElements into structured resource metadata.
+
+    For each link, extract:
+      - url: anchor href
+      - title: best-effort text from nearby context (p/heading/label)
+      - date: date-like text (e.g., 29/09/2025) from adjacent span/containers
+      - type: classified by URL pattern
+
+    The DOM varies between regular resource links and session recordings.
+    This function uses robust ancestor/sibling traversal with sensible fallbacks.
+    """
+
+    def _normalize_text(text: str) -> str:
+        return " ".join((text or "").split())
+
+    date_regex = re.compile(r"\b\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}\b")
+
+    def _safe_attr(el: WebElement, name: str) -> str:
+        try:
+            return el.get_attribute(name) or ""
+        except Exception:
+            return ""
+
+    def _try_find(el: WebElement, by: str, selector: str) -> WebElement | None:
+        try:
+            return el.find_element(by, selector)
+        except Exception:
+            return None
+
+    def _try_find_all(el: WebElement, by: str, selector: str) -> List[WebElement]:
+        try:
+            return el.find_elements(by, selector) or []
+        except Exception:
+            return []
+
+    def _nearest_container(anchor: WebElement) -> WebElement:
+        # Prefer logical content containers (li/div/section/article) around the link
+        container = _try_find(anchor, By.XPATH, "./ancestor::*[self::li or self::div or self::section or self::article][1]")
+        return container or anchor
+
+    def _extract_title(anchor: WebElement, url: str) -> str:
+        # 1) Anchor text if meaningful
+        anchor_text = _normalize_text(getattr(anchor, "text", ""))
+        if anchor_text and anchor_text.lower() != (url or "").lower() and len(anchor_text) > 3:
+            return anchor_text
+
+        # 2) aria-label/title attributes on the anchor
+        for attr_name in ("aria-label", "title"):
+            val = _normalize_text(_safe_attr(anchor, attr_name))
+            if val:
+                return val
+
+        # 3) Look for nearby <p> siblings
+        sib_p = _try_find(anchor, By.XPATH, "following-sibling::p[normalize-space()][1]") or _try_find(
+            anchor, By.XPATH, "preceding-sibling::p[normalize-space()][1]"
+        )
+        if sib_p:
+            sib_text = _normalize_text(getattr(sib_p, "text", ""))
+            if sib_text:
+                return sib_text
+
+        container = _nearest_container(anchor)
+
+        # 4) Titles commonly live in <p> within the container (Openai, Georgetown, Session PPT, ...)
+        p_in_container = _try_find(container, By.XPATH, ".//p[normalize-space()][1]")
+        if p_in_container:
+            p_text = _normalize_text(getattr(p_in_container, "text", ""))
+            if p_text:
+                return p_text
+
+        # 5) Headings near the link
+        headings = _try_find_all(
+            container,
+            By.XPATH,
+            ".//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6][normalize-space()]",
+        )
+        if headings:
+            h_text = _normalize_text(getattr(headings[0], "text", ""))
+            if h_text:
+                return h_text
+
+        # 6) End-of-section boxes (e.g., .fileBoxend) can hold a final title
+        filebox = _try_find(
+            container,
+            By.XPATH,
+            ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
+        )
+        if filebox:
+            fb_p = _try_find(filebox, By.XPATH, ".//p[normalize-space()][1]")
+            if fb_p:
+                fb_text = _normalize_text(getattr(fb_p, "text", ""))
+                if fb_text:
+                    return fb_text
+
+        # 7) Fallback: parent text trimmed (can be noisy but better than empty)
+        parent = _try_find(anchor, By.XPATH, "parent::*")
+        parent_text = _normalize_text(getattr(parent, "text", "")) if parent else ""
+        return parent_text or url or ""
+
+    def _extract_date(anchor: WebElement) -> str | None:
+        # Check spans near the anchor first
+        for xpath in (
+            "following-sibling::span[normalize-space()][1]",
+            "preceding-sibling::span[normalize-space()][1]",
+        ):
+            span = _try_find(anchor, By.XPATH, xpath)
+            if span:
+                text = _normalize_text(getattr(span, "text", ""))
+                if text and date_regex.search(text):
+                    return date_regex.search(text).group(0)
+
+        container = _nearest_container(anchor)
+
+        # Prefer dates from end-of-section boxes when present
+        filebox = _try_find(
+            container,
+            By.XPATH,
+            ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
+        )
+        if filebox:
+            spans = _try_find_all(filebox, By.XPATH, ".//span[normalize-space()]")
+            for sp in spans:
+                text = _normalize_text(getattr(sp, "text", ""))
+                m = date_regex.search(text)
+                if m:
+                    return m.group(0)
+
+        # Otherwise, scan all spans inside the container
+        spans = _try_find_all(container, By.XPATH, ".//span[normalize-space()]")
+        for sp in spans:
+            text = _normalize_text(getattr(sp, "text", ""))
+            m = date_regex.search(text)
+            if m:
+                return m.group(0)
+        return None
+
+    resources: List[Dict[str, Any]] = []
+    for link in links or []:
+        try:
+            url = _safe_attr(link, "href")
+            if not url:
+                continue
+            resource_type = classify_url(url)
+            title = _extract_title(link, url)
+            date_val = _extract_date(link)
+            resources.append({
+                "url": url,
+                "title": title,
+                "date": date_val,
+                "type": resource_type,
+            })
+        except Exception as e:
+            # Best-effort: skip problematic link but continue others
+            logging.debug(f"Skipping link due to error: {e}")
+            continue
+
+    return resources
