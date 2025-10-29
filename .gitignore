@@ -206,7 +206,7 @@ marimo/_lsp/
 __marimo__/
 
 # Critical Security & Data Files (ADDED for security)
-data/auth_state.json
+#data/auth_state.json
 
 # Manual transcript files (contain sensitive course content)
 #data/raw_transcripts/manual/*.txt
