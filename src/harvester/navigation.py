@@ -648,3 +648,191 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
     except Exception as e:
         logging.error(f"Error expanding section '{section_title}': {e}")
         raise
+
+# --- Robust replacements (appended to ensure override of earlier definitions) ---
+
+def _locate_section_header_robust(
+    driver: webdriver.Chrome,
+    section_title: str,
+    timeout: int = 5,
+) -> Tuple[WebElement, str, str]:
+    """Locate the section header element robustly with multi-level fallbacks.
+
+    Strategy (in order):
+    - primary: Use configured XPath template targeting the header container with exact title match.
+    - fallback_1: Find a div that contains a <p> with exact text and a 'name' class (header-like).
+    - fallback_2: Find any element on the page whose visible text exactly matches the title,
+      then resolve to its nearest ancestor <div> as the clickable header.
+
+    Returns a tuple of (header_element, header_xpath_used, strategy_label).
+    """
+    # Attempt 1: Primary config XPath (exact title within stable header container)
+    primary_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
+    try:
+        locator = (By.XPATH, primary_xpath)
+        header = safe_find(driver, locator, timeout=timeout)
+        WebDriverWait(driver, timeout).until(EC.visibility_of(header))
+        # Ensure clickable
+        WebDriverWait(driver, timeout).until(lambda d: header.is_displayed() and header.is_enabled())
+        logging.debug("Section header located via primary XPath: %s", primary_xpath)
+        return header, primary_xpath, "primary"
+    except (TimeoutException, NoSuchElementException) as e:
+        logging.info("Primary header locator failed for '%s': %s", section_title, e)
+
+    # Attempt 2: Header-like div that contains a <p name> with the exact title
+    # Targets structures like: <div ...><div class='leftHeader'><p class='name'>Title</p></div></div>
+    fb1_xpath = (
+        "//div[.//p[normalize-space(text())='" + section_title + "'] and "
+        " .//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')]]"
+    )
+    try:
+        locator = (By.XPATH, fb1_xpath)
+        header = safe_find(driver, locator, timeout=timeout)
+        WebDriverWait(driver, timeout).until(EC.visibility_of(header))
+        WebDriverWait(driver, timeout).until(lambda d: header.is_displayed() and header.is_enabled())
+        logging.info("Section header located via fallback_1 XPath: %s", fb1_xpath)
+        return header, fb1_xpath, "fallback_1"
+    except (TimeoutException, NoSuchElementException) as e:
+        logging.info("Fallback_1 header locator failed for '%s': %s", section_title, e)
+
+    # Attempt 3: Any element with exact text, then nearest ancestor div as header container
+    anchor_xpath = f"//*[self::p or self::div or self::span or self::a][normalize-space(text())='{section_title}']"
+    try:
+        anchor_el = safe_find(driver, (By.XPATH, anchor_xpath), timeout=timeout)
+        WebDriverWait(driver, timeout).until(EC.visibility_of(anchor_el))
+        # Prefer the nearest ancestor div as the clickable header region
+        fb2_xpath = f"{anchor_xpath}/ancestor::div[1]"
+        try:
+            header = safe_find(driver, (By.XPATH, fb2_xpath), timeout=timeout)
+            WebDriverWait(driver, timeout).until(lambda d: header.is_displayed() and header.is_enabled())
+            logging.info("Section header located via fallback_2 ancestor div: %s", fb2_xpath)
+            return header, fb2_xpath, "fallback_2"
+        except (TimeoutException, NoSuchElementException):
+            # Use the anchor element itself as a last resort
+            header = anchor_el
+            logging.info("Section header approximated via fallback_2 anchor element: %s", anchor_xpath)
+            return header, anchor_xpath, "fallback_2_anchor"
+    except (TimeoutException, NoSuchElementException) as e:
+        logging.error("All header locator strategies failed for '%s': %s", section_title, e)
+        raise
+
+
+def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
+    """Expand a resource section header and return all link items within its container.
+
+    Fallback strategy:
+    1) Section Header Click (3 attempts):
+       - Primary: XPath from config with exact text match on header structure.
+       - Fallback 1: Any header-like div containing a <p class="name"> with exact title.
+       - Fallback 2: Any element with exact text; click its nearest ancestor div.
+       For each: scroll into view, wait visible and clickable, use JS click.
+
+    2) Container Location (2 attempts + pattern assist):
+       - Primary: following-sibling::div[1] of the clicked header XPath.
+       - Fallback: nearest header wrapper's following sibling; if still not found, search
+         parent area for resource-like patterns (classes including 'fileBox' or 'resource').
+
+    3) Link Extraction (comprehensive):
+       - Collect all descendant anchors: "div.fileBox a[href], div.fileContentCol a[href], a[href]".
+       - Filter empty/self-referential hrefs.
+
+    Returns (container_xpath_used, list_of_anchor_elements). If no content, returns (xpath or '', []).
+    """
+
+    # 1) Locate header robustly
+    header_el, header_xpath_used, strategy = _locate_section_header_robust(
+        driver, section_title, timeout=5
+    )
+
+    # Scroll into view and click via JS
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
+        WebDriverWait(driver, 5).until(lambda d: header_el.is_displayed() and header_el.is_enabled())
+        driver.execute_script("arguments[0].click();", header_el)
+        logging.info("Clicked section header '%s' via strategy: %s", section_title, strategy)
+    except StaleElementReferenceException:
+        # Re-locate once on stale and retry click
+        logging.info("Header element went stale; re-locating for '%s'", section_title)
+        header_el, header_xpath_used, strategy = _locate_section_header_robust(driver, section_title, timeout=5)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
+        WebDriverWait(driver, 5).until(lambda d: header_el.is_displayed() and header_el.is_enabled())
+        driver.execute_script("arguments[0].click();", header_el)
+        logging.info("Clicked (retry) section header '%s' via strategy: %s", section_title, strategy)
+
+    # Allow UI to render the content container
+    time.sleep(0.75)
+
+    # 2) Locate the container: Primary attempt - following sibling of the header XPath
+    container_xpath_primary = f"{header_xpath_used}/following-sibling::div[1]"
+    container_el: Optional[WebElement] = None
+    container_xpath_used: str = container_xpath_primary
+
+    try:
+        container_el = safe_find(driver, (By.XPATH, container_xpath_primary), timeout=5)
+        WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
+        logging.info("Container located via primary following-sibling: %s", container_xpath_primary)
+    except (TimeoutException, NoSuchElementException) as e:
+        logging.info("Primary container location failed; trying fallback for '%s': %s", section_title, e)
+        # Fallback: go to the nearest wrapper div around header, then its following sibling
+        wrapper_xpath = f"{header_xpath_used}/ancestor::div[1]"
+        fallback_container_xpath = f"{wrapper_xpath}/following-sibling::div[1]"
+        try:
+            container_el = safe_find(driver, (By.XPATH, fallback_container_xpath), timeout=5)
+            WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
+            container_xpath_used = fallback_container_xpath
+            logging.info("Container located via fallback sibling of wrapper: %s", fallback_container_xpath)
+        except (TimeoutException, NoSuchElementException) as e2:
+            # Last-resort within fallback scope: search parent area for resource-like content
+            pattern_xpath = (
+                f"({wrapper_xpath}//div[contains(@class,'fileBox') or "
+                f" contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'resource')]/ancestor::div[1])[1]"
+            )
+            try:
+                container_el = safe_find(driver, (By.XPATH, pattern_xpath), timeout=5)
+                WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
+                container_xpath_used = pattern_xpath
+                logging.info("Container located via resource pattern search: %s", pattern_xpath)
+            except (TimeoutException, NoSuchElementException) as e3:
+                logging.info(
+                    "No visible container found for section '%s' after fallbacks. Returning empty list. Last errors: %s | %s | %s",
+                    section_title,
+                    e,
+                    e2,
+                    e3,
+                )
+                return "", []
+
+    # 3) Extract links comprehensively from the container
+    try:
+        link_selectors = [
+            "div.fileBox a[href]",
+            "div.fileContentCol a[href]",
+            "a[href]",
+        ]
+        selector_union = ", ".join(link_selectors)
+        anchors: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, selector_union) if container_el else []
+
+        # Filter out empty or self-referential hrefs
+        filtered: List[WebElement] = []
+        for a in anchors:
+            try:
+                href = (a.get_attribute("href") or "").strip()
+            except StaleElementReferenceException:
+                continue
+            if not href:
+                continue
+            lower_href = href.lower()
+            if lower_href.startswith("javascript:") or lower_href == "#":
+                continue
+            filtered.append(a)
+
+        logging.info(
+            "Extracted %d link(s) from section '%s' using container '%s'",
+            len(filtered),
+            section_title,
+            container_xpath_used,
+        )
+        return container_xpath_used, filtered
+    except Exception as e:
+        logging.warning("Failed extracting links for '%s': %s", section_title, e)
+        return container_xpath_used, []
