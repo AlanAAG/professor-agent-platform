@@ -10,6 +10,7 @@ import time
 import re
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Any, List, Tuple, Optional
@@ -246,6 +247,25 @@ def _save_session_state(driver: webdriver.Chrome):
         logging.warning(f"Failed to save session state: {e}")
 
 
+def _take_error_screenshot(driver: webdriver.Chrome, filename_prefix: str):
+    """Saves a screenshot to the configured directory with a timestamp."""
+    try:
+        # Create a unique filename with timestamp and prefix
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{filename_prefix}_{timestamp}.png"
+        filepath = os.path.join(config.SETTINGS.screenshot_dir, filename)
+        
+        # Ensure the directory exists
+        os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
+        
+        # Save the screenshot
+        driver.save_screenshot(filepath)
+        logging.critical(f"CRITICAL ERROR: Screenshot saved to {filepath}")
+    except Exception as e:
+        # Avoid causing a new error during error logging
+        logging.error(f"Failed to capture error screenshot: {e}")
+
+
 def is_session_valid(driver: webdriver.Chrome) -> bool:
     """Checks if the current session state is likely still logged in."""
     try:
@@ -391,7 +411,15 @@ def safe_find(
                 time.sleep(1)
                 continue
             raise
-    raise TimeoutException(f"Timed out waiting for element located by {locator}")
+        except (TimeoutException, NoSuchElementException) as e:
+            # --- START CRITICAL ERROR LOGGING ---
+            locator_string = f"{locator[0]}_{locator[1].replace('//', '').replace('/', '_').replace('[', '_').replace(']', '')[:50]}"
+            _take_error_screenshot(driver, f"find_timeout_{locator_string}")
+            # --- END CRITICAL ERROR LOGGING ---
+            raise TimeoutException(f"Timed out waiting for element located by {locator}. Original Error: {e}")
+            
+    # Keep the final implicit raise, though the new except block above covers most failures
+    raise TimeoutException(f"Timed out waiting for element located by {locator}") 
 
 
 def safe_find_all(
@@ -486,9 +514,11 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
 
     except TimeoutException:
         logging.error(f"Course link not found or navigation timed out for {course_code}.")
+        _take_error_screenshot(driver, f"nav_timeout_{course_code}")
         raise
     except Exception as e:
         logging.error(f"Error clicking course link for {course_code}: {e}")
+        _take_error_screenshot(driver, f"nav_error_{course_code}")
         raise
 
 
