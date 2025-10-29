@@ -477,68 +477,131 @@ def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
 
 
 def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group_name: str | None = None):
-    """Navigates to the main course page by finding the course link."""
-    
-    # 1. Check Cache (Global scope tracking for a single pipeline run)
-    if course_code in _COURSE_LINKS_SEEN_CACHE:
-        logging.warning(f"Course {course_code} already processed in this run. Skipping navigation to avoid duplication.")
-        return
-    
-    # 2. Navigate to main course dashboard
-    driver.get(config.COURSES_URL)
-    
-    # 3. Find Group Header (if applicable)
-    if group_name:
-        group_locator = (By.XPATH, config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=group_name))
-        try:
-            group_header = safe_find(driver, group_locator, timeout=10)
-            logging.info(f"Found group header for: {group_name}")
-            # Ensure the group is visible/expanded (by scrolling to it)
-            driver.execute_script("arguments[0].scrollIntoView(true);", group_header)
-        except TimeoutException:
-            logging.warning(f"Group header not found for '{group_name}'. Searching full page.")
-            pass # Continue searching without group context
+    """Navigate from the courses dashboard into a specific course page.
 
-    # 4. Find Course Link (using the course code)
-    course_locator = (By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code))
+    Logic mirrors the stable Colab flow:
+      - If the course is among default-visible cards, click it directly.
+      - Otherwise, expand the owning group header first, then click the link.
+
+    Uses JS-based clicks and scroll-into-view to maximize reliability.
+    """
+
+    # 1) Avoid duplicate navigations within a single pipeline run
+    if course_code in _COURSE_LINKS_SEEN_CACHE:
+        logging.warning(
+            "Course %s already processed in this run. Skipping navigation to avoid duplication.",
+            course_code,
+        )
+        return
+
+    # 2) Load the courses page fresh
+    driver.get(config.COURSES_URL)
+
+    # 3) Decide path: default-visible vs. grouped
+    is_default_visible = False
     try:
-        course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
-        # Use JavaScript to click the link and navigate to the course page
-        driver.execute_script("arguments[0].click();", course_link)
-        
-        # Track successful navigation
-        _COURSE_LINKS_SEEN_CACHE.add(course_code)
-        
-        # Wait for the URL to change/main course page to load
+        is_default_visible = course_code in getattr(config, "DEFAULT_VISIBLE_COURSES", set())
+    except Exception:
+        is_default_visible = False
+
+    course_locator = (By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code))
+
+    try:
+        if is_default_visible:
+            # PATH 1: Directly click the course link
+            logging.info("Course %s is default-visible. Clicking link directly...", course_code)
+            course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", course_link)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", course_link)
+        else:
+            # PATH 2: Expand the group first, then click the course link
+            resolved_group = group_name
+            if not resolved_group:
+                # Attempt to resolve from COURSE_MAP if not provided
+                try:
+                    resolved_group = config.COURSE_MAP.get(course_code, {}).get("group")
+                except Exception:
+                    resolved_group = None
+
+            if not resolved_group:
+                logging.warning(
+                    "Group for course %s not defined. Attempting page-wide search for course link.",
+                    course_code,
+                )
+            else:
+                logging.info("Expanding group '%s' for course %s...", resolved_group, course_code)
+                group_locator = (
+                    By.XPATH,
+                    config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=resolved_group),
+                )
+                try:
+                    group_header = safe_find(driver, group_locator, timeout=15)
+                    # Scroll and click to expand
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", group_header)
+                    time.sleep(1)
+                    driver.execute_script("arguments[0].click();", group_header)
+                    logging.info("Clicked group header '%s'", resolved_group)
+                    # Allow content to render
+                    time.sleep(3)
+                except TimeoutException:
+                    logging.warning(
+                        "Group header '%s' not found or not clickable. Proceeding with full-page search.",
+                        resolved_group,
+                    )
+
+            # Now find and click the course link
+            course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", course_link)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", course_link)
+
+        # 4) Confirm navigation reached the course page
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
             EC.url_contains(f"courseCode={course_code}")
         )
-        logging.info(f"Successfully navigated to course: {course_code}")
+        _COURSE_LINKS_SEEN_CACHE.add(course_code)
+        logging.info("Successfully navigated to course: %s", course_code)
 
-    except TimeoutException:
-        logging.error(f"Course link not found or navigation timed out for {course_code}.")
+    except TimeoutException as e:
+        logging.error("Course link not found or navigation timed out for %s: %s", course_code, e)
         _take_error_screenshot(driver, f"nav_timeout_{course_code}")
         raise
     except Exception as e:
-        logging.error(f"Error clicking course link for {course_code}: {e}")
+        logging.error("Error clicking course link for %s: %s", course_code, e)
         _take_error_screenshot(driver, f"nav_error_{course_code}")
         raise
 
 
 def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
-    """Clicks the 'Resources' tab on the course page."""
-    try:
-        # Wait for the Resources tab to be present and clickable
-        safe_click(driver, (By.XPATH, config.RESOURCES_TAB_XPATH), timeout=10)
-        
-        # Simple wait for the page content to update after the click
-        time.sleep(2)
-        
-        logging.info("Navigated to Resources section.")
-        return True
-    except TimeoutException:
-        logging.warning("Resources tab not found or failed to click.")
-        return False
+    """Click the "Resources" tab on the course page, with selector fallbacks.
+
+    Attempts the primary repository selector first, then tries alternate
+    partner-provided selectors from the stable Colab script.
+    """
+    # Primary selector from config
+    primary_locator = (By.XPATH, config.RESOURCES_TAB_XPATH)
+    # Fallbacks seen in partner Colab scripts/UI variants
+    fallback_locators: List[Tuple[By, str]] = [
+        (By.XPATH, "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]")
+    ]
+
+    candidates: List[Tuple[By, str]] = [primary_locator] + fallback_locators
+
+    last_error: Optional[Exception] = None
+    for locator in candidates:
+        try:
+            safe_click(driver, locator, timeout=10)
+            time.sleep(2)  # allow content to swap in
+            logging.info("Navigated to Resources section via locator: %s", locator)
+            return True
+        except Exception as e:
+            last_error = e
+            logging.debug("Resources click attempt failed for %s: %s", locator, e)
+            continue
+
+    logging.warning("Resources tab not found or failed to click using all locators. Last error: %s", last_error)
+    return False
 
 
 def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:

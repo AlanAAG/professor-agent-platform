@@ -103,8 +103,17 @@ def run_navigation_test() -> None:
             print("[1/5] Login: PASSED")
 
             # STEP 2: Navigate to course
-            logging.info("STEP 2: Navigating to course %s (group=%s)", TEST_COURSE_CODE, TEST_GROUP_NAME)
-            print(f"[2/5] Navigate: opening course {TEST_COURSE_CODE}...")
+            path_hint = (
+                "default-visible"
+                if TEST_COURSE_CODE in getattr(config, "DEFAULT_VISIBLE_COURSES", set())
+                else f"group='{TEST_GROUP_NAME}'"
+            )
+            logging.info(
+                "STEP 2: Navigating to course %s via %s",
+                TEST_COURSE_CODE,
+                path_hint,
+            )
+            print(f"[2/5] Navigate: opening course {TEST_COURSE_CODE} via {path_hint}...")
             try:
                 navigation.find_and_click_course_link(driver, TEST_COURSE_CODE, TEST_GROUP_NAME)
                 print("[2/5] Navigate: PASSED")
@@ -131,7 +140,7 @@ def run_navigation_test() -> None:
                 raise
 
             # STEP 3: Click Resources tab
-            logging.info("STEP 3: Clicking 'Resources' tab ...")
+            logging.info("STEP 3: Clicking 'Resources' tab (with selector fallbacks) ...")
             print("[3/5] Click Tab: opening 'Resources'...")
             try:
                 success = navigation.navigate_to_resources_section(driver)
