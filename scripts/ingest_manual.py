@@ -143,27 +143,31 @@ def validate_all_files(directory: str) -> bool:
 
 def print_summary(stats: dict) -> None:
     """
-    Print a formatted summary of ingestion results.
+    Print a formatted summary of segment-level ingestion results.
     
     Args:
         stats: Statistics dictionary from ingest_all_manual_transcripts
     """
+    total_segments = stats.get('total_segments', 0)
+    successful_segments = stats.get('successful_segments', 0)
+    failed_titles = stats.get('failed_titles', [])
+
     print("\n" + "="*60)
-    print("MANUAL TRANSCRIPT INGESTION SUMMARY")
+    print("MANUAL TRANSCRIPT INGESTION SUMMARY (Segments)")
     print("="*60)
-    print(f"Total files processed: {stats['total']}")
-    print(f"Successfully embedded: {stats['successful']}")
-    print(f"Failed: {len(stats['failed'])}")
+    print(f"Total segments processed: {total_segments}")
+    print(f"Successfully embedded segments: {successful_segments}")
+    print(f"Failed lecture titles: {len(failed_titles)}")
     
-    if stats['failed']:
-        print("\nFailed files:")
-        for filename in stats['failed']:
-            print(f"  ❌ {filename}")
+    if failed_titles:
+        print("\nFailed lecture titles:")
+        for title in failed_titles:
+            print(f"  ❌ {title}")
     
-    if stats['successful'] > 0:
-        print(f"\n✅ {stats['successful']} transcript(s) successfully embedded into Supabase")
+    if successful_segments > 0:
+        print(f"\n✅ {successful_segments} segment(s) successfully embedded into Supabase")
     
-    success_rate = (stats['successful'] / stats['total'] * 100) if stats['total'] > 0 else 0
+    success_rate = (successful_segments / total_segments * 100) if total_segments > 0 else 0
     print(f"Success rate: {success_rate:.1f}%")
     print("="*60)
 
@@ -274,18 +278,22 @@ File Format:
         # Print summary
         print_summary(stats)
         
-        # Log final status
-        if stats['total'] == 0:
-            logging.warning("No files were processed")
+        # Log final status (segment-level)
+        total_segments = stats.get('total_segments', 0)
+        successful_segments = stats.get('successful_segments', 0)
+        failed_titles = stats.get('failed_titles', [])
+
+        if total_segments == 0:
+            logging.warning("No segments were processed")
             sys.exit(1)
-        elif len(stats['failed']) == 0:
-            logging.info("All files processed successfully!")
+        elif len(failed_titles) == 0:
+            logging.info("All segments processed successfully!")
             sys.exit(0)
-        elif stats['successful'] > 0:
-            logging.warning(f"Partial success: {stats['successful']}/{stats['total']} files processed")
+        elif successful_segments > 0:
+            logging.warning(f"Partial success: {successful_segments}/{total_segments} segments processed")
             sys.exit(2)  # Partial failure
         else:
-            logging.error("All files failed to process")
+            logging.error("All segments failed to process")
             sys.exit(1)
             
     except KeyboardInterrupt:
