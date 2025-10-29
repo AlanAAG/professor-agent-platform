@@ -355,14 +355,21 @@ def main_pipeline(mode="daily"):
                                         item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
                                         
                                         # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
+                                        # Robustly locate the resource link for all section layouts
                                         link_el = None
-                                        try:
-                                            link_el = item.find_element(By.XPATH, ".//ancestor::a[1]")
-                                        except Exception:
+                                        # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
+                                        link_locators = [
+                                            (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
+                                            (By.CSS_SELECTOR, "a[href]"),
+                                            (By.XPATH, ".//ancestor::a[1]"),
+                                        ]
+                                        for by, selector in link_locators:
                                             try:
-                                                link_el = item.find_element(By.TAG_NAME, "a")
+                                                link_el = item.find_element(by, selector)
+                                                if link_el is not None:
+                                                    break
                                             except Exception:
-                                                pass
+                                                continue
                                         
                                         if link_el is not None:
                                             href = link_el.get_attribute("href")
