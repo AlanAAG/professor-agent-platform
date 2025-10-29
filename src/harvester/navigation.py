@@ -284,52 +284,70 @@ def _get_locator_by(locator_tuple: Tuple[str, str]) -> Tuple[By, str]:
 
 
 def perform_login(driver: webdriver.Chrome) -> bool:
-    """Performs the login sequence using stored credentials."""
+    """Performs the login sequence using stored credentials, with retry logic."""
     username = os.getenv("COACH_USERNAME")
     password = os.getenv("COACH_PASSWORD")
     if not username or not password:
         logging.critical("COACH_USERNAME or COACH_PASSWORD environment variable not set.")
         return False
 
-    try:
-        driver.get(config.LOGIN_URL)
+    MAX_LOGIN_ATTEMPTS = 3
 
-        # Resolve explicit Selenium By locators from config
-        username_locator = _get_locator_by(config.USERNAME_BY)
-        password_locator = _get_locator_by(config.PASSWORD_BY)
-        login_button_locator = _get_locator_by(config.LOGIN_BUTTON_BY)
+    # Define locators outside the loop for efficiency
+    username_locator = _get_locator_by(config.USERNAME_BY)
+    password_locator = _get_locator_by(config.PASSWORD_BY)
+    login_button_locator = _get_locator_by(config.LOGIN_BUTTON_BY)
 
-        # Wait for the login form elements to be present
-        WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
-            EC.presence_of_element_located(username_locator)
-        )
+    for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+        try:
+            logging.info(f"Attempting fresh login (Attempt {attempt}/{MAX_LOGIN_ATTEMPTS})...")
 
-        # Enter credentials
-        driver.find_element(*username_locator).send_keys(username)
-        driver.find_element(*password_locator).send_keys(password)
+            # 1. Navigate (or re-navigate) to Login Page
+            driver.get(config.LOGIN_URL)
 
-        # Click login button (single reliable call)
-        safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
+            # 2. Wait for the login form elements to be present
+            WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+                EC.presence_of_element_located(username_locator)
+            )
 
-        # --- Use an extended wait for post-login redirection ---
-        # Give the server and browser extra time to complete the redirect.
-        # Explicitly increase to 45 seconds to cover occasional latency.
-        EXTENDED_WAIT_TIMEOUT = 45
+            # 3. Enter credentials
+            driver.find_element(*username_locator).send_keys(username)
+            driver.find_element(*password_locator).send_keys(password)
 
-        # Wait for redirection to the dashboard (or timeout)
-        WebDriverWait(driver, EXTENDED_WAIT_TIMEOUT).until(
-            EC.url_contains(config.COURSES_URL)
-        )
+            # 4. Click login button
+            safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
 
-        logging.info("Login successful.")
-        _save_session_state(driver)
-        return True
+            # --- Use an extended wait for post-login redirection ---
+            EXTENDED_WAIT_TIMEOUT = 45
 
-    except Exception as e:
-        logging.error(f"Login failed: {e}")
-        # Save screenshot on failure
-        driver.save_screenshot(os.path.join(config.SETTINGS.screenshot_dir, "login_failure.png"))
-        return False
+            # 5. Wait for redirection to the dashboard (or timeout)
+            WebDriverWait(driver, EXTENDED_WAIT_TIMEOUT).until(
+                EC.url_contains(config.COURSES_URL)
+            )
+
+            logging.info(f"Login successful after {attempt} attempt(s).")
+            _save_session_state(driver)
+            return True
+
+        except (TimeoutException, NoSuchElementException, StaleElementReferenceException) as e:
+            logging.warning(f"Login attempt {attempt} failed (Element/Timeout): {e}. Retrying.")
+            time.sleep(2)
+            continue
+
+        except Exception as e:
+            if "Timed out receiving message from renderer" in str(e):
+                logging.warning(
+                    f"Login attempt {attempt} failed (Renderer Timeout). Pausing and retrying."
+                )
+                time.sleep(5)
+                continue
+            else:
+                logging.error(f"Login failed on attempt {attempt} due to critical error: {e}")
+                break
+
+    logging.error(f"Login failed after {MAX_LOGIN_ATTEMPTS} attempts.")
+    driver.save_screenshot(os.path.join(config.SETTINGS.screenshot_dir, "login_failure.png"))
+    return False
 
 
 @contextmanager
