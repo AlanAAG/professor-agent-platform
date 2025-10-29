@@ -25,6 +25,7 @@ from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from . import config
 from .navigation import safe_find, safe_find_all, safe_click
+from urllib.parse import quote
 
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {
@@ -499,3 +500,96 @@ def process_resource_links(driver: webdriver.Chrome, links: List[WebElement]) ->
             continue
 
     return resources
+
+
+def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Routes resource scraping based on type and returns refined data.
+
+    Prioritizes in-browser scraping for Google Drive/Docs/Sheets/Slides and direct Office links
+    to avoid downloads. PDF is the sole exception where a download may be used for reliability.
+    """
+    url = resource_metadata.get("url") or ""
+    resource_type = resource_metadata.get("type") or classify_url(url)
+    content: str | None = None
+    logging.info(f"Processing resource type: {resource_type} for URL: {url[:80]}...")
+
+    try:
+        if resource_type == "YOUTUBE_VIDEO":
+            # Lightweight: rely on previously extracted title
+            title = resource_metadata.get("title") or "Untitled Video"
+            content = f"Video Title: {title}"
+
+        elif resource_type == "WEB_ARTICLE":
+            # Use lightweight HTTP-based scraper
+            scraped = scrape_html_content(url)
+            content = scraped or (resource_metadata.get("title") or "")
+
+        elif resource_type == "PDF_DOCUMENT":
+            # Only allowed download exception
+            try:
+                from src.refinery.pdf_processing import process_pdf  # type: ignore
+            except Exception as e:  # pragma: no cover - import safety
+                logging.error(f"Failed to import PDF processor: {e}")
+                content = f"PDF processing unavailable: {e}"
+            else:
+                # Best-effort: download then process, cleanup afterward
+                tmp_path: Optional[str] = None
+                try:
+                    filename = f"temp_{int(time.time())}.pdf"
+                    tmp_dir = os.path.join("/tmp", "refinery_pdfs")
+                    tmp_path = download_file(url, tmp_dir, filename)
+                    if not tmp_path:
+                        content = "PDF download failed."
+                    else:
+                        extracted_pages = process_pdf(tmp_path)  # existing API expects a file path
+                        # Flatten to simple text for now
+                        page_texts = [p.get("text", "") for p in (extracted_pages or []) if isinstance(p, dict)]
+                        content = "\n\n".join([t for t in page_texts if t]) or "(No text extracted from PDF)"
+                except Exception as e:
+                    content = f"PDF processing failed: {e}"
+                finally:
+                    try:
+                        if tmp_path and os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+        elif resource_type == "OFFICE_DOCUMENT":
+            # Non-download strategy: use web viewers for Office/Google Docs/Sheets/Slides
+            try:
+                from src.refinery.document_processing import extract_drive_content  # type: ignore
+            except Exception as e:  # pragma: no cover - import safety
+                logging.error(f"Failed to import in-browser document extractor: {e}")
+                content = f"Office document content extraction failed (import): {e}"
+            else:
+                viewer_url = url
+                lower = (url or "").lower()
+                # If direct office file link, route via Office Online viewer to avoid download
+                if (
+                    (lower.endswith((".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx")))
+                    and ("docs.google.com" not in lower and "drive.google.com" not in lower)
+                ):
+                    # Office online viewer
+                    viewer_url = f"https://view.officeapps.live.com/op/view.aspx?src={quote(url, safe='')}"
+
+                content = extract_drive_content(driver, viewer_url, resource_type)
+                if not content:
+                    content = "(No readable content found in document viewer)"
+
+        elif resource_type == "RECORDING_LINK":
+            # Intentionally skip transcription to reduce costs
+            logging.warning(
+                f"Skipping transcription for recording link: {url} (Too resource-intensive)."
+            )
+            content = "Transcription skipped (Recording Link)."
+
+        else:
+            content = "Unknown or unhandled resource type."
+
+    except Exception as e:
+        logging.error(f"Error during resource processing: {e}")
+        if not content:
+            content = f"Processing failure: {e}"
+
+    resource_metadata["extracted_content"] = content or ""
+    return resource_metadata
