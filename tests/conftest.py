@@ -1,17 +1,97 @@
 import types
 import pytest
+import os
+from typing import Any, Dict, List, Optional
+
+
+class _FakeElement:
+    def __init__(self, text: str = ""):
+        self.text = text
+
+    def click(self) -> None:
+        return None
+
+    def find_elements(self, *args, **kwargs):
+        return []
+
+
+class _FakeSwitchTo:
+    def __init__(self, driver: "_FakeDriver"):
+        self._driver = driver
+
+    def window(self, handle: str) -> None:
+        self._driver._switch_calls += 1
+        # Update the current window handle if exists
+        if handle in self._driver.window_handles:
+            self._driver.current_window_handle = handle
+        else:
+            # Allow switching to unknown handles for robustness in tests
+            self._driver.window_handles.append(handle)
+            self._driver.current_window_handle = handle
+
+
+class _FakeDriver:
+    def __init__(self):
+        # Navigation
+        self._get_calls: int = 0
+        self._execute_script_calls: List[str] = []
+        self._switch_calls: int = 0
+        self._close_calls: int = 0
+        # Windows
+        self.current_window_handle: str = "main"
+        self.window_handles: List[str] = ["main"]
+        # Elements registry keyed by CSS selector for simple tests
+        self._elements_by_selector: Dict[str, List[_FakeElement]] = {}
+        # Selenium-like API facets
+        self.switch_to = _FakeSwitchTo(self)
+        self.current_url: str = ""
+
+    # --- Called by code under test ---
+    def get(self, url: str) -> None:
+        self._get_calls += 1
+        self.current_url = url
+
+    def execute_script(self, script: str, *args: Any) -> Optional[Any]:
+        self._execute_script_calls.append(script)
+        # Minimal window.open simulation
+        if isinstance(script, str) and script.startswith("window.open"):
+            # Append a deterministic new handle
+            new_index = sum(1 for h in self.window_handles if h.startswith("window-")) + 1
+            new_handle = f"window-{new_index}"
+            self.window_handles.append(new_handle)
+            return None
+        return None
+
+    def find_elements(self, by: Any = None, selector: str = "") -> List[_FakeElement]:
+        # Allow tests to pre-register elements for a given selector
+        return list(self._elements_by_selector.get(selector, []))
+
+    def find_element(self, by: Any = None, selector: str = "") -> _FakeElement:
+        found = self.find_elements(by, selector)
+        return found[0] if found else _FakeElement("")
+
+    def close(self) -> None:
+        self._close_calls += 1
+        # Remove current handle if it's not the original main
+        if self.current_window_handle != "main":
+            try:
+                self.window_handles.remove(self.current_window_handle)
+            except ValueError:
+                pass
+            # Fallback to main
+            self.current_window_handle = "main"
 
 
 @pytest.fixture(scope="session", autouse=True)
-def set_test_env(monkeypatch):
+def set_test_env():
     """Set required environment variables so modules initialize without real secrets."""
-    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
-    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_KEY", "test-supabase-key")
-    monkeypatch.setenv("COACH_USERNAME", "test-user")
-    monkeypatch.setenv("SECRET_API_KEY", "secret")
+    os.environ["GEMINI_API_KEY"] = "test-gemini-key"
+    os.environ["SUPABASE_URL"] = "https://example.supabase.co"
+    os.environ["SUPABASE_KEY"] = "test-supabase-key"
+    os.environ["COACH_USERNAME"] = "test-user"
+    os.environ["SECRET_API_KEY"] = "secret"
     # Provide defaults used by utils
-    monkeypatch.setenv("EMBEDDING_MODEL_NAME", "models/embedding-001")
+    os.environ["EMBEDDING_MODEL_NAME"] = "models/embedding-001"
 
 
 @pytest.fixture()
@@ -156,3 +236,18 @@ def mock_fitz(monkeypatch):
             super().__init__([FakePage() for _ in range(n)])
 
     monkeypatch.setattr(fitz, "open", lambda path: FakeDoc(2))
+
+
+@pytest.fixture()
+def mock_driver():
+    """Configurable fake Selenium driver for tests.
+
+    Provides:
+    - get(), execute_script(), find_element(s)()
+    - window_handles management, switch_to.window(), close()
+
+    Tests may mutate:
+    - driver._elements_by_selector[css] = [ _FakeElement("text"), ... ]
+    to control returned elements for a given CSS selector.
+    """
+    return _FakeDriver()
