@@ -209,4 +209,4 @@ __marimo__/
 data/auth_state.json
 
 # Manual transcript files (contain sensitive course content)
-data/raw_transcripts/manual/*.txt
+#data/raw_transcripts/manual/*.txt
