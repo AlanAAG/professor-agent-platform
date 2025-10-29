@@ -605,7 +605,7 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
 
 
 def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
-    """Expands a specific resource section and returns its item elements."""
+    """Expands a specific resource section and returns its primary link elements (<a>)."""
     
     # 1. Find the section header and click to expand
     section_locator = (By.XPATH, config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title))
@@ -623,19 +623,21 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
         container_xpath = f"{section_locator[1]}/following-sibling::div[1]"
         container_el = safe_find(driver, (By.XPATH, container_xpath), timeout=10)
 
-        # 3. Wait for at least one item to appear within the container using CSS selector
-        def _items_present(_):
-            return container_el.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
+        # 3. Wait for at least one primary link (<a href="...">) to appear within the container
+        LINK_CSS_SELECTOR = "a[href]"
+
+        def _links_present(_):
+            return container_el.find_elements(By.CSS_SELECTOR, LINK_CSS_SELECTOR)
 
         try:
             # Increased timeout to improve robustness in headless/slow environments
-            WebDriverWait(driver, 15).until(lambda d: len(_items_present(d)) > 0)
+            WebDriverWait(driver, 15).until(lambda d: len(_links_present(d)) > 0)
         except TimeoutException:
             # It's acceptable for some sections to be empty; normalize to empty list
             return container_xpath, []
 
-        # 4. Retrieve all items within the container by CSS
-        items: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
+        # 4. Retrieve all relevant link elements within the container
+        items: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, LINK_CSS_SELECTOR)
 
         # Return the XPath to the parent container and the list of item elements
         return container_xpath, items
