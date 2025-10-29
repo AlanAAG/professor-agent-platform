@@ -3,6 +3,8 @@ Core Selenium navigation logic for the harvester module.
 Handles driver initialization, login, session management, and course navigation.
 """
 
+from __future__ import annotations
+
 import os
 import json
 import logging
@@ -15,6 +17,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Any, List, Tuple, Optional
 from selenium import webdriver
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -397,7 +400,7 @@ def safe_find(
     locator: Tuple[str, str],
     timeout: int = 30,
     clickable: bool = False,
-) -> webdriver.remote.webelement.WebElement:
+) -> WebElement:
     """Robust element finding with explicit waits."""
     wait = WebDriverWait(driver, timeout)
     condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
@@ -426,7 +429,7 @@ def safe_find_all(
     driver: webdriver.Chrome,
     locator: Tuple[str, str],
     timeout: int = 30,
-) -> List[webdriver.remote.webelement.WebElement]:
+) -> List[WebElement]:
     """Robust find-all operation with explicit wait. Returns empty list on failure."""
     try:
         wait = WebDriverWait(driver, timeout)
@@ -538,7 +541,7 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
         return False
 
 
-def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[webdriver.remote.webelement.WebElement]]:
+def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
     """Expands a specific resource section and returns its item elements."""
     
     # 1. Find the section header and click to expand
@@ -551,23 +554,23 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
         driver.execute_script("arguments[0].click();", section_header)
         logging.info(f"Expanded section: {section_title}")
 
-        # 2. Define the XPath for the resource items container *relative* to the header's parent
-        # The actual file items (fileBox) appear as siblings/descendants after expansion.
-        # We look for the common resource list containers that follow the header.
-        
-        # XPath for the container holding the items
+        # 2. Define and locate the container that holds resource items (following the header)
         container_xpath = f"{section_locator[1]}/following-sibling::div[1]"
-        
-        # Wait for at least one item to appear within the container
-        items_locator = (By.XPATH, f"{container_xpath}//{config.RESOURCE_ITEM_CSS}")
-        
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located(items_locator)
-        )
-        
-        # 3. Retrieve all items (elements)
-        items = driver.find_elements(By.XPATH, f"{container_xpath}//{config.RESOURCE_ITEM_CSS}")
-        
+        container_el = safe_find(driver, (By.XPATH, container_xpath), timeout=10)
+
+        # 3. Wait for at least one item to appear within the container using CSS selector
+        def _items_present(_):
+            return container_el.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
+
+        try:
+            WebDriverWait(driver, 5).until(lambda d: len(_items_present(d)) > 0)
+        except TimeoutException:
+            # It's acceptable for some sections to be empty; normalize to empty list
+            return container_xpath, []
+
+        # 4. Retrieve all items within the container by CSS
+        items: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
+
         # Return the XPath to the parent container and the list of item elements
         return container_xpath, items
 
