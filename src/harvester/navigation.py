@@ -8,6 +8,9 @@ import json
 import logging
 import time
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Any, List, Tuple, Optional
 from selenium import webdriver
@@ -35,45 +38,160 @@ def reset_course_tracking():
 
 # --- Driver Management and Session Persistence ---
 
-def _get_chrome_options() -> webdriver.ChromeOptions:
-    """Configures Chrome options based on environment settings."""
+def _resolve_chrome_binary() -> str | None:
+    """Attempt to resolve a Chrome/Chromium binary path from env or PATH.
+
+    Checks common env vars and executable names used across providers
+    (e.g., Render, Heroku, Codespaces, Debian/Ubuntu).
+    """
+    candidate_env_vars = [
+        "CHROME_BINARY",
+        "GOOGLE_CHROME_SHIM",
+        "CHROME_PATH",
+        "CHROMIUM_PATH",
+    ]
+    for env_name in candidate_env_vars:
+        binary_path = os.getenv(env_name)
+        if binary_path and os.path.exists(binary_path):
+            return binary_path
+
+    # Fallback: search common executable names
+    for exe in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+        resolved = shutil.which(exe)
+        if resolved:
+            return resolved
+    return None
+
+
+def _ensure_tmp_dirs() -> dict[str, str]:
+    """Ensure Chrome temp directories exist and return their paths.
+
+    Using tmp directories improves stability in containerized environments
+    by avoiding permission errors in default locations.
+    """
+    base = Path("/tmp/harvester_chrome")
+    user_data = base / "user_data"
+    data_path = base / "data"
+    cache_dir = base / "cache"
+    for p in (user_data, data_path, cache_dir):
+        p.mkdir(parents=True, exist_ok=True)
+    return {
+        "user_data_dir": str(user_data),
+        "data_path": str(data_path),
+        "disk_cache_dir": str(cache_dir),
+    }
+
+
+def _get_chrome_options(*, force_legacy_headless: bool = False) -> webdriver.ChromeOptions:
+    """Configures Chrome options based on environment settings.
+
+    force_legacy_headless: when True, use the legacy "--headless" flag instead of
+    the modern "--headless=new". Useful as a fallback for older Chrome builds.
+    """
     options = webdriver.ChromeOptions()
+
     if config.SETTINGS.selenium_headless:
-        # Use the modern, more stable headless mode
-        options.add_argument("--headless=new")
+        if force_legacy_headless:
+            options.add_argument("--headless")
+        else:
+            # Use the modern, more stable headless mode (supported by CfT/modern Chrome)
+            options.add_argument("--headless=new")
+
+    # Core stability flags for Linux containers
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    
-    # Stabilization arguments for headless Chrome in Linux containers (Codespaces/Docker/CI)
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-logging")
+    options.add_argument("--disable-software-rasterizer")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    # Allow Chrome's DevTools pipe to bind reliably in headless=new mode
+    options.add_argument("--remote-debugging-port=0")
+
+    # Use dedicated temp directories to avoid permission issues
+    tmp_dirs = _ensure_tmp_dirs()
+    options.add_argument(f"--user-data-dir={tmp_dirs['user_data_dir']}")
+    options.add_argument(f"--data-path={tmp_dirs['data_path']}")
+    options.add_argument(f"--disk-cache-dir={tmp_dirs['disk_cache_dir']}")
+
     # Tries to mitigate bot detection/fingerprinting
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
+    options.add_experimental_option("excludeSwitches", ["enable-automation"]) \
+        if hasattr(options, "add_experimental_option") else None
+    options.add_experimental_option("useAutomationExtension", False) \
+        if hasattr(options, "add_experimental_option") else None
+
+    # If a Chrome binary is available in the environment, use it explicitly
+    chrome_binary = _resolve_chrome_binary()
+    if chrome_binary:
+        options.binary_location = chrome_binary
+
     return options
 
 
 def _create_driver(download_path: str | None = None) -> webdriver.Chrome:
-    """Initializes and returns a configured Chrome WebDriver."""
-    options = _get_chrome_options()
-    
-    # Configure download path for Chrome options if provided
-    if download_path:
-        options.add_experimental_option(
-            "prefs", {"download.default_directory": download_path, "download.prompt_for_download": False}
+    """Initializes and returns a configured Chrome WebDriver with fallbacks.
+
+    Strategy:
+      1) Try modern headless mode with Selenium Manager.
+      2) On failure, retry with legacy headless flag.
+      3) Provide actionable error logs and hints if both attempts fail.
+    """
+
+    def _apply_download_prefs(opts: webdriver.ChromeOptions) -> None:
+        if download_path:
+            prefs = {
+                "download.default_directory": download_path,
+                "download.prompt_for_download": False,
+            }
+            try:
+                opts.add_experimental_option("prefs", prefs)
+            except Exception:
+                # Non-fatal if experimental options aren't supported in this context
+                pass
+
+    # Prepare service with log output for easier debugging
+    log_path = os.getenv("SELENIUM_LOG_PATH", str(Path.cwd() / "selenium_driver.log"))
+    try:
+        service = ChromeService(log_output=log_path)
+    except TypeError:
+        # Older Selenium may not support log_output kwarg; fall back silently
+        service = ChromeService()
+
+    # Attempt 1: modern headless
+    options = _get_chrome_options(force_legacy_headless=False)
+    _apply_download_prefs(options)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(config.SETTINGS.page_load_timeout)
+        logging.info("WebDriver initialized (headless=new) using Selenium Manager.")
+        return driver
+    except Exception as first_error:
+        logging.warning(
+            "Primary WebDriver init failed with headless=new. Retrying with legacy headless. Error: %s",
+            first_error,
         )
 
+    # Attempt 2: legacy headless (better compatibility on some older Chrome builds)
+    legacy_options = _get_chrome_options(force_legacy_headless=True)
+    _apply_download_prefs(legacy_options)
     try:
-        # Use ChromeService, which is compatible with Selenium Manager (auto-downloads driver)
-        driver = webdriver.Chrome(service=ChromeService(), options=options)
+        driver = webdriver.Chrome(service=service, options=legacy_options)
         driver.set_page_load_timeout(config.SETTINGS.page_load_timeout)
-        logging.info("WebDriver initialized using Selenium Manager.")
+        logging.info("WebDriver initialized (legacy --headless) using Selenium Manager.")
         return driver
-    except Exception as e:
-        logging.critical(f"Failed to initialize WebDriver: {e}")
+    except Exception as second_error:
+        # Provide helpful guidance for likely root causes.
+        logging.critical(
+            "Failed to initialize WebDriver after fallbacks. This often means Chrome/Chromium is missing or "
+            "required OS libraries are not installed (e.g., libnss3, libgbm, libasound2, libx11). "
+            "If running in a container/CI, install a modern Chrome/Chromium and common runtime libraries. "
+            "Also see %s for ChromeDriver logs. Error: %s",
+            log_path,
+            second_error,
+        )
         raise
 
 
