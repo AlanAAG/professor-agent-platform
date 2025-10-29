@@ -180,7 +180,11 @@ class HarvesterSettings(BaseSettings):
     HARVESTER_* variants, but common legacy envs are supported where noted.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # Ignore undeclared env vars (e.g., GEMINI_API_KEY)
+    )
 
     # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS
     selenium_headless: bool = Field(
