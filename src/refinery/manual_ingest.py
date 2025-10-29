@@ -1,202 +1,174 @@
 # src/refinery/manual_ingest.py
 
 import os
+import re
 import logging
 import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from src.refinery.cleaning import clean_transcript_with_llm
 from src.refinery.embedding import chunk_and_embed_text, url_exists_in_db_sync
 from src.shared.utils import parse_general_date
 
 
-def _extract_metadata_from_file(file_path: str) -> Dict[str, Any]:
+# --- New multi-lecture segmentation ---
+# Pattern captures segments with 3-line header:
+# 1) title (non-empty line)
+# 2) date/time (flexible, parsed later)
+# 3) teacher name (non-empty)
+# 4+) transcript body until a blank line followed by the next header, or EOF
+# Notes:
+# - Use non-greedy body capture with DOTALL
+# - Lookahead asserts either two newlines then 3 non-empty header lines, or end of file
+LECTURE_SEGMENTATION_PATTERN = re.compile(
+    r"^\s*(?P<title>[^\n].*?)\n"  # Line 1: title
+    r"(?P<date_time>[^\n].*?)\n"     # Line 2: date time
+    r"(?P<teacher_name>[^\n].*?)\n"  # Line 3: teacher name
+    r"(?P<body>.*?)(?=\n{2}(?=[^\n]+\n[^\n]+\n[^\n]+\n)|\Z)",
+    flags=re.MULTILINE | re.DOTALL,
+)
+
+
+def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str, Any]]:
     """
-    Extract metadata from the first 3 lines of a manual transcript file.
-    
-    Expected format:
-    Line 1: {ClassName} - {Lecture Title}
-    Line 2: Date: {Date} | Time: {Time}
-    Line 3: (empty line)
-    
-    Args:
-        file_path: Path to the transcript file
-        
-    Returns:
-        Dict containing extracted metadata
-        
-    Raises:
-        ValueError: If file format doesn't match expected structure
+    Split a full multi-lecture transcript text into individual lecture segments.
+
+    New file format per lecture:
+    Line 1: {Lecture Title}
+    Line 2: {Date of Lecture} {Time of Class}
+    Line 3: {Teacher's Name}
+    Line 4+: Transcript body until one blank line ("\n\n") before the next header or EOF.
+
+    class_name is derived from the filename (e.g., "Statistics.txt" -> "Statistics").
     """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        if len(lines) < 3:
-            raise ValueError(f"File must have at least 3 lines, found {len(lines)}")
-        
-        # Parse line 1: Subject - Lecture Title
-        line1 = lines[0].strip()
-        if ' - ' not in line1:
-            raise ValueError(f"Line 1 must contain ' - ' separator, found: '{line1}'")
-        
-        class_name, title = line1.split(' - ', 1)
-        class_name = class_name.strip()
-        title = title.strip()
-        
-        # Parse line 2: Date: YYYY-MM-DD | Time: HH:MM AM/PM
-        line2 = lines[1].strip()
-        if not line2.startswith('Date: '):
-            raise ValueError(f"Line 2 must start with 'Date: ', found: '{line2}'")
-        
-        date_time_str = line2[6:]  # Remove 'Date: ' prefix
-        
-        # Parse date using flexible parser
+    segments: List[Dict[str, Any]] = []
+    class_name = os.path.basename(filename)
+    if class_name.lower().endswith(".txt"):
+        class_name = class_name[:-4]
+
+    for match in LECTURE_SEGMENTATION_PATTERN.finditer(full_text or ""):
+        title = (match.group("title") or "").strip()
+        date_time_str = (match.group("date_time") or "").strip()
+        teacher_name = (match.group("teacher_name") or "").strip()
+        body = (match.group("body") or "").strip()
+
         lecture_date = parse_general_date(date_time_str)
-        
-        return {
-            'class_name': class_name,
-            'title': title,
-            'lecture_date': lecture_date,
-            'raw_date_string': date_time_str
-        }
-        
-    except Exception as e:
-        logging.error(f"Error extracting metadata from {file_path}: {e}")
-        raise
+
+        segments.append(
+            {
+                "class_name": class_name,
+                "title": title,
+                "lecture_date": lecture_date,
+                "teacher_name": teacher_name,
+                "transcript_body": body,
+            }
+        )
+
+    return segments
 
 
-def _extract_transcript_body(file_path: str) -> str:
+def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
     """
-    Extract the transcript content starting from line 4.
-    
-    Args:
-        file_path: Path to the transcript file
-        
-    Returns:
-        String containing the full transcript body
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        if len(lines) < 4:
-            logging.warning(f"File {file_path} has fewer than 4 lines, using all content after line 3")
-            return ""
-        
-        # Join all lines from line 4 onwards (index 3)
-        transcript_body = ''.join(lines[3:])
-        return transcript_body.strip()
-        
-    except Exception as e:
-        logging.error(f"Error reading transcript body from {file_path}: {e}")
-        raise
-
-
-def process_manual_transcript(file_path: str) -> bool:
-    """
-    Process a single manually-provided transcript file.
+    Process a single manually-provided transcript file that may contain multiple lectures.
     
     Steps:
-    1. Parse filename to extract class_name (e.g., "Statistics.txt" -> "Statistics")
-    2. Read file and extract metadata from first 3 lines
-    3. Parse date/time from line 2 using shared utils
-    4. Extract full transcript body (line 4 onwards)
-    5. Clean transcript using cleaning.clean_transcript_with_llm()
-    6. Embed using embedding.chunk_and_embed_text() with metadata:
-       {
-           "class_name": ,
-           "content_type": "manual_transcript",
-           "title": ,
-           "lecture_date": ,
-           "source_file": ,
-           "retrieval_date": 
-       }
-    7. Return True on success, log and return False on failure
+    1. Read entire file content
+    2. Split into lecture segments using regex
+    3. For each segment: clean, de-duplicate (by filename|title), and embed
+    4. Return (successful_segment_count, [failed_segment_titles])
     
     Args:
         file_path: Full path to .txt file
         
     Returns:
-        bool: Success status
+        Tuple[int, List[str]]: (count of successful segments, list of failed titles)
     """
+    successful_segments = 0
+    failed_titles: List[str] = []
+
     try:
         file_path = str(Path(file_path).resolve())
         filename = os.path.basename(file_path)
-        
-        logging.info(f"Processing manual transcript: {filename}")
-        
-        # Step 1: Extract class name from filename
+
+        logging.info(f"Processing manual transcript file (multi-lecture): {filename}")
+
         if not filename.endswith('.txt'):
             logging.warning(f"Skipping non-txt file: {filename}")
-            return False
-        
-        class_name_from_file = filename[:-4]  # Remove .txt extension
-        
-        # Step 2: Extract metadata from first 3 lines
+            return (0, [f"Invalid file type: {filename}"])
+
+        # Read full file content
         try:
-            metadata = _extract_metadata_from_file(file_path)
-            logging.info(f"Extracted metadata - Class: {metadata['class_name']}, Title: {metadata['title']}")
-        except ValueError as e:
-            logging.error(f"Invalid file format for {filename}: {e}")
-            return False
-        
-        # Validate class name consistency
-        if metadata['class_name'] != class_name_from_file:
-            logging.warning(f"Class name mismatch: filename='{class_name_from_file}' vs content='{metadata['class_name']}'. Using content.")
-        
-        # Step 3: Check for de-duplication
-        source_file_key = filename
-        if url_exists_in_db_sync(source_file_key):
-            logging.info(f"File {filename} already exists in database. Skipping.")
-            return True  # Consider this a success since it's already processed
-        
-        # Step 4: Extract transcript body
-        try:
-            transcript_body = _extract_transcript_body(file_path)
-            if not transcript_body:
-                logging.warning(f"No transcript content found in {filename}")
-                return False
-            
-            logging.info(f"Extracted {len(transcript_body)} characters of transcript content")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                full_text = f.read()
         except Exception as e:
-            logging.error(f"Failed to extract transcript body from {filename}: {e}")
-            return False
-        
-        # Step 5: Clean transcript using LLM
-        try:
-            clean_text = clean_transcript_with_llm(transcript_body)
-            if not clean_text:
-                logging.warning(f"Transcript cleaning produced empty result for {filename}")
-                return False
-            
-            logging.info(f"Cleaned transcript: {len(clean_text)} characters")
-        except Exception as e:
-            logging.error(f"Failed to clean transcript for {filename}: {e}")
-            return False
-        
-        # Step 6: Prepare metadata for embedding
-        embedding_metadata = {
-            "class_name": metadata['class_name'],
-            "content_type": "manual_transcript",
-            "title": metadata['title'],
-            "lecture_date": metadata['lecture_date'].isoformat() if metadata['lecture_date'] else None,
-            "source_file": source_file_key,
-            "retrieval_date": datetime.datetime.now().isoformat()
-        }
-        
-        # Step 7: Embed the cleaned text
-        try:
-            chunk_and_embed_text(clean_text, embedding_metadata)
-            logging.info(f"✅ Successfully embedded {filename}")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to embed transcript for {filename}: {e}")
-            return False
-            
+            logging.error(f"Failed to read file {filename}: {e}")
+            return (0, [f"Read error: {filename}"])
+
+        # Split into segments
+        segments = _split_into_lecture_segments(full_text, filename)
+        if not segments:
+            logging.warning(f"No lecture segments detected in {filename}")
+            return (0, [f"No segments: {filename}"])
+
+        # Process each segment
+        for segment in segments:
+            segment_title = segment.get("title") or "Untitled"
+            source_key = f"{filename}|{segment_title}"
+
+            # De-duplication by unique segment key
+            try:
+                if url_exists_in_db_sync(source_key):
+                    logging.info(f"Segment already exists (dedup): {source_key} -> skipping")
+                    successful_segments += 1  # Consider dedup as success
+                    continue
+            except Exception as e:
+                # Fail-open: do not treat check failure as hard failure for the segment
+                logging.warning(f"Dedup check failed for {source_key}: {e}")
+
+            raw_body = segment.get("transcript_body") or ""
+            if not raw_body.strip():
+                logging.warning(f"Empty transcript body for segment '{segment_title}' in {filename}")
+                failed_titles.append(segment_title)
+                continue
+
+            # Clean transcript
+            try:
+                clean_text = clean_transcript_with_llm(raw_body)
+                if not clean_text:
+                    logging.warning(f"Cleaning produced empty result for segment '{segment_title}' in {filename}")
+                    failed_titles.append(segment_title)
+                    continue
+            except Exception as e:
+                logging.error(f"Failed cleaning for segment '{segment_title}' in {filename}: {e}")
+                failed_titles.append(segment_title)
+                continue
+
+            # Prepare embedding metadata (include new teacher_name and dedupe key as source_url)
+            embedding_metadata: Dict[str, Any] = {
+                "class_name": segment["class_name"],
+                "content_type": "manual_transcript",
+                "title": segment["title"],
+                "lecture_date": segment["lecture_date"].isoformat() if segment.get("lecture_date") else None,
+                "teacher_name": segment.get("teacher_name"),
+                "source_file": filename,
+                "source_url": source_key,
+                "retrieval_date": datetime.datetime.now().isoformat(),
+            }
+
+            # Embed
+            try:
+                chunk_and_embed_text(clean_text, embedding_metadata)
+                logging.info(f"✅ Embedded segment '{segment_title}' from {filename}")
+                successful_segments += 1
+            except Exception as e:
+                logging.error(f"Failed to embed segment '{segment_title}' in {filename}: {e}")
+                failed_titles.append(segment_title)
+
+        return (successful_segments, failed_titles)
+
     except Exception as e:
         logging.error(f"Unexpected error processing {file_path}: {e}")
-        return False
+        return (successful_segments, failed_titles)
 
 
 def ingest_all_manual_transcripts(directory: str = "data/raw_transcripts/manual/") -> Dict[str, Any]:
@@ -207,10 +179,10 @@ def ingest_all_manual_transcripts(directory: str = "data/raw_transcripts/manual/
         directory: Directory containing manual transcript files
         
     Returns:
-        dict: Statistics {
-            "total": int,
-            "successful": int,
-            "failed": list[str],  # filenames that failed
+        dict: Segment-level statistics {
+            "total_segments": int,
+            "successful_segments": int,
+            "failed_titles": list[str],  # lecture titles that failed
         }
     """
     directory_path = Path(directory)
@@ -244,30 +216,35 @@ def ingest_all_manual_transcripts(directory: str = "data/raw_transcripts/manual/
     
     logging.info(f"Found {len(txt_files)} .txt files to process")
     
-    # Process each file
-    successful = 0
-    failed = []
+    # Process each file and aggregate segment stats
+    total_segments = 0
+    successful_segments = 0
+    failed_titles: List[str] = []
     
     for txt_file in txt_files:
         try:
-            if process_manual_transcript(str(txt_file)):
-                successful += 1
-            else:
-                failed.append(txt_file.name)
+            succ_count, file_failed_titles = process_manual_transcript(str(txt_file))
+            # Total is successes + failures (dedup counted as success inside)
+            total_segments += succ_count + len(file_failed_titles)
+            successful_segments += succ_count
+            failed_titles.extend(file_failed_titles)
         except Exception as e:
             logging.error(f"Critical error processing {txt_file.name}: {e}")
-            failed.append(txt_file.name)
+            # Cannot determine how many segments; count as 0 success, 0 total increment, but note filename
+            failed_titles.append(f"{txt_file.name} (file error)")
     
     # Return statistics
     stats = {
-        "total": len(txt_files),
-        "successful": successful,
-        "failed": failed
+        "total_segments": total_segments,
+        "successful_segments": successful_segments,
+        "failed_titles": failed_titles,
     }
     
-    logging.info(f"Processing complete: {successful}/{len(txt_files)} successful")
-    if failed:
-        logging.warning(f"Failed files: {failed}")
+    logging.info(
+        f"Processing complete: {successful_segments}/{total_segments} segments successful across {len(txt_files)} files"
+    )
+    if failed_titles:
+        logging.warning(f"Failed titles: {failed_titles}")
     
     return stats
 
@@ -284,29 +261,32 @@ def validate_file_format(file_path: str) -> bool:
         bool: True if format is valid, False otherwise
     """
     try:
-        metadata = _extract_metadata_from_file(file_path)
-        transcript_body = _extract_transcript_body(file_path)
-        
-        if not metadata['class_name']:
-            logging.error("Missing class name")
+        with open(file_path, 'r', encoding='utf-8') as f:
+            full_text = f.read()
+
+        filename = os.path.basename(file_path)
+        segments = _split_into_lecture_segments(full_text, filename)
+        if not segments:
+            logging.error("No lecture segments found")
             return False
-        
-        if not metadata['title']:
-            logging.error("Missing title")
+
+        # Basic sanity checks on first segment
+        seg = segments[0]
+        if not seg.get('class_name'):
+            logging.error("Missing class name (from filename)")
             return False
-        
-        if not transcript_body:
+        if not seg.get('title'):
+            logging.error("Missing lecture title")
+            return False
+        if not seg.get('teacher_name'):
+            logging.error("Missing teacher name")
+            return False
+        if not seg.get('transcript_body'):
             logging.error("Missing transcript body")
             return False
-        
-        logging.info(f"✅ File format validation passed for {os.path.basename(file_path)}")
-        logging.info(f"   Class: {metadata['class_name']}")
-        logging.info(f"   Title: {metadata['title']}")
-        logging.info(f"   Date: {metadata['lecture_date']}")
-        logging.info(f"   Content length: {len(transcript_body)} characters")
-        
+
+        logging.info(f"✅ File format validation passed for {os.path.basename(file_path)} with {len(segments)} segment(s)")
         return True
-        
     except Exception as e:
         logging.error(f"❌ File format validation failed: {e}")
         return False
