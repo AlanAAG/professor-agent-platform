@@ -311,8 +311,13 @@ def perform_login(driver: webdriver.Chrome) -> bool:
         # Click login button (single reliable call)
         safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
 
+        # --- Use an extended wait for post-login redirection ---
+        # Give the server and browser extra time to complete the redirect.
+        # Explicitly increase to 45 seconds to cover occasional latency.
+        EXTENDED_WAIT_TIMEOUT = 45
+
         # Wait for redirection to the dashboard (or timeout)
-        WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+        WebDriverWait(driver, EXTENDED_WAIT_TIMEOUT).until(
             EC.url_contains(config.COURSES_URL)
         )
 
