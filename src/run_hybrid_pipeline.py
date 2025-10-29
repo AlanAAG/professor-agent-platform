@@ -5,6 +5,7 @@ import datetime
 import logging
 import tempfile
 import json
+import time
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -104,7 +105,15 @@ def save_run_summary(
     logging.info("=" * 60)
 
 
-def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date_obj: datetime.datetime | None, class_name: str, section_tag: str):
+def process_single_resource(
+    driver: webdriver.Chrome,
+    url: str,
+    title: str,
+    date_obj: datetime.datetime | None,
+    class_name: str,
+    section_tag: str,
+    stats: Dict[str, Any],
+):
     """
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
     Determines content type and calls appropriate processing functions.
@@ -130,6 +139,11 @@ def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date
             transcript_text = scraping.scrape_transcript_from_url(driver, url)
             if transcript_text:
                 raw_content_data = transcript_text
+                # Telemetry: count successfully scraped transcripts
+                try:
+                    stats["zoom_transcripts_scraped"] = stats.get("zoom_transcripts_scraped", 0) + 1
+                except Exception:
+                    pass
             else:
                 logging.warning(f"   No transcript content scraped from {url}")
                 return
@@ -201,6 +215,11 @@ def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date
 
                         logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
                         embedding.chunk_and_embed_text(combined_text, metadata)
+                # Telemetry: count successfully processed PDF documents (once per file)
+                try:
+                    stats["pdf_documents_processed"] = stats.get("pdf_documents_processed", 0) + 1
+                except Exception:
+                    pass
                 finally:
                     # Ensure temp PDF is deleted regardless of success/failure
                     if target_pdf_path and os.path.exists(target_pdf_path):
@@ -248,6 +267,7 @@ def process_single_resource(driver: webdriver.Chrome, url: str, title: str, date
 def main_pipeline(mode="daily"):
     """Main orchestration with summary generation."""
     start_time = datetime.datetime.now()
+    start_epoch = time.time()
     logging.info(
         f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode})"
     )
@@ -270,6 +290,10 @@ def main_pipeline(mode="daily"):
         "courses_attempted": 0,
         "courses_successful": 0,
         "resources_discovered": 0,
+        # Telemetry metrics
+        "resources_found": 0,
+        "zoom_transcripts_scraped": 0,
+        "pdf_documents_processed": 0,
         "resources_processed": 0,
         "resources_failed": 0,
     }
@@ -344,6 +368,11 @@ def main_pipeline(mode="daily"):
                             logging.info(f"--- Section: {section_tag} ---")
                             try:
                                 container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
+                                # Telemetry: count items found at navigation stage
+                                try:
+                                    stats["resources_found"] += len(items)
+                                except Exception:
+                                    pass
                                 logging.info(f"   Found {len(items)} items")
                                 
                                 # --- START IMMEDIATE RESOURCE PROCESSING ---
@@ -439,7 +468,13 @@ def main_pipeline(mode="daily"):
                                             
                                             try:
                                                 success = process_single_resource(
-                                                    driver, url, title, parsed_date, class_name, section_tag
+                                                    driver,
+                                                    url,
+                                                    title,
+                                                    parsed_date,
+                                                    class_name,
+                                                    section_tag,
+                                                    stats,
                                                 )
                                                 if success:
                                                     stats["resources_processed"] += 1
@@ -494,6 +529,48 @@ def main_pipeline(mode="daily"):
             save_run_summary(stats, mode, start_time, errors)
         except Exception as summary_err:
             logging.error(f"Failed to save run summary: {summary_err}")
+
+        # Timer-based runtime and final metrics log
+        total_runtime_sec = round(time.time() - start_epoch, 2)
+        subjects_failed = max(stats.get("courses_attempted", 0) - stats.get("courses_successful", 0), 0)
+        logging.info(
+            (
+                "📈 Pipeline Metrics | runtime_s=%s resources_found=%s resources_processed=%s "
+                "zoom_transcripts_scraped=%s pdf_documents_processed=%s subjects_failed=%s"
+            ),
+            total_runtime_sec,
+            stats.get("resources_found", 0),
+            stats.get("resources_processed", 0),
+            stats.get("zoom_transcripts_scraped", 0),
+            stats.get("pdf_documents_processed", 0),
+            subjects_failed,
+        )
+
+        # Persist concise status JSON for external monitors
+        try:
+            os.makedirs("data", exist_ok=True)
+            final_status = (
+                "SUCCESS" if (len(errors) == 0 and stats.get("resources_failed", 0) == 0) else "FAILURE"
+            )
+            concise_report = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "status": final_status,
+                "runtime_seconds": total_runtime_sec,
+                "metrics": {
+                    "resources_found": stats.get("resources_found", 0),
+                    "resources_processed": stats.get("resources_processed", 0),
+                    "zoom_transcripts_scraped": stats.get("zoom_transcripts_scraped", 0),
+                    "pdf_documents_processed": stats.get("pdf_documents_processed", 0),
+                    "subjects_failed": subjects_failed,
+                },
+            }
+            report_path = getattr(config.SETTINGS, "metrics_report_path", "data/pipeline_status.json")
+            with open(report_path, "w") as f:
+                json.dump(concise_report, f, indent=2)
+            logging.info("📄 Pipeline status saved to %s", report_path)
+        except Exception as e:
+            logging.error("Failed to write pipeline status JSON: %s", e)
+
         logging.info("🚀 Hybrid Pipeline Finished.")
 
 
