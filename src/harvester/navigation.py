@@ -616,6 +616,8 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
         # Click to expand the section (the header acts as the toggle)
         driver.execute_script("arguments[0].click();", section_header)
         logging.info(f"Expanded section: {section_title}")
+        # Allow UI to react and begin loading dynamic content
+        time.sleep(1)
 
         # 2. Define and locate the container that holds resource items (following the header)
         container_xpath = f"{section_locator[1]}/following-sibling::div[1]"
@@ -626,7 +628,8 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
             return container_el.find_elements(By.CSS_SELECTOR, config.RESOURCE_ITEM_CSS)
 
         try:
-            WebDriverWait(driver, 5).until(lambda d: len(_items_present(d)) > 0)
+            # Increased timeout to improve robustness in headless/slow environments
+            WebDriverWait(driver, 15).until(lambda d: len(_items_present(d)) > 0)
         except TimeoutException:
             # It's acceptable for some sections to be empty; normalize to empty list
             return container_xpath, []
