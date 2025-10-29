@@ -25,7 +25,7 @@ from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from . import config
 from .navigation import safe_find, safe_find_all, safe_click
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {
@@ -322,181 +322,273 @@ def scrape_html_content(url: str) -> Optional[str]:
 def classify_url(url: str) -> str:
     """Classify a URL into a canonical resource type.
 
-    Types: YOUTUBE_VIDEO, PDF_DOCUMENT, OFFICE_DOCUMENT, RECORDING_LINK, WEB_ARTICLE
+    Enhanced types:
+      - GOOGLE_DOCS, GOOGLE_SHEETS, GOOGLE_SLIDES
+      - OFFICE_ONLINE_VIEWER (view.officeapps.live.com)
+      - OFFICE_DOCUMENT (direct .docx/.pptx/.xlsx links)
+      - RECORDING_DRIVE (drive.google.com), RECORDING_ZOOM (zoom.us)
+      - YOUTUBE_VIDEO, PDF_DOCUMENT, WEB_ARTICLE
     """
     if not url:
         return "WEB_ARTICLE"
     lower = url.lower()
+
     if "youtube.com/watch" in lower or "youtu.be/" in lower:
         return "YOUTUBE_VIDEO"
     if lower.endswith(".pdf"):
         return "PDF_DOCUMENT"
-    if "docs.google.com/presentation" in lower or lower.endswith((".pptx", ".ppt")):
+
+    if "docs.google.com/document" in lower:
+        return "GOOGLE_DOCS"
+    if "docs.google.com/spreadsheets" in lower:
+        return "GOOGLE_SHEETS"
+    if "docs.google.com/presentation" in lower:
+        return "GOOGLE_SLIDES"
+
+    if "view.officeapps.live.com" in lower:
+        return "OFFICE_ONLINE_VIEWER"
+    if lower.endswith((".pptx", ".ppt", ".doc", ".docx", ".xls", ".xlsx")):
         return "OFFICE_DOCUMENT"
-    if "docs.google.com/document" in lower or lower.endswith((".doc", ".docx")):
-        return "OFFICE_DOCUMENT"
-    if "docs.google.com/spreadsheets" in lower or lower.endswith((".xls", ".xlsx")):
-        return "OFFICE_DOCUMENT"
-    if "drive.google.com/file" in lower or "zoom.us/rec" in lower or "zoom.us/" in lower:
-        return "RECORDING_LINK"
+
+    if "drive.google.com/file" in lower:
+        return "RECORDING_DRIVE"
+    if "zoom.us" in lower:
+        return "RECORDING_ZOOM"
+
     return "WEB_ARTICLE"
 
 
-def process_resource_links(driver: webdriver.Chrome, links: List[WebElement]) -> List[Dict[str, Any]]:
-    """Process a list of <a> WebElements into structured resource metadata.
+def _normalize_text(text: str) -> str:
+    return " ".join((text or "").split())
 
-    For each link, extract:
-      - url: anchor href
-      - title: best-effort text from nearby context (p/heading/label)
-      - date: date-like text (e.g., 29/09/2025) from adjacent span/containers
-      - type: classified by URL pattern
 
-    The DOM varies between regular resource links and session recordings.
-    This function uses robust ancestor/sibling traversal with sensible fallbacks.
-    """
+_DATE_REGEX = re.compile(r"\b(?:\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2},\s*\d{4})\b",
+                         re.IGNORECASE)
 
-    def _normalize_text(text: str) -> str:
-        return " ".join((text or "").split())
 
-    date_regex = re.compile(r"\b\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}\b")
+def _safe_attr(el: WebElement, name: str) -> str:
+    try:
+        return el.get_attribute(name) or ""
+    except Exception:
+        return ""
 
-    def _safe_attr(el: WebElement, name: str) -> str:
-        try:
-            return el.get_attribute(name) or ""
-        except Exception:
-            return ""
 
-    def _try_find(el: WebElement, by: str, selector: str) -> WebElement | None:
-        try:
-            return el.find_element(by, selector)
-        except Exception:
-            return None
-
-    def _try_find_all(el: WebElement, by: str, selector: str) -> List[WebElement]:
-        try:
-            return el.find_elements(by, selector) or []
-        except Exception:
-            return []
-
-    def _nearest_container(anchor: WebElement) -> WebElement:
-        # Prefer logical content containers (li/div/section/article) around the link
-        container = _try_find(anchor, By.XPATH, "./ancestor::*[self::li or self::div or self::section or self::article][1]")
-        return container or anchor
-
-    def _extract_title(anchor: WebElement, url: str) -> str:
-        # 1) Anchor text if meaningful
-        anchor_text = _normalize_text(getattr(anchor, "text", ""))
-        if anchor_text and anchor_text.lower() != (url or "").lower() and len(anchor_text) > 3:
-            return anchor_text
-
-        # 2) aria-label/title attributes on the anchor
-        for attr_name in ("aria-label", "title"):
-            val = _normalize_text(_safe_attr(anchor, attr_name))
-            if val:
-                return val
-
-        # 3) Look for nearby <p> siblings
-        sib_p = _try_find(anchor, By.XPATH, "following-sibling::p[normalize-space()][1]") or _try_find(
-            anchor, By.XPATH, "preceding-sibling::p[normalize-space()][1]"
-        )
-        if sib_p:
-            sib_text = _normalize_text(getattr(sib_p, "text", ""))
-            if sib_text:
-                return sib_text
-
-        container = _nearest_container(anchor)
-
-        # 4) Titles commonly live in <p> within the container (Openai, Georgetown, Session PPT, ...)
-        p_in_container = _try_find(container, By.XPATH, ".//p[normalize-space()][1]")
-        if p_in_container:
-            p_text = _normalize_text(getattr(p_in_container, "text", ""))
-            if p_text:
-                return p_text
-
-        # 5) Headings near the link
-        headings = _try_find_all(
-            container,
-            By.XPATH,
-            ".//*[self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6][normalize-space()]",
-        )
-        if headings:
-            h_text = _normalize_text(getattr(headings[0], "text", ""))
-            if h_text:
-                return h_text
-
-        # 6) End-of-section boxes (e.g., .fileBoxend) can hold a final title
-        filebox = _try_find(
-            container,
-            By.XPATH,
-            ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
-        )
-        if filebox:
-            fb_p = _try_find(filebox, By.XPATH, ".//p[normalize-space()][1]")
-            if fb_p:
-                fb_text = _normalize_text(getattr(fb_p, "text", ""))
-                if fb_text:
-                    return fb_text
-
-        # 7) Fallback: parent text trimmed (can be noisy but better than empty)
-        parent = _try_find(anchor, By.XPATH, "parent::*")
-        parent_text = _normalize_text(getattr(parent, "text", "")) if parent else ""
-        return parent_text or url or ""
-
-    def _extract_date(anchor: WebElement) -> str | None:
-        # Check spans near the anchor first
-        for xpath in (
-            "following-sibling::span[normalize-space()][1]",
-            "preceding-sibling::span[normalize-space()][1]",
-        ):
-            span = _try_find(anchor, By.XPATH, xpath)
-            if span:
-                text = _normalize_text(getattr(span, "text", ""))
-                if text and date_regex.search(text):
-                    return date_regex.search(text).group(0)
-
-        container = _nearest_container(anchor)
-
-        # Prefer dates from end-of-section boxes when present
-        filebox = _try_find(
-            container,
-            By.XPATH,
-            ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
-        )
-        if filebox:
-            spans = _try_find_all(filebox, By.XPATH, ".//span[normalize-space()]")
-            for sp in spans:
-                text = _normalize_text(getattr(sp, "text", ""))
-                m = date_regex.search(text)
-                if m:
-                    return m.group(0)
-
-        # Otherwise, scan all spans inside the container
-        spans = _try_find_all(container, By.XPATH, ".//span[normalize-space()]")
-        for sp in spans:
-            text = _normalize_text(getattr(sp, "text", ""))
-            m = date_regex.search(text)
-            if m:
-                return m.group(0)
+def _try_find(el: WebElement, by: str, selector: str) -> WebElement | None:
+    try:
+        return el.find_element(by, selector)
+    except Exception:
         return None
 
+
+def _try_find_all(el: WebElement, by: str, selector: str) -> List[WebElement]:
+    try:
+        return el.find_elements(by, selector) or []
+    except Exception:
+        return []
+
+
+def _nearest_container(anchor_or_container: WebElement) -> WebElement:
+    container = _try_find(
+        anchor_or_container,
+        By.XPATH,
+        "./ancestor::*[self::li or self::div or self::section or self::article][1]",
+    )
+    return container or anchor_or_container
+
+
+def _is_icon_link(anchor: WebElement) -> bool:
+    try:
+        # Heuristic: no meaningful text and contains only svg/img
+        text = _normalize_text(getattr(anchor, "text", ""))
+        if text:
+            return False
+        svg_or_img = _try_find(anchor, By.XPATH, ".//*[self::svg or self::img]")
+        return bool(svg_or_img)
+    except Exception:
+        return False
+
+
+def _resolve_url(base_url: str, href: str) -> str:
+    if not href:
+        return ""
+    if href.startswith(("http://", "https://")):
+        return href
+    return urljoin(base_url, href)
+
+
+def _extract_url_robust(anchor_or_container: WebElement, base_url: str) -> str:
+    # 1) Direct href on the given element
+    href = _safe_attr(anchor_or_container, "href")
+    if href:
+        return _resolve_url(base_url, href)
+
+    # 2) Search in nearest .fileBox container
+    container = _nearest_container(anchor_or_container)
+    filebox = _try_find(
+        container,
+        By.XPATH,
+        ".//ancestor-or-self::div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'filebox')][1]",
+    ) or container
+
+    anchors = _try_find_all(filebox, By.XPATH, ".//a[@href]")
+    # Prefer first visible and non-icon anchor; if none, fall back to first anchor
+    for a in anchors:
+        href = _safe_attr(a, "href")
+        if not href:
+            continue
+        if _is_icon_link(a):
+            continue
+        return _resolve_url(base_url, href)
+    if anchors:
+        return _resolve_url(base_url, _safe_attr(anchors[0], "href"))
+
+    # 3) Any sibling/descendant anchors
+    anchors = _try_find_all(container, By.XPATH, ".//a[@href]")
+    for a in anchors:
+        href = _safe_attr(a, "href")
+        if href:
+            return _resolve_url(base_url, href)
+    return ""
+
+
+def _extract_title_robust(anchor_or_container: WebElement, url: str) -> str:
+    # 1. Anchor text
+    anchor_text = _normalize_text(getattr(anchor_or_container, "text", ""))
+    if anchor_text and anchor_text.lower() != (url or "").lower():
+        return anchor_text
+
+    # 2. <p> inside fileContentCol
+    container = _nearest_container(anchor_or_container)
+    p_in_content = _try_find(
+        container,
+        By.XPATH,
+        ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'filecontentcol')]//p[normalize-space()][1]",
+    )
+    if p_in_content and _normalize_text(getattr(p_in_content, "text", "")):
+        return _normalize_text(getattr(p_in_content, "text", ""))
+
+    # 3. <p> in fileBoxend (longer descriptive title)
+    fileboxend = _try_find(
+        container,
+        By.XPATH,
+        ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
+    )
+    if fileboxend:
+        p_in_end = _try_find(fileboxend, By.XPATH, ".//p[normalize-space()][1] | .//a[normalize-space()][1]")
+        if p_in_end and _normalize_text(getattr(p_in_end, "text", "")):
+            return _normalize_text(getattr(p_in_end, "text", ""))
+
+    # 4. aria-label or title attribute
+    for attr in ("aria-label", "title"):
+        val = _normalize_text(_safe_attr(anchor_or_container, attr))
+        if val:
+            return val
+
+    # 5. Any nearby <p> or heading
+    sib_p = _try_find(anchor_or_container, By.XPATH, "following-sibling::p[normalize-space()][1] | preceding-sibling::p[normalize-space()][1]")
+    if sib_p and _normalize_text(getattr(sib_p, "text", "")):
+        return _normalize_text(getattr(sib_p, "text", ""))
+
+    headings = _try_find_all(container, By.XPATH, ".//h1|.//h2|.//h3|.//h4|.//h5|.//h6")
+    for h in headings:
+        h_text = _normalize_text(getattr(h, "text", ""))
+        if h_text:
+            return h_text
+
+    # 6. Parent container's visible text
+    container_text = _normalize_text(getattr(container, "text", ""))
+    if container_text:
+        return container_text
+
+    # 7. Fallback
+    return url or "Untitled Resource"
+
+
+def _extract_date_robust(anchor_or_container: WebElement) -> Optional[str]:
+    # 1. <span> in fileBoxend
+    container = _nearest_container(anchor_or_container)
+    fileboxend = _try_find(
+        container,
+        By.XPATH,
+        ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxend')][1]",
+    )
+    if fileboxend:
+        spans = _try_find_all(fileboxend, By.XPATH, ".//span[normalize-space()]")
+        for sp in spans:
+            text = _normalize_text(getattr(sp, "text", ""))
+            m = _DATE_REGEX.search(text)
+            if m:
+                return m.group(0)
+
+    # 2. <span> in fileContentCol
+    spans = _try_find_all(
+        container,
+        By.XPATH,
+        ".//div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'filecontentcol')]//span[normalize-space()]",
+    )
+    for sp in spans:
+        text = _normalize_text(getattr(sp, "text", ""))
+        m = _DATE_REGEX.search(text)
+        if m:
+            return m.group(0)
+
+    # 3. Any text matching regex near element
+    spans = _try_find_all(container, By.XPATH, ".//span|.//p|.//*")
+    for sp in spans:
+        text = _normalize_text(getattr(sp, "text", ""))
+        m = _DATE_REGEX.search(text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def process_resource_links(
+    driver: webdriver.Chrome,
+    links: List[WebElement],
+    debug: bool = False,
+) -> List[Dict[str, Any]]:
+    """Process a list of WebElements into structured resource metadata.
+
+    Returns items with keys: url, title, date, type
+    """
     resources: List[Dict[str, Any]] = []
-    for link in links or []:
+    base_url = getattr(config, "BASE_URL", "")
+
+    for item in links or []:
         try:
-            url = _safe_attr(link, "href")
+            # URL extraction with multiple strategies
+            url = _extract_url_robust(item, base_url)
             if not url:
+                if debug:
+                    logging.debug("No URL found for element; skipping")
                 continue
-            resource_type = classify_url(url)
-            title = _extract_title(link, url)
-            date_val = _extract_date(link)
+
+            # Title and date using robust helpers
+            title = _extract_title_robust(item, url)
+            if not title:
+                logging.warning(f"Missing title for URL: {url}")
+                title = "Untitled Resource"
+
+            date_val = _extract_date_robust(item)
+            if not date_val:
+                logging.warning(f"No date found near URL: {url}")
+
+            r_type = classify_url(url)
+
+            if debug:
+                logging.info(f"Extracted resource -> url={url}, title={title}, date={date_val}, type={r_type}")
+
             resources.append({
                 "url": url,
                 "title": title,
                 "date": date_val,
-                "type": resource_type,
+                "type": r_type,
             })
+        except StaleElementReferenceException:
+            logging.warning("Encountered stale element reference; skipping one link")
+            continue
         except Exception as e:
-            # Best-effort: skip problematic link but continue others
-            logging.debug(f"Skipping link due to error: {e}")
+            logging.warning(f"Failed to process a resource link: {e}")
             continue
 
     return resources
@@ -554,29 +646,30 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
                     except Exception:
                         pass
 
-        elif resource_type == "OFFICE_DOCUMENT":
-            # Non-download strategy: use web viewers for Office/Google Docs/Sheets/Slides
+        elif resource_type in {"OFFICE_DOCUMENT", "GOOGLE_DOCS", "GOOGLE_SHEETS", "GOOGLE_SLIDES", "OFFICE_ONLINE_VIEWER"}:
+            # Use web viewers (no downloads)
             try:
                 from src.refinery.document_processing import extract_drive_content  # type: ignore
-            except Exception as e:  # pragma: no cover - import safety
+            except Exception as e:  # pragma: no cover
                 logging.error(f"Failed to import in-browser document extractor: {e}")
                 content = f"Office document content extraction failed (import): {e}"
             else:
-                viewer_url = url
+                # Determine specific doc type
                 lower = (url or "").lower()
-                # If direct office file link, route via Office Online viewer to avoid download
-                if (
-                    (lower.endswith((".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx")))
-                    and ("docs.google.com" not in lower and "drive.google.com" not in lower)
-                ):
-                    # Office online viewer
-                    viewer_url = f"https://view.officeapps.live.com/op/view.aspx?src={quote(url, safe='')}"
+                if "docs.google.com/document" in lower:
+                    doc_type = "google_docs"
+                elif "docs.google.com/spreadsheets" in lower:
+                    doc_type = "google_sheets"
+                elif "docs.google.com/presentation" in lower:
+                    doc_type = "google_slides"
+                else:
+                    doc_type = "office_document"
 
-                content = extract_drive_content(driver, viewer_url, resource_type)
+                content = extract_drive_content(driver, url, doc_type)
                 if not content:
                     content = "(No readable content found in document viewer)"
 
-        elif resource_type == "RECORDING_LINK":
+        elif resource_type in {"RECORDING_LINK", "RECORDING_DRIVE", "RECORDING_ZOOM"}:
             # Intentionally skip transcription to reduce costs
             logging.warning(
                 f"Skipping transcription for recording link: {url} (Too resource-intensive)."
