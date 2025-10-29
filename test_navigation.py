@@ -76,7 +76,6 @@ def run_navigation_test() -> None:
     """Run the end-to-end navigation test for course PRTC301."""
     # Constants for the test
     TEST_COURSE_CODE = "PRTC301"
-    TEST_SECTION_TITLE = "Session Recordings"
     TEST_GROUP_NAME: Optional[str] = None
 
     # Use configured group name if available in mapping
@@ -93,11 +92,8 @@ def run_navigation_test() -> None:
         else None
     )
     resources_tab_xpath = config.RESOURCES_TAB_XPATH
-    section_header_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=TEST_SECTION_TITLE)
-    items_xpath = f"{section_header_xpath}/following-sibling::div[1]//{config.RESOURCE_ITEM_CSS}"
-
     overall_success = False
-    items_count = 0
+    total_items_found = 0
 
     logging.info("STEP 1: Initializing driver and logging in ...")
     print("[1/5] Login: starting...")
@@ -112,6 +108,8 @@ def run_navigation_test() -> None:
             try:
                 navigation.find_and_click_course_link(driver, TEST_COURSE_CODE, TEST_GROUP_NAME)
                 print("[2/5] Navigate: PASSED")
+                # Store course URL for robust re-navigation before each section expansion
+                course_page_url = driver.current_url
             except TimeoutException as e:
                 logging.error(
                     "Timeout locating course link. course_xpath=%s group_xpath=%s error=%s",
@@ -151,65 +149,55 @@ def run_navigation_test() -> None:
                 logging.error("Driver error on Resources tab click: %s", e)
                 raise
 
-            # STEP 4: Expand section and get items
-            logging.info("STEP 4: Expanding section '%s' and collecting items ...", TEST_SECTION_TITLE)
-            print(f"[4/5] Expand Section: '{TEST_SECTION_TITLE}'...")
-            try:
-                container_xpath, items = navigation.expand_section_and_get_items(
-                    driver, TEST_SECTION_TITLE
-                )
-                # Validation per requirement: ensure items list is not None and log the count
-                assert items is not None, "expand_section_and_get_items() returned None for items"
-                items_count = len(items)
-                print(f"[4/5] Expand Section: PASSED (items found: {items_count})")
-            except TimeoutException as e:
-                logging.error(
-                    "Timeout expanding section or loading items. header_xpath=%s items_xpath=%s error=%s",
-                    section_header_xpath,
-                    items_xpath,
-                    e,
-                )
-                raise
-            except NoSuchElementException as e:
-                logging.error(
-                    "Section header or items not found. header_xpath=%s items_xpath=%s error=%s",
-                    section_header_xpath,
-                    items_xpath,
-                    e,
-                )
-                raise
-            except (WebDriverException, RuntimeError) as e:
-                logging.error("Driver error expanding section: %s", e)
-                # Screenshot for generic failure at final step (crucial for headless debugging)
-                screenshot_path = PROJECT_ROOT / f"nav_failure_{TEST_COURSE_CODE}.png"
-                try:
-                    driver.save_screenshot(str(screenshot_path))
-                    print(f"[!] Failure screenshot saved to: {screenshot_path}")
-                except Exception as se:
-                    logging.error("Failed to save failure screenshot: %s", se)
-                raise
-            except Exception as e:
-                # Generic fallback for unexpected issues at final step (also save screenshot)
-                logging.error("Unexpected error during section expansion: %s", e)
-                screenshot_path = PROJECT_ROOT / f"nav_failure_{TEST_COURSE_CODE}.png"
-                try:
-                    driver.save_screenshot(str(screenshot_path))
-                    print(f"[!] Failure screenshot saved to: {screenshot_path}")
-                except Exception as se:
-                    logging.error("Failed to save failure screenshot: %s", se)
-                raise
+            # --- NEW STEP: Define all sections for full coverage ---
+            ALL_SECTIONS = [
+                config.PRE_READ_SECTION_TITLE,
+                config.IN_CLASS_SECTION_TITLE,
+                config.POST_CLASS_SECTION_TITLE,
+                config.SESSION_RECORDINGS_SECTION_TITLE,
+            ]
+            all_sections_passed = True
 
-            # STEP 5: Final validation and status
-            logging.info("STEP 5: Validation and result reporting ...")
-            print("[5/5] Items Found: validating non-null list...")
-            try:
-                # Already asserted non-None; log count again for clarity
-                logging.info("Retrieved %d items from '%s' section.", items_count, TEST_SECTION_TITLE)
+            # --- STEP 4: Loop through all sections ---
+            logging.info("STEP 4: Iterating through all resource sections ...")
+            for section_title in ALL_SECTIONS:
+                print(f"\n[4/{len(ALL_SECTIONS)}] Testing Section: '{section_title}'")
+
+                # Robustness Check: Re-click Resources tab before each expansion
+                driver.get(course_page_url)  # Navigate back to main course page
+                navigation.navigate_to_resources_section(driver)  # Re-click Resources tab
+
+                try:
+                    container_xpath, items = navigation.expand_section_and_get_items(
+                        driver,
+                        section_title,
+                    )
+                    if items:
+                        print(f"  ✅ SUCCESS: Found {len(items)} item(s).")
+                        total_items_found += len(items)
+                    else:
+                        print("  ⚠️ SUCCESS: Section is accessible but empty (0 items).")
+                except Exception as e:
+                    print(
+                        f"  ❌ FAILURE: Section failed to load/expand. Error: {type(e).__name__}: {e}"
+                    )
+                    logging.error("Section '%s' failed with error: %s", section_title, e)
+                    all_sections_passed = False
+                    try:
+                        screenshot_name = f"nav_failure_{TEST_COURSE_CODE}_{section_title.replace(' ', '_')}.png"
+                        driver.save_screenshot(screenshot_name)
+                        print("  -> Screenshot saved for failure analysis.")
+                    except Exception as se:
+                        logging.error("Failed to save failure screenshot: %s", se)
+
+            # --- FINAL RESULT REPORTING ---
+            if all_sections_passed:
+                print("\n🎉 ALL SECTIONS PASSED NAVIGATION TEST.")
+                print(f"Total resources found across all sections: {total_items_found}")
                 overall_success = True
-                print(f"SUCCESS: Retrieved {items_count} items from '{TEST_SECTION_TITLE}'.")
-            except Exception as e:
-                logging.error("Validation failed: %s", e)
-                raise
+            else:
+                print("\n❌ TEST FAILED. One or more sections were inaccessible.")
+                overall_success = False
 
     except TimeoutException as e:
         print(f"FAILURE: Timeout occurred. Details logged. Error: {e}")
@@ -222,7 +210,7 @@ def run_navigation_test() -> None:
 
     # Final console status (in addition to prints above)
     if overall_success:
-        logging.info("Navigation test completed successfully. Item count=%d", items_count)
+        logging.info("Navigation test completed successfully. Total items=%d", total_items_found)
     else:
         logging.info("Navigation test failed. See logs and selenium_test.log for details.")
 
