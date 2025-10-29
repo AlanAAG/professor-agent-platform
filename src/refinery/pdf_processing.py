@@ -7,7 +7,14 @@ from dotenv import load_dotenv
 import logging  # Use logging instead of print for better tracking
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import tempfile
+
+try:
+    import pdfplumber  # type: ignore
+except Exception:  # pragma: no cover
+    pdfplumber = None
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -69,70 +76,147 @@ def generate_image_description(image_bytes: bytes) -> str:
         return "Error generating image description."
 
 # --- Main PDF Processing Function ---
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def _open_pdf_temp_copy(pdf_path: str) -> tuple[fitz.Document, str]:
+    """Copy PDF to a NamedTemporaryFile and open via PyMuPDF; returns (doc, temp_path)."""
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    with open(pdf_path, "rb") as fsrc, tempfile.NamedTemporaryFile(prefix="pdf_proc_", suffix=".pdf", delete=False) as tmp:
+        tmp.write(fsrc.read())
+        temp_path = tmp.name
+    doc = fitz.open(temp_path)
+    return doc, temp_path
+
+
+def _fallback_pdfplumber_text(pdf_path: str) -> Optional[List[str]]:
+    if not pdfplumber:
+        logging.warning("pdfplumber not available; skipping fallback text extraction")
+        return None
+    try:
+        texts: List[str] = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                t = (page.extract_text() or "").strip()
+                texts.append(t)
+        return texts
+    except Exception as e:  # pragma: no cover
+        logging.warning(f"pdfplumber fallback failed: {e}")
+        return None
+
+
 def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
-    Extracts text, image descriptions, and links from a PDF, page by page.
-    Returns a list of dictionaries, one per page, containing extracted data.
+    Robust PDF extractor with retries, fallbacks, and partial success reporting.
+
+    Returns list of dicts per page:
+      {"page": 1, "text": "...", "status": "success" | "ocr_success" | "ocr_failed" | "error", "error": "..."}
+    Additional legacy keys maintained for compatibility: page_number, images, links
     """
-    extracted_data_per_page = []
-    doc = None # Initialize doc to None
+    results: List[Dict[str, Any]] = []
+    temp_path: Optional[str] = None
+    doc: Optional[fitz.Document] = None
+
     try:
-        if not os.path.exists(pdf_path):
-            logging.error(f"PDF file not found: {pdf_path}")
-            return []
-            
-        doc = fitz.open(pdf_path)
+        doc, temp_path = _open_pdf_temp_copy(pdf_path)
         logging.info(f"-> Processing PDF: {os.path.basename(pdf_path)} ({len(doc)} pages)")
 
-        for page_num in range(len(doc)):
-            page_content: Dict[str, Any] = {"page_number": page_num + 1, "text": "", "images": [], "links": []}
+        for page_idx in range(len(doc)):
+            page_info: Dict[str, Any] = {
+                "page": page_idx + 1,
+                "page_number": page_idx + 1,  # legacy
+                "text": "",
+                "status": "",
+                "images": [],  # legacy
+                "links": [],   # legacy
+            }
             try:
-                page = doc.load_page(page_num)
+                page = doc.load_page(page_idx)
 
-                # 1. Extract Text (using layout-aware extraction if possible)
-                page_text = page.get_text("text", sort=True).strip() # Sort helps with reading order
-                page_content["text"] = page_text if page_text else "" # Ensure empty string if no text
+                # Text extraction (layout-aware)
+                text = (page.get_text("text", sort=True) or "").strip()
+                # Links (legacy)
+                try:
+                    for link in page.get_links() or []:
+                        if link.get("kind") == fitz.LINK_URI and link.get("uri"):
+                            page_info["links"].append(link.get("uri"))
+                except Exception:
+                    pass
 
-                # 2. Extract Images and Generate Descriptions
-                image_list = page.get_images(full=True)
-                if image_list:
-                    logging.info(f"   Page {page_num + 1}: Found {len(image_list)} images.")
-                    for img_index, img_info in enumerate(image_list):
+                # Images -> Gemini description as a last resort OCR-like fallback
+                images = page.get_images(full=True)
+                if images:
+                    logging.info(f"   Page {page_idx + 1}: Found {len(images)} images.")
+                for img_index, img_info in enumerate(images or []):
+                    try:
                         xref = img_info[0]
                         base_image = doc.extract_image(xref)
                         if base_image and base_image.get("image"):
                             image_bytes = base_image["image"]
                             description = generate_image_description(image_bytes)
-                            page_content["images"].append({
-                                "index": img_index,
-                                "description": description
-                            })
-                        else:
-                            logging.warning(f"   Page {page_num + 1}: Could not extract image data for index {img_index}.")
+                            page_info["images"].append({"index": img_index, "description": description})
+                    except Exception:
+                        continue
 
-                # 3. Extract Links (URIs)
-                link_list = page.get_links()
-                if link_list:
-                    # Filter for URI links and extract the URI string
-                    page_content["links"] = [link.get("uri", "") for link in link_list if link.get("kind") == fitz.LINK_URI and link.get("uri")]
+                if text:
+                    page_info["text"] = text
+                    page_info["status"] = "success"
+                    results.append(page_info)
+                    continue
 
-                extracted_data_per_page.append(page_content)
+                # Fallback 1: pdfplumber textual extraction
+                fallback_texts = _fallback_pdfplumber_text(pdf_path)
+                if fallback_texts is not None:
+                    ft = (fallback_texts[page_idx] if page_idx < len(fallback_texts) else "").strip()
+                    if ft:
+                        page_info["text"] = ft
+                        page_info["status"] = "success"
+                        results.append(page_info)
+                        continue
+
+                # Fallback 2: image render + Gemini vision for OCR-like content
+                try:
+                    pix = page.get_pixmap(dpi=200)
+                    img_bytes = pix.tobytes("png")
+                    description = generate_image_description(img_bytes)
+                    if description and "unavailable" not in description.lower() and "error" not in description.lower():
+                        page_info["text"] = description
+                        page_info["status"] = "ocr_success"
+                    else:
+                        page_info["status"] = "ocr_failed"
+                        page_info["error"] = "Vision OCR returned no usable text"
+                except Exception as e:
+                    page_info["status"] = "ocr_failed"
+                    page_info["error"] = f"Vision OCR failed: {e}"
+                results.append(page_info)
 
             except Exception as page_err:
-                logging.error(f"   Error processing page {page_num + 1} in {os.path.basename(pdf_path)}: {page_err}")
-                # Add a placeholder for the failed page
-                extracted_data_per_page.append({"page_number": page_num + 1, "text": "[Error processing page]", "images": [], "links": []})
-
+                page_info["text"] = ""
+                page_info["status"] = "error"
+                page_info["error"] = str(page_err)
+                results.append(page_info)
 
         logging.info(f"✅ Finished extracting data from PDF: {os.path.basename(pdf_path)}")
 
     except Exception as e:
-        logging.error(f"❌ Critical Error opening or processing PDF {pdf_path}: {e}")
-        # Return whatever was processed before the critical error
-        return extracted_data_per_page
-        
+        logging.error(f"❌ Critical error opening/processing PDF {pdf_path}: {e}")
+        # Return partial results if any
+        return results
     finally:
-        if doc:
-            doc.close() # Ensure the document is closed
+        try:
+            if doc:
+                doc.close()
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
-    return extracted_data_per_page
+    return results
