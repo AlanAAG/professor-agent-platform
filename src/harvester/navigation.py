@@ -39,10 +39,17 @@ def _get_chrome_options() -> webdriver.ChromeOptions:
     """Configures Chrome options based on environment settings."""
     options = webdriver.ChromeOptions()
     if config.SETTINGS.selenium_headless:
-        options.add_argument("--headless")
+        # Use the modern, more stable headless mode
+        options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    
+    # Stabilization arguments for headless Chrome in Linux containers (Codespaces/Docker/CI)
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-logging")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--ignore-certificate-errors")
     # Tries to mitigate bot detection/fingerprinting
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
