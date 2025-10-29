@@ -269,6 +269,20 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
         return False
 
 
+def _get_locator_by(locator_tuple: Tuple[str, str]) -> Tuple[By, str]:
+    """Transform config-style locator tuples into explicit Selenium By tuples.
+
+    Supports simple methods like "css" and "xpath"; defaults to CSS selector.
+    """
+    method, value = locator_tuple
+    if method == "css":
+        return By.CSS_SELECTOR, value
+    if method == "xpath":
+        return By.XPATH, value
+    # Default fallback to CSS
+    return By.CSS_SELECTOR, value
+
+
 def perform_login(driver: webdriver.Chrome) -> bool:
     """Performs the login sequence using stored credentials."""
     username = os.getenv("COACH_USERNAME")
@@ -279,19 +293,23 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
     try:
         driver.get(config.LOGIN_URL)
-        
+
+        # Resolve explicit Selenium By locators from config
+        username_locator = _get_locator_by(config.USERNAME_BY)
+        password_locator = _get_locator_by(config.PASSWORD_BY)
+        login_button_locator = _get_locator_by(config.LOGIN_BUTTON_BY)
+
         # Wait for the login form elements to be present
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
-            EC.presence_of_element_located(config.USERNAME_BY)
+            EC.presence_of_element_located(username_locator)
         )
 
         # Enter credentials
-        driver.find_element(*config.USERNAME_BY).send_keys(username)
-        driver.find_element(*config.PASSWORD_BY).send_keys(password)
-        
-        # Click login button
-        login_button = driver.find_element(*config.LOGIN_BUTTON_BY)
-        safe_click(driver, (By.CSS_SELECTOR, config.LOGIN_BUTTON_BY[1])) # Click using CSS selector as locator
+        driver.find_element(*username_locator).send_keys(username)
+        driver.find_element(*password_locator).send_keys(password)
+
+        # Click login button (single reliable call)
+        safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
 
         # Wait for redirection to the dashboard (or timeout)
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
