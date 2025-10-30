@@ -6,7 +6,12 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
-from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
+from src.shared.utils import (
+    EMBEDDING_MODEL_NAME,
+    cohere_rerank,
+    retrieve_rag_documents,
+    retrieve_rag_documents_keyword_fallback,
+)
 from google import genai
 import os
 import json
@@ -226,6 +231,21 @@ async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
             )
         # Graceful fallback when no documents are found
         if not documents:
+            # Try a keyword fallback directly against the documents table
+            kw_docs = retrieve_rag_documents_keyword_fallback(
+                query=payload.query,
+                selected_class=payload.selectedClass,
+                limit=params["relaxed_count"],
+            )
+            if not kw_docs and payload.selectedClass:
+                # Widen class constraint
+                kw_docs = retrieve_rag_documents_keyword_fallback(
+                    query=payload.query,
+                    selected_class=None,
+                    limit=params["relaxed_count"],
+                )
+            documents = kw_docs
+        if not documents:
             logger.warning(
                 "RAG_SEARCH failure | NO_DOCUMENTS_ANSWER | query_len=%s latency_ms=%s",
                 len(payload.query or ""),
@@ -268,6 +288,20 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 match_threshold=params["relaxed_threshold"],
             )
             documents = cohere_rerank(last_query, documents)
+        # Keyword fallback when vector retrieval yields nothing
+        if not documents:
+            kw_docs = retrieve_rag_documents_keyword_fallback(
+                query=last_query,
+                selected_class=payload.selectedClass,
+                limit=params["relaxed_count"],
+            )
+            if not kw_docs and payload.selectedClass:
+                kw_docs = retrieve_rag_documents_keyword_fallback(
+                    query=last_query,
+                    selected_class=None,
+                    limit=params["relaxed_count"],
+                )
+            documents = kw_docs
         # Telemetry: average similarity and request metrics
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)

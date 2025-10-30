@@ -675,6 +675,65 @@ def retrieve_rag_documents(
     return getattr(response, "data", None) or []
 
 
+def retrieve_rag_documents_keyword_fallback(
+    query: str,
+    selected_class: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Lightweight keyword fallback against Supabase when embeddings/RPC return nothing.
+
+    Performs a case-insensitive search over `documents.content` and optionally filters
+    by `metadata->>class_name`. This is less precise than vector search but ensures
+    we can still surface relevant material directly from the database when embeddings
+    are unavailable or empty.
+    """
+    try:
+        supabase = _get_supabase_client()
+    except Exception:
+        return []
+
+    try:
+        # Base select
+        q = supabase.table("documents").select("id, content, metadata, created_at")
+
+        # Optional class filter via JSONB extraction
+        if selected_class:
+            q = q.filter("metadata->>class_name", "eq", selected_class)
+
+        # Case-insensitive contains on content
+        # Using ilike for PostgREST
+        q = q.ilike("content", f"%{query}%")
+
+        # Prefer newer content if many matches
+        q = q.order("created_at", desc=True).limit(max(1, int(limit)))
+
+        resp = q.execute()
+        data = getattr(resp, "data", None) or []
+
+        # Normalize to match RPC shape as much as possible
+        norm: list[dict] = []
+        for d in data:
+            # Ensure consistent keys for downstream consumers
+            meta = d.get("metadata") or {}
+            norm.append(
+                {
+                    "id": d.get("id"),
+                    "content": d.get("content", ""),
+                    "metadata": meta,
+                    "class_name": meta.get("class_name"),
+                    "title": meta.get("title"),
+                    "section": meta.get("section"),
+                    "url": meta.get("url") or meta.get("source_url"),
+                    # No vector similarity available in keyword fallback
+                    "similarity": 0.0,
+                }
+            )
+        return norm
+    except Exception:
+        # On any failure, silently return empty list so callers can decide next steps
+        return []
+
+
 def _to_langchain_documents(raw_docs: list[dict]) -> list[Document]:
     if Document is None:
         raise RuntimeError("langchain-core is required to build Document objects.")
