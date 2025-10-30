@@ -660,10 +660,11 @@ def retrieve_rag_documents(
     
     # Use pre-computed embedding if provided, otherwise compute it
     if query_embedding is None:
+        # Avoid spamming logs on upstream batch failures; silently skip here
+        # so the caller can decide on keyword fallbacks.
         try:
             query_embedding = embed_query(query)
-        except Exception as e:
-            logging.warning(f"Query embedding failed; skipping retrieval: {e}")
+        except Exception:
             return []
     
     payload = {
@@ -708,27 +709,25 @@ def retrieve_rag_documents_keyword_fallback(
         qtext = qtext[:200]
 
     # Try multiple strategies to avoid PostgREST 400s across environments.
-    # Prefer full-text search variants first, then fall back to ILIKE.
+    # Prefer ILIKE first (works on TEXT) before FTS operators that may require tsvector.
     strategies = [
-        # Web-search (handles natural language best)
-        ("text_search_web", lambda q: q.text_search("content", qtext, config="english", type="websearch")),
-        # Phrase full-text search
-        ("filter_phfts",     lambda q: q.filter("content", "phfts", qtext)),
-        # Plain full-text search
-        ("filter_fts",       lambda q: q.filter("content", "fts", qtext)),
-        # Web full-text search operator
-        ("filter_wfts",      lambda q: q.filter("content", "wfts", qtext)),
-        # Percent-based ILIKE (widely supported)
+        # Percent-based ILIKE (widely supported on TEXT columns)
         ("ilike_percent",    lambda q: q.ilike("content", f"%{qtext}%")),
         ("filter_ilike_pct", lambda q: q.filter("content", "ilike", f"%{qtext}%")),
-        # Star-based ILIKE (some PostgREST deployments accept this form)
-        ("filter_ilike_star", lambda q: q.filter("content", "ilike", f"*{qtext}*")),
+        # Also search title as a fallback if content ILIKE yields nothing
+        ("ilike_title",      lambda q: q.ilike("metadata->>title", f"%{qtext}%")),
+        # Full-text variants (may 400 if column isn't tsvector)
+        ("text_search_web",  lambda q: q.text_search("content", qtext, config="english", type="websearch")),
+        ("filter_phfts",     lambda q: q.filter("content", "phfts", qtext)),
+        ("filter_fts",       lambda q: q.filter("content", "fts", qtext)),
+        ("filter_wfts",      lambda q: q.filter("content", "wfts", qtext)),
     ]
 
     for _name, apply_strategy in strategies:
         try:
             q = apply_strategy(_base_query())
-            q = q.order("created_at", desc=True).limit(max(1, int(limit)))
+            # Some deployments lack a created_at column; order by id to avoid 400s
+            q = q.order("id", desc=True).limit(max(1, int(limit)))
             resp = q.execute()
             data = getattr(resp, "data", None) or []
             if not data:
