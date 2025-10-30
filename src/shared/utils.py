@@ -12,7 +12,9 @@ from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
 
 # Shared constants
-EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "models/embedding-001")
+# Prefer the current public Google GenAI embedding model by default.
+# Can be overridden via EMBEDDING_MODEL_NAME env var.
+EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-004")
 
 
 # --- Helper Functions for RRF/MMR/Boosting (Option A) ---
@@ -353,7 +355,8 @@ def _ensure_genai():
     global _GENAI_CLIENT
     if genai is None:
         raise RuntimeError("google-genai not available. Install 'google-genai'.")
-    api_key = os.environ.get("GEMINI_API_KEY")
+    # Support both env var names to reduce deployment issues
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY for embeddings.")
 
@@ -375,7 +378,12 @@ def _ensure_genai():
 def embed_query(text: str, model: str | None = None) -> list[float]:
     """Embed a single query string using Gemini embeddings with robust fallbacks."""
     _ensure_genai()
-    embedding_model = model or EMBEDDING_MODEL_NAME
+    # Try the provided model first, then sensible fallbacks
+    primary_model = model or EMBEDDING_MODEL_NAME
+    candidate_models: list[str] = []
+    for m in (primary_model, "text-embedding-004", "models/embedding-001"):
+        if m and m not in candidate_models:
+            candidate_models.append(m)
 
     def _extract_single(result: Any) -> list[float]:
         # Common forms
@@ -419,53 +427,55 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
             pass
         raise RuntimeError(f"Unexpected embed_content result shape: {type(result)}")
 
-    # Try modern client API first (prefer 'contents' per new SDK)
-    if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
-        try:
-            result = _GENAI_CLIENT.models.embed_content(
-                model=embedding_model,
-                contents=[text],  # new SDK prefers 'contents'
-                task_type="retrieval_query",
-            )
-            return _extract_single(result)
-        except TypeError:
-            # Older signature that accepts 'content='
+    # Try each candidate model across known SDK call styles
+    for embedding_model in candidate_models:
+        # Try modern client API first (prefer 'contents' per new SDK)
+        if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
             try:
                 result = _GENAI_CLIENT.models.embed_content(
+                    model=embedding_model,
+                    contents=[text],  # new SDK prefers 'contents'
+                    task_type="retrieval_query",
+                )
+                return _extract_single(result)
+            except TypeError:
+                # Older signature that accepts 'content='
+                try:
+                    result = _GENAI_CLIENT.models.embed_content(
+                        model=embedding_model,
+                        content=text,
+                        task_type="retrieval_query",
+                    )
+                    return _extract_single(result)
+                except Exception:
+                    pass
+            except Exception:
+                # Try alternative API below
+                pass
+
+            # Alternative new API: generate_content_embeddings
+            try:
+                gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
+                if gce is not None:
+                    result = gce(
+                        model=embedding_model,
+                        requests=[{"content": {"text": text}}],
+                    )
+                    return _extract_single(result)
+            except Exception:
+                pass
+
+        # Fallback: module-level API (older libraries or tests)
+        try:
+            if hasattr(genai, "embed_content"):
+                result = genai.embed_content(
                     model=embedding_model,
                     content=text,
                     task_type="retrieval_query",
                 )
                 return _extract_single(result)
-            except Exception:
-                pass
-        except Exception:
-            # Try alternative API below
-            pass
-
-        # Alternative new API: generate_content_embeddings
-        try:
-            gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
-            if gce is not None:
-                result = gce(
-                    model=embedding_model,
-                    requests=[{"content": {"text": text}}],
-                )
-                return _extract_single(result)
         except Exception:
             pass
-
-    # Fallback: module-level API (older libraries or tests)
-    try:
-        if hasattr(genai, "embed_content"):
-            result = genai.embed_content(
-                model=embedding_model,
-                content=text,
-                task_type="retrieval_query",
-            )
-            return _extract_single(result)
-    except Exception:
-        pass
 
     raise RuntimeError("Failed to obtain embedding via available Google GenAI interfaces.")
 
@@ -476,7 +486,12 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
         return []
 
     _ensure_genai()
-    embedding_model = model or EMBEDDING_MODEL_NAME
+    # Try the provided model first, then sensible fallbacks
+    primary_model = model or EMBEDDING_MODEL_NAME
+    candidate_models: list[str] = []
+    for m in (primary_model, "text-embedding-004", "models/embedding-001"):
+        if m and m not in candidate_models:
+            candidate_models.append(m)
 
     def _extract_batch(result: Any) -> List[List[float]]:
         # Dict-like
@@ -517,51 +532,53 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                     return out
         raise RuntimeError(f"Unexpected batch embed_content result shape: {type(result)}")
 
-    # Try modern client API first (prefer 'contents' per new SDK)
-    if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
-        try:
-            result = _GENAI_CLIENT.models.embed_content(
-                model=embedding_model,
-                contents=texts,
-                task_type="retrieval_query",
-            )
-            return _extract_batch(result)
-        except TypeError:
+    # Try each candidate model across known SDK call styles
+    for embedding_model in candidate_models:
+        # Try modern client API first (prefer 'contents' per new SDK)
+        if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
             try:
                 result = _GENAI_CLIENT.models.embed_content(
+                    model=embedding_model,
+                    contents=texts,
+                    task_type="retrieval_query",
+                )
+                return _extract_batch(result)
+            except TypeError:
+                try:
+                    result = _GENAI_CLIENT.models.embed_content(
+                        model=embedding_model,
+                        content=texts,
+                        task_type="retrieval_query",
+                    )
+                    return _extract_batch(result)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Alternative new API: generate_content_embeddings
+            try:
+                gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
+                if gce is not None:
+                    result = gce(
+                        model=embedding_model,
+                        requests=[{"content": {"text": t}} for t in texts],
+                    )
+                    return _extract_batch(result)
+            except Exception:
+                pass
+
+        # Fallback: module-level API (older libraries or tests)
+        try:
+            if hasattr(genai, "embed_content"):
+                result = genai.embed_content(
                     model=embedding_model,
                     content=texts,
                     task_type="retrieval_query",
                 )
                 return _extract_batch(result)
-            except Exception:
-                pass
         except Exception:
             pass
-
-        # Alternative new API: generate_content_embeddings
-        try:
-            gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
-            if gce is not None:
-                result = gce(
-                    model=embedding_model,
-                    requests=[{"content": {"text": t}} for t in texts],
-                )
-                return _extract_batch(result)
-        except Exception:
-            pass
-
-    # Fallback: module-level API (older libraries or tests)
-    try:
-        if hasattr(genai, "embed_content"):
-            result = genai.embed_content(
-                model=embedding_model,
-                content=texts,
-                task_type="retrieval_query",
-            )
-            return _extract_batch(result)
-    except Exception:
-        pass
 
     # Ultimate fallback: individual calls
     logging.warning("Batch embedding failed, falling back to individual calls")
@@ -588,7 +605,11 @@ def retrieve_rag_documents(
     
     # Use pre-computed embedding if provided, otherwise compute it
     if query_embedding is None:
-        query_embedding = embed_query(query)
+        try:
+            query_embedding = embed_query(query)
+        except Exception as e:
+            logging.warning(f"Query embedding failed; skipping retrieval: {e}")
+            return []
     
     payload = {
         "query_embedding": query_embedding,
