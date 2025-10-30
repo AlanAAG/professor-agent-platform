@@ -15,7 +15,7 @@ services:
       - key: SECRET_API_KEY
         sync: false  # Generate a strong key: openssl rand -hex 32
       - key: ALLOWED_ORIGINS
-        value: https://your-lovable-app.lovable.app,http://localhost:3000
+        value: https://id-preview--93a4e185-b263-4e0d-83e0-9cf4863ef461.lovable.app,https://localhost:3000
       - key: PYTHON_VERSION
         value: 3.11.0
     
