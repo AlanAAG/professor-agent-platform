@@ -257,10 +257,22 @@ RULES:
 - Cite sources when referencing specific content
 - Be conversational but accurate"""
         
-        # Prepare messages
-        messages = [{"role": "system", "content": system_prompt}]
-        for msg in payload.messages:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+        # Prepare messages in Gemini-friendly format
+        # Use system_instruction for the system prompt, and map chat roles to Gemini roles.
+        def _to_genai_contents(chat_messages: List[Dict[str, str]]):
+            contents: List[Dict[str, object]] = []
+            for m in chat_messages:
+                role_raw = (m.get("role") or "").lower()
+                if role_raw == "system":
+                    # We pass system prompts via system_instruction, so skip here
+                    continue
+                role = "user" if role_raw == "user" else "model" if role_raw == "assistant" else "user"
+                contents.append({
+                    "role": role,
+                    "parts": [{"text": m.get("content", "")}],
+                })
+            return contents
+        genai_contents = _to_genai_contents(payload.messages)
         
         # Stream response
         async def generate():
@@ -298,24 +310,37 @@ RULES:
             if _GENAI_CLIENT is None:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
-            response = _GENAI_CLIENT.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[m["content"] for m in messages],
-                stream=True,
-            )
-            
-            for chunk in response:
-                if chunk.text:
-                    data = {
-                        "choices": [{
-                            "delta": {"content": chunk.text}
-                        }]
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
+            try:
+                response = _GENAI_CLIENT.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=genai_contents,
+                    system_instruction=system_prompt,
+                    stream=True,
+                )
+
+                for chunk in response:
+                    if getattr(chunk, "text", None):
+                        data = {
+                            "choices": [{
+                                "delta": {"content": chunk.text}
+                            }]
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+            except Exception as stream_err:
+                # Emit an error payload to the client before closing
+                err_payload = {"error": str(stream_err)}
+                yield f"data: {json.dumps(err_payload)}\n\n"
             
             yield "data: [DONE]\n\n"
         
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
         
     except Exception as e:
         logger.exception("CHAT error | latency_ms=%s", int((time.time() - _t0) * 1000))
