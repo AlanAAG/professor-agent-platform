@@ -339,7 +339,9 @@ def _get_supabase_client():
     if not create_client:
         raise RuntimeError("Supabase client not available. Install 'supabase'.")
 
-    url = os.environ.get("EXTERNAL_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    # Normalize URL to avoid double slashes in requests (e.g., ...co//rest/v1)
+    url_raw = os.environ.get("EXTERNAL_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    url = url_raw.rstrip("/") if url_raw else None
     key = os.environ.get("EXTERNAL_SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not url or not key:
         raise RuntimeError(
@@ -700,9 +702,13 @@ def retrieve_rag_documents_keyword_fallback(
         if selected_class:
             q = q.filter("metadata->>class_name", "eq", selected_class)
 
-        # Case-insensitive contains on content
-        # Using ilike for PostgREST
-        q = q.ilike("content", f"%{query}%")
+        # Case-insensitive contains on content. Prefer native ilike();
+        # fall back to generic filter if unavailable in the SDK.
+        try:
+            q = q.ilike("content", f"%{query}%")
+        except Exception:
+            # Some environments/versions may not expose .ilike; use filter instead
+            q = q.filter("content", "ilike", f"%{query}%")
 
         # Prefer newer content if many matches
         q = q.order("created_at", desc=True).limit(max(1, int(limit)))
