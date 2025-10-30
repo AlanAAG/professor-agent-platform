@@ -11,7 +11,7 @@ from google import genai
 import os
 import json
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import logging
 import time
 
@@ -129,8 +129,15 @@ def _check_db_status() -> Dict[str, Optional[bool]]:
     except Exception:
         return {"connected": True, "ok": False}
 
+class Message(BaseModel):
+    role: str
+    content: str
+    # Accept optional sources array from frontend; backend will ignore when forwarding to AI
+    sources: Optional[List[Dict[str, Any]]] = None
+
+
 class ChatRequest(BaseModel):
-    messages: List[Dict[str, str]]
+    messages: List[Message]
     selectedClass: Optional[str] = None
     persona: str = "balanced"
 
@@ -207,8 +214,8 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
     _t0 = time.time()
     try:
         # Get RAG context
-        user_messages = [m for m in payload.messages if m.get("role") == "user"]
-        last_query = user_messages[-1]["content"] if user_messages else ""
+        user_messages = [m for m in payload.messages if (m.role or "").lower() == "user"]
+        last_query = user_messages[-1].content if user_messages else ""
 
         # Retrieve documents directly
         documents = retrieve_rag_documents(
@@ -272,7 +279,11 @@ RULES:
                     "parts": [{"text": m.get("content", "")}],
                 })
             return contents
-        genai_contents = _to_genai_contents(payload.messages)
+        # Strip non-AI fields (like sources) before forwarding to Gemini
+        clean_messages: List[Dict[str, str]] = [
+            {"role": m.role, "content": m.content} for m in payload.messages
+        ]
+        genai_contents = _to_genai_contents(clean_messages)
         
         # Stream response
         async def generate():
