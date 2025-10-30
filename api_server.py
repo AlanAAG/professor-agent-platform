@@ -320,7 +320,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             f"Source {i+1}:\nClass: {doc.get('class_name', 'N/A')}\n{doc.get('content', '')}"
             for i, doc in enumerate(documents)
         ]) if documents else "No relevant course materials found."
-        
+
         # System prompt
         personas = {
             "study": "You are a study buddy helping review material...",
@@ -329,16 +329,30 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             "balanced": "You are a balanced tutor..."
         }
         
+        if documents:
+            rules = (
+                "- ONLY use information from the provided course materials\n"
+                "- If information is not in the materials, say so\n"
+                "- Cite sources when referencing specific content\n"
+                "- Be conversational but accurate"
+            )
+        else:
+            # When no materials are found, answer helpfully from general knowledge
+            # while being transparent about the limitation.
+            rules = (
+                "- No course materials were found for this query.\n"
+                "- Answer based on your general knowledge and reasoning.\n"
+                "- Preface the answer with a brief note that course materials were unavailable.\n"
+                "- Be concise, accurate, and helpful"
+            )
+
         system_prompt = f"""{personas.get(payload.persona, personas['balanced'])}
 
 COURSE MATERIALS:
 {context}
 
 RULES:
-- ONLY use information from the provided course materials
-- If information is not in the materials, say so
-- Cite sources when referencing specific content
-- Be conversational but accurate"""
+{rules}"""
         
         # Prepare messages in Gemini-friendly format
         # Use system_instruction for the system prompt, and map chat roles to Gemini roles.
@@ -363,35 +377,29 @@ RULES:
         
         # Stream response
         async def generate():
-            # Send sources first
-            if documents:
-                sources_data = {
-                    "sources": [
-                        {
-                            "content": doc.get("content", ""),
-                            "metadata": {
-                                "class_name": doc.get("class_name"),
-                                "section": doc.get("section"),
-                                "title": doc.get("title"),
-                                "url": doc.get("url")
-                            },
-                            "similarity": doc.get("similarity", 0)
-                        }
-                        for doc in documents
-                    ]
-                }
-                yield f"data: {json.dumps(sources_data)}\n\n"
-            else:
-                # Graceful fallback when no documents are found
+            # Send sources first (possibly empty list)
+            sources_payload = {
+                "sources": [
+                    {
+                        "content": doc.get("content", ""),
+                        "metadata": {
+                            "class_name": doc.get("class_name"),
+                            "section": doc.get("section"),
+                            "title": doc.get("title"),
+                            "url": doc.get("url")
+                        },
+                        "similarity": doc.get("similarity", 0)
+                    }
+                    for doc in (documents or [])
+                ]
+            }
+            if not documents:
                 logger.warning(
-                    "CHAT failure | NO_DOCUMENTS_ANSWER | query_len=%s latency_ms=%s",
+                    "CHAT fallback | proceeding without materials | query_len=%s latency_ms=%s",
                     len(last_query or ""),
                     int((time.time() - _t0) * 1000),
                 )
-                yield f"data: {json.dumps({'sources': []})}\n\n"
-                yield f"data: {json.dumps({'choices': [{'delta': {'content': NO_DOCUMENTS_ANSWER}}]})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+            yield f"data: {json.dumps(sources_payload)}\n\n"
             
             # Stream AI response
             if _GENAI_CLIENT is None:
