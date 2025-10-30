@@ -7,7 +7,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 from src.shared.utils import EMBEDDING_MODEL_NAME, cohere_rerank, retrieve_rag_documents
-import google.generativeai as genai
+from google import genai
 import os
 import json
 from datetime import datetime
@@ -47,8 +47,13 @@ app.add_middleware(
 
 # --- Initialize clients ---
 # Uses GEMINI_API_KEY environment variable
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.5-flash")
+_GENAI_CLIENT = None
+_api_key = os.getenv("GEMINI_API_KEY")
+if _api_key:
+    try:
+        _GENAI_CLIENT = genai.Client(api_key=_api_key)
+    except Exception:
+        _GENAI_CLIENT = None
 
 # Optional Supabase client for health checks
 supabase = None
@@ -143,7 +148,7 @@ async def health_check():
         "version": "1.0.0-beta",
         "timestamp": datetime.now().isoformat(),
         "database": db_status,
-        "model_loaded": model is not None,
+        "model_loaded": _GENAI_CLIENT is not None,
         "endpoints": {
             "chat": "/api/chat",
             "rag_search": "/api/rag-search",
@@ -290,9 +295,13 @@ RULES:
                 return
             
             # Stream AI response
-            response = model.generate_content(
-                [m["content"] for m in messages],
-                stream=True
+            if _GENAI_CLIENT is None:
+                raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
+
+            response = _GENAI_CLIENT.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[m["content"] for m in messages],
+                stream=True,
             )
             
             for chunk in response:
