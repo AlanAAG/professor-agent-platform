@@ -307,7 +307,7 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
 
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
 try:
-    import google.generativeai as genai
+    from google import genai
 except Exception:
     genai = None  # Optional dependency
 
@@ -323,6 +323,7 @@ except Exception:
     Document = None  # type: ignore
 
 _SUPABASE_CLIENT = None
+_GENAI_CLIENT = None
 
 
 def _get_supabase_client():
@@ -344,24 +345,35 @@ def _get_supabase_client():
 
 
 def _ensure_genai():
+    global _GENAI_CLIENT
     if genai is None:
-        raise RuntimeError("google-generativeai not available. Install 'google-generativeai'.")
+        raise RuntimeError("google-genai not available. Install 'google-genai'.")
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY for embeddings.")
-    genai.configure(api_key=api_key)
+    if _GENAI_CLIENT is None:
+        _GENAI_CLIENT = genai.Client(api_key=api_key)
 
 
 def embed_query(text: str, model: str | None = None) -> list[float]:
     """Embed a query string using Gemini embeddings."""
     _ensure_genai()
     embedding_model = model or EMBEDDING_MODEL_NAME
-    result = genai.embed_content(
+    result = _GENAI_CLIENT.models.embed_content(
         model=embedding_model,
         content=text,
         task_type="retrieval_query",
     )
-    return result.get("embedding") or result["embedding"]
+    # Support dict-like or attr-like result objects
+    if isinstance(result, dict):
+        return result.get("embedding") or result["embedding"]
+    if hasattr(result, "embedding"):
+        return result.embedding  # type: ignore[attr-defined]
+    # Fallback to robust access
+    try:
+        return result["embedding"]  # type: ignore[index]
+    except Exception as e:
+        raise RuntimeError(f"Unexpected embed_content result shape: {type(result)}: {e}")
 
 
 def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List[float]]:
@@ -381,20 +393,22 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
     embedding_model = model or EMBEDDING_MODEL_NAME
     
     # Single API call for all queries
-    result = genai.embed_content(
+    result = _GENAI_CLIENT.models.embed_content(
         model=embedding_model,
-        content=texts,  # Pass list of queries
+        content=texts,
         task_type="retrieval_query",
     )
-    
-    # Extract embeddings - the API returns a list when given a list
-    if isinstance(result.get("embedding"), list) and len(result["embedding"]) > 0:
-        # Check if it's a list of embeddings or a single embedding
-        if isinstance(result["embedding"][0], list):
-            return result["embedding"]
-        else:
-            # Single embedding case - wrap in list
-            return [result["embedding"]]
+
+    # Extract embeddings
+    if isinstance(result, dict):
+        emb = result.get("embedding")
+    else:
+        emb = getattr(result, "embedding", None)
+
+    if isinstance(emb, list) and emb:
+        if isinstance(emb[0], list):
+            return emb  # type: ignore[return-value]
+        return [emb]  # type: ignore[list-item]
     
     # Fallback: if batch fails, fall back to individual calls
     logging.warning("Batch embedding failed, falling back to individual calls")
