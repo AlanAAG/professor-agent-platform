@@ -694,50 +694,54 @@ def retrieve_rag_documents_keyword_fallback(
     except Exception:
         return []
 
-    try:
-        # Base select
-        q = supabase.table("documents").select("id, content, metadata, created_at")
-
-        # Optional class filter via JSONB extraction
+    # Build a base query once
+    def _base_query():
+        q0 = supabase.table("documents").select("id, content, metadata, created_at")
         if selected_class:
-            q = q.filter("metadata->>class_name", "eq", selected_class)
+            q0 = q0.filter("metadata->>class_name", "eq", selected_class)
+        return q0
 
-        # Case-insensitive contains on content. Prefer native ilike();
-        # fall back to generic filter if unavailable in the SDK.
+    # Try multiple strategies to avoid PostgREST 400s across environments
+    strategies = [
+        ("filter_ilike_star", lambda q: q.filter("content", "ilike", f"*{query}*")),
+        ("ilike_percent",     lambda q: q.ilike("content", f"%{query}%")),
+        ("filter_ilike_percent", lambda q: q.filter("content", "ilike", f"%{query}%")),
+        ("filter_like_percent",  lambda q: q.filter("content", "like", f"%{query}%")),
+    ]
+
+    for _name, apply_strategy in strategies:
         try:
-            q = q.ilike("content", f"%{query}%")
+            q = apply_strategy(_base_query())
+            q = q.order("created_at", desc=True).limit(max(1, int(limit)))
+            resp = q.execute()
+            data = getattr(resp, "data", None) or []
+            if not data:
+                # Try next strategy if empty
+                continue
+
+            # Normalize to match RPC shape as much as possible
+            norm: list[dict] = []
+            for d in data:
+                meta = d.get("metadata") or {}
+                norm.append(
+                    {
+                        "id": d.get("id"),
+                        "content": d.get("content", ""),
+                        "metadata": meta,
+                        "class_name": meta.get("class_name"),
+                        "title": meta.get("title"),
+                        "section": meta.get("section"),
+                        "url": meta.get("url") or meta.get("source_url"),
+                        "similarity": 0.0,
+                    }
+                )
+            return norm
         except Exception:
-            # Some environments/versions may not expose .ilike; use filter instead
-            q = q.filter("content", "ilike", f"%{query}%")
+            # Try the next strategy on any error (including HTTP 400)
+            continue
 
-        # Prefer newer content if many matches
-        q = q.order("created_at", desc=True).limit(max(1, int(limit)))
-
-        resp = q.execute()
-        data = getattr(resp, "data", None) or []
-
-        # Normalize to match RPC shape as much as possible
-        norm: list[dict] = []
-        for d in data:
-            # Ensure consistent keys for downstream consumers
-            meta = d.get("metadata") or {}
-            norm.append(
-                {
-                    "id": d.get("id"),
-                    "content": d.get("content", ""),
-                    "metadata": meta,
-                    "class_name": meta.get("class_name"),
-                    "title": meta.get("title"),
-                    "section": meta.get("section"),
-                    "url": meta.get("url") or meta.get("source_url"),
-                    # No vector similarity available in keyword fallback
-                    "similarity": 0.0,
-                }
-            )
-        return norm
-    except Exception:
-        # On any failure, silently return empty list so callers can decide next steps
-        return []
+    # If all strategies fail or return empty, return []
+    return []
 
 
 def _to_langchain_documents(raw_docs: list[dict]) -> list[Document]:
