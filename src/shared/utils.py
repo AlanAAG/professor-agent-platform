@@ -345,72 +345,225 @@ def _get_supabase_client():
 
 
 def _ensure_genai():
+    """Ensure a usable embeddings interface is initialized.
+
+    Prefers the new google-genai Client API if available; otherwise falls back
+    to module-level configuration (older-style interfaces or test doubles).
+    """
     global _GENAI_CLIENT
     if genai is None:
         raise RuntimeError("google-genai not available. Install 'google-genai'.")
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY for embeddings.")
-    if _GENAI_CLIENT is None:
-        _GENAI_CLIENT = genai.Client(api_key=api_key)
+
+    # New SDK path (google-genai)
+    if getattr(genai, "Client", None) is not None:
+        if _GENAI_CLIENT is None:
+            _GENAI_CLIENT = genai.Client(api_key=api_key)
+        return
+
+    # Fallback for older-style API or tests that monkeypatch a module-level genai
+    try:
+        if hasattr(genai, "configure"):
+            genai.configure(api_key=api_key)  # type: ignore[attr-defined]
+    except Exception:
+        # Non-fatal; downstream calls will try additional fallbacks
+        pass
 
 
 def embed_query(text: str, model: str | None = None) -> list[float]:
-    """Embed a query string using Gemini embeddings."""
+    """Embed a single query string using Gemini embeddings with robust fallbacks."""
     _ensure_genai()
     embedding_model = model or EMBEDDING_MODEL_NAME
-    result = _GENAI_CLIENT.models.embed_content(
-        model=embedding_model,
-        content=text,
-        task_type="retrieval_query",
-    )
-    # Support dict-like or attr-like result objects
-    if isinstance(result, dict):
-        return result.get("embedding") or result["embedding"]
-    if hasattr(result, "embedding"):
-        return result.embedding  # type: ignore[attr-defined]
-    # Fallback to robust access
+
+    def _extract_single(result: Any) -> list[float]:
+        # Common forms
+        if isinstance(result, dict):
+            if "embedding" in result and isinstance(result["embedding"], list):
+                # Either a single vector or batch
+                emb = result["embedding"]
+                if emb and isinstance(emb[0], (int, float)):
+                    return emb  # single vector
+                if emb and isinstance(emb[0], list):
+                    return emb[0]  # first of batch
+            if "embeddings" in result and isinstance(result["embeddings"], list):
+                first = result["embeddings"][0] if result["embeddings"] else None
+                if isinstance(first, dict) and "values" in first:
+                    return first["values"]
+                if isinstance(first, list):
+                    return first
+        # Attr-like
+        if hasattr(result, "embedding"):
+            emb = getattr(result, "embedding")
+            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
+                return emb
+            if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                return emb[0]
+        if hasattr(result, "embeddings"):
+            embeddings = getattr(result, "embeddings")
+            if isinstance(embeddings, list) and embeddings:
+                first = embeddings[0]
+                if isinstance(first, dict) and "values" in first:
+                    return first["values"]
+                if isinstance(first, list):
+                    return first
+        # Index-like
+        try:
+            emb = result["embedding"]  # type: ignore[index]
+            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
+                return emb
+            if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                return emb[0]
+        except Exception:
+            pass
+        raise RuntimeError(f"Unexpected embed_content result shape: {type(result)}")
+
+    # Try modern client API first (prefer 'contents' per new SDK)
+    if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
+        try:
+            result = _GENAI_CLIENT.models.embed_content(
+                model=embedding_model,
+                contents=[text],  # new SDK prefers 'contents'
+                task_type="retrieval_query",
+            )
+            return _extract_single(result)
+        except TypeError:
+            # Older signature that accepts 'content='
+            try:
+                result = _GENAI_CLIENT.models.embed_content(
+                    model=embedding_model,
+                    content=text,
+                    task_type="retrieval_query",
+                )
+                return _extract_single(result)
+            except Exception:
+                pass
+        except Exception:
+            # Try alternative API below
+            pass
+
+        # Alternative new API: generate_content_embeddings
+        try:
+            gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
+            if gce is not None:
+                result = gce(
+                    model=embedding_model,
+                    requests=[{"content": {"text": text}}],
+                )
+                return _extract_single(result)
+        except Exception:
+            pass
+
+    # Fallback: module-level API (older libraries or tests)
     try:
-        return result["embedding"]  # type: ignore[index]
-    except Exception as e:
-        raise RuntimeError(f"Unexpected embed_content result shape: {type(result)}: {e}")
+        if hasattr(genai, "embed_content"):
+            result = genai.embed_content(
+                model=embedding_model,
+                content=text,
+                task_type="retrieval_query",
+            )
+            return _extract_single(result)
+    except Exception:
+        pass
+
+    raise RuntimeError("Failed to obtain embedding via available Google GenAI interfaces.")
 
 
 def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List[float]]:
-    """Embed multiple query strings in a single API call using Gemini embeddings.
-    
-    Args:
-        texts: List of query strings to embed
-        model: Optional model name override
-        
-    Returns:
-        List of embeddings in the same order as input texts
-    """
+    """Embed multiple query strings in a single API call with robust fallbacks."""
     if not texts:
         return []
-    
+
     _ensure_genai()
     embedding_model = model or EMBEDDING_MODEL_NAME
-    
-    # Single API call for all queries
-    result = _GENAI_CLIENT.models.embed_content(
-        model=embedding_model,
-        content=texts,
-        task_type="retrieval_query",
-    )
 
-    # Extract embeddings
-    if isinstance(result, dict):
-        emb = result.get("embedding")
-    else:
-        emb = getattr(result, "embedding", None)
+    def _extract_batch(result: Any) -> List[List[float]]:
+        # Dict-like
+        if isinstance(result, dict):
+            if "embedding" in result and isinstance(result["embedding"], list):
+                emb = result["embedding"]
+                if emb and isinstance(emb[0], list):
+                    return emb  # list of vectors
+                if emb and isinstance(emb[0], (int, float)):
+                    return [emb]
+            if "embeddings" in result and isinstance(result["embeddings"], list):
+                out: List[List[float]] = []
+                for item in result["embeddings"]:
+                    if isinstance(item, dict) and "values" in item:
+                        out.append(item["values"])  # type: ignore[list-item]
+                    elif isinstance(item, list):
+                        out.append(item)
+                if out:
+                    return out
+        # Attr-like
+        if hasattr(result, "embedding"):
+            emb = getattr(result, "embedding")
+            if isinstance(emb, list) and emb:
+                if isinstance(emb[0], list):
+                    return emb
+                if isinstance(emb[0], (int, float)):
+                    return [emb]
+        if hasattr(result, "embeddings"):
+            embeddings = getattr(result, "embeddings")
+            if isinstance(embeddings, list) and embeddings:
+                out: List[List[float]] = []
+                for item in embeddings:
+                    if isinstance(item, dict) and "values" in item:
+                        out.append(item["values"])  # type: ignore[list-item]
+                    elif isinstance(item, list):
+                        out.append(item)
+                if out:
+                    return out
+        raise RuntimeError(f"Unexpected batch embed_content result shape: {type(result)}")
 
-    if isinstance(emb, list) and emb:
-        if isinstance(emb[0], list):
-            return emb  # type: ignore[return-value]
-        return [emb]  # type: ignore[list-item]
-    
-    # Fallback: if batch fails, fall back to individual calls
+    # Try modern client API first (prefer 'contents' per new SDK)
+    if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
+        try:
+            result = _GENAI_CLIENT.models.embed_content(
+                model=embedding_model,
+                contents=texts,
+                task_type="retrieval_query",
+            )
+            return _extract_batch(result)
+        except TypeError:
+            try:
+                result = _GENAI_CLIENT.models.embed_content(
+                    model=embedding_model,
+                    content=texts,
+                    task_type="retrieval_query",
+                )
+                return _extract_batch(result)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Alternative new API: generate_content_embeddings
+        try:
+            gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
+            if gce is not None:
+                result = gce(
+                    model=embedding_model,
+                    requests=[{"content": {"text": t}} for t in texts],
+                )
+                return _extract_batch(result)
+        except Exception:
+            pass
+
+    # Fallback: module-level API (older libraries or tests)
+    try:
+        if hasattr(genai, "embed_content"):
+            result = genai.embed_content(
+                model=embedding_model,
+                content=texts,
+                task_type="retrieval_query",
+            )
+            return _extract_batch(result)
+    except Exception:
+        pass
+
+    # Ultimate fallback: individual calls
     logging.warning("Batch embedding failed, falling back to individual calls")
     return [embed_query(text, model) for text in texts]
 
