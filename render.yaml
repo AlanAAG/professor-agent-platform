@@ -8,6 +8,8 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false  # Set manually in Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false  # Optional: enables OpenAI embedding fallback
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
@@ -18,6 +20,8 @@ services:
         value: https://id-preview--93a4e185-b263-4e0d-83e0-9cf4863ef461.lovable.app,https://localhost:3000
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: EMBEDDING_MODEL_NAME
+        value: text-embedding-004  # or models/embedding-001
     
     healthCheckPath: /
 
