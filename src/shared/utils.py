@@ -701,12 +701,28 @@ def retrieve_rag_documents_keyword_fallback(
             q0 = q0.filter("metadata->>class_name", "eq", selected_class)
         return q0
 
-    # Try multiple strategies to avoid PostgREST 400s across environments
+    # Sanitize and bound the query to reduce chances of 400s due to weird tokens
+    qtext = (query or "").strip()
+    # Cap length to avoid overly long LIKE/FTS payloads
+    if len(qtext) > 200:
+        qtext = qtext[:200]
+
+    # Try multiple strategies to avoid PostgREST 400s across environments.
+    # Prefer full-text search variants first, then fall back to ILIKE.
     strategies = [
-        ("filter_ilike_star", lambda q: q.filter("content", "ilike", f"*{query}*")),
-        ("ilike_percent",     lambda q: q.ilike("content", f"%{query}%")),
-        ("filter_ilike_percent", lambda q: q.filter("content", "ilike", f"%{query}%")),
-        ("filter_like_percent",  lambda q: q.filter("content", "like", f"%{query}%")),
+        # Web-search (handles natural language best)
+        ("text_search_web", lambda q: q.text_search("content", qtext, config="english", type="websearch")),
+        # Phrase full-text search
+        ("filter_phfts",     lambda q: q.filter("content", "phfts", qtext)),
+        # Plain full-text search
+        ("filter_fts",       lambda q: q.filter("content", "fts", qtext)),
+        # Web full-text search operator
+        ("filter_wfts",      lambda q: q.filter("content", "wfts", qtext)),
+        # Percent-based ILIKE (widely supported)
+        ("ilike_percent",    lambda q: q.ilike("content", f"%{qtext}%")),
+        ("filter_ilike_pct", lambda q: q.filter("content", "ilike", f"%{qtext}%")),
+        # Star-based ILIKE (some PostgREST deployments accept this form)
+        ("filter_ilike_star", lambda q: q.filter("content", "ilike", f"*{qtext}*")),
     ]
 
     for _name, apply_strategy in strategies:
