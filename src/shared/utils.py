@@ -15,6 +15,8 @@ from dateutil import tz
 # Prefer the current public Google GenAI embedding model by default.
 # Can be overridden via EMBEDDING_MODEL_NAME env var.
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-004")
+# OpenAI embedding model fallback
+OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
 
 # --- Helper Functions for RRF/MMR/Boosting (Option A) ---
@@ -326,6 +328,7 @@ except Exception:
 
 _SUPABASE_CLIENT = None
 _GENAI_CLIENT = None
+_OPENAI_CLIENT = None
 
 
 def _get_supabase_client():
@@ -347,36 +350,47 @@ def _get_supabase_client():
 
 
 def _ensure_genai():
-    """Ensure a usable embeddings interface is initialized.
-
-    Prefers the new google-genai Client API if available; otherwise falls back
-    to module-level configuration (older-style interfaces or test doubles).
-    """
+    """Best-effort initialize Google GenAI; don't raise to allow fallbacks."""
     global _GENAI_CLIENT
-    if genai is None:
-        raise RuntimeError("google-genai not available. Install 'google-genai'.")
-    # Support both env var names to reduce deployment issues
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing GEMINI_API_KEY for embeddings.")
-
-    # New SDK path (google-genai)
-    if getattr(genai, "Client", None) is not None:
-        if _GENAI_CLIENT is None:
-            _GENAI_CLIENT = genai.Client(api_key=api_key)
-        return
-
-    # Fallback for older-style API or tests that monkeypatch a module-level genai
     try:
-        if hasattr(genai, "configure"):
-            genai.configure(api_key=api_key)  # type: ignore[attr-defined]
+        if genai is None:
+            return
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            return
+        if getattr(genai, "Client", None) is not None:
+            if _GENAI_CLIENT is None:
+                _GENAI_CLIENT = genai.Client(api_key=api_key)
+            return
+        try:
+            if hasattr(genai, "configure"):
+                genai.configure(api_key=api_key)  # type: ignore[attr-defined]
+        except Exception:
+            pass
     except Exception:
-        # Non-fatal; downstream calls will try additional fallbacks
-        pass
+        # Swallow to allow OpenAI fallback
+        _GENAI_CLIENT = None
+
+
+def _ensure_openai():
+    """Best-effort initialize OpenAI client for embeddings fallback."""
+    global _OPENAI_CLIENT
+    if _OPENAI_CLIENT is not None:
+        return
+    try:
+        # OpenAI Python SDK v1+/v2
+        try:
+            from openai import OpenAI  # type: ignore
+        except Exception:  # pragma: no cover
+            return
+        # The SDK reads OPENAI_API_KEY from env; no explicit key needed if set
+        _OPENAI_CLIENT = OpenAI()
+    except Exception:
+        _OPENAI_CLIENT = None
 
 
 def embed_query(text: str, model: str | None = None) -> list[float]:
-    """Embed a single query string using Gemini embeddings with robust fallbacks."""
+    """Embed a single query string with robust fallbacks (Gemini -> OpenAI)."""
     _ensure_genai()
     # Try the provided model first, then sensible fallbacks
     primary_model = model or EMBEDDING_MODEL_NAME
@@ -476,12 +490,25 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                 return _extract_single(result)
         except Exception:
             pass
+    # OpenAI fallback
+    _ensure_openai()
+    if _OPENAI_CLIENT is not None:
+        try:
+            resp = _OPENAI_CLIENT.embeddings.create(
+                model=os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL),
+                input=text,
+            )
+            data = getattr(resp, "data", None) or []
+            if data and hasattr(data[0], "embedding"):
+                return data[0].embedding  # type: ignore[return-value]
+        except Exception as e:
+            logging.warning(f"OpenAI embedding fallback failed: {e}")
 
-    raise RuntimeError("Failed to obtain embedding via available Google GenAI interfaces.")
+    raise RuntimeError("Failed to obtain embedding via available Google GenAI or OpenAI interfaces.")
 
 
 def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List[float]]:
-    """Embed multiple query strings in a single API call with robust fallbacks."""
+    """Embed multiple query strings with robust fallbacks (Gemini -> OpenAI)."""
     if not texts:
         return []
 
@@ -579,6 +606,32 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                 return _extract_batch(result)
         except Exception:
             pass
+    # OpenAI batch fallback
+    _ensure_openai()
+    if _OPENAI_CLIENT is not None:
+        try:
+            resp = _OPENAI_CLIENT.embeddings.create(
+                model=os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL),
+                input=texts,
+            )
+            data = getattr(resp, "data", None) or []
+            if data:
+                # Ensure order aligns with inputs
+                vectors: List[List[float]] = []
+                # Some SDK versions return a list where each item has an 'index'
+                # We'll sort to be safe, then map to embeddings
+                try:
+                    data_sorted = sorted(data, key=lambda d: getattr(d, "index", 0))
+                except Exception:
+                    data_sorted = data
+                for item in data_sorted:
+                    vec = getattr(item, "embedding", None)
+                    if isinstance(vec, list):
+                        vectors.append(vec)
+                if vectors:
+                    return vectors
+        except Exception as e:
+            logging.warning(f"OpenAI batch embedding fallback failed: {e}")
 
     # Ultimate fallback: individual calls
     logging.warning("Batch embedding failed, falling back to individual calls")
@@ -672,7 +725,7 @@ def parse_session_date(date_str: str) -> Optional[datetime.datetime]:
         return None
 
 # --- NEW: Flexible Date Parser ---
-def parse_general_date(date_str: str, local_tz: tz.tzfile = tz.gettz('Asia/Dubai')) -> Optional[datetime.datetime]:
+def parse_general_date(date_str: str, local_tz: tz.tzfile = tz.gettz('UTC')) -> Optional[datetime.datetime]:
     """
     Attempts to parse various common date formats using dateutil.parser.
     Returns a datetime object (UTC) or None if parsing fails.
@@ -689,9 +742,9 @@ def parse_general_date(date_str: str, local_tz: tz.tzfile = tz.gettz('Asia/Dubai
         # dayfirst=True helps interpret DD/MM vs MM/DD correctly in ambiguous cases
         dt_obj = parser.parse(date_part, dayfirst=True)
 
-        # If the parsed datetime is naive, assume local timezone (Dubai by default)
+        # If the parsed datetime is naive, assume UTC to avoid date shifts
         if dt_obj.tzinfo is None:
-            assumed_tz = local_tz or tz.gettz('Asia/Dubai')
+            assumed_tz = local_tz or tz.gettz('UTC')
             dt_obj = dt_obj.replace(tzinfo=assumed_tz)
 
         # Always convert to UTC for consistency
