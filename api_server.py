@@ -124,10 +124,31 @@ def _check_db_status() -> Dict[str, Optional[bool]]:
     if supabase is None:
         return {"connected": False, "ok": False}
     try:
-        _ = supabase.from_("documents").select("id").limit(1).execute()
+        _ = supabase.table("documents").select("id").limit(1).execute()
         return {"connected": True, "ok": True}
     except Exception:
         return {"connected": True, "ok": False}
+
+
+def _get_rag_params() -> Dict[str, object]:
+    """Read RAG tuning parameters from environment with safe defaults."""
+    try:
+        match_threshold = float(os.getenv("RAG_MATCH_THRESHOLD", "0.5"))
+    except Exception:
+        match_threshold = 0.5
+    try:
+        match_count = int(os.getenv("RAG_MATCH_COUNT", "8"))
+    except Exception:
+        match_count = 8
+    # Relaxed fallback params if no docs found on first pass
+    relaxed_threshold = min(match_threshold, 0.3)
+    relaxed_count = max(match_count, 10)
+    return {
+        "match_threshold": match_threshold,
+        "match_count": match_count,
+        "relaxed_threshold": relaxed_threshold,
+        "relaxed_count": relaxed_count,
+    }
 
 class Message(BaseModel):
     role: str
@@ -173,15 +194,26 @@ async def health():
 async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
     _t0 = time.time()
     try:
+        # RAG params from environment with sane defaults
+        params = _get_rag_params()
         # Standardized retrieval via shared utility (Supabase RPC + Gemini embeddings)
         documents = retrieve_rag_documents(
             query=payload.query,
             selected_class=payload.selectedClass,
-            match_count=5,
-            match_threshold=0.7,
+            match_count=params["match_count"],
+            match_threshold=params["match_threshold"],
         )
         # Re-ranking using the zero-cost RRF/MMR implementation
         documents = cohere_rerank(payload.query, documents)
+        # Fallback: relax filtering and class constraint if nothing found
+        if not documents:
+            documents = retrieve_rag_documents(
+                query=payload.query,
+                selected_class=None,  # remove class constraint for wider recall
+                match_count=params["relaxed_count"],
+                match_threshold=params["relaxed_threshold"],
+            )
+            documents = cohere_rerank(payload.query, documents)
         # Telemetry: average similarity
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
@@ -217,15 +249,25 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         user_messages = [m for m in payload.messages if (m.role or "").lower() == "user"]
         last_query = user_messages[-1].content if user_messages else ""
 
-        # Retrieve documents directly
+        # Retrieve documents directly with env-driven params
+        params = _get_rag_params()
         documents = retrieve_rag_documents(
             query=last_query,
             selected_class=payload.selectedClass,
-            match_count=5,
-            match_threshold=0.7,
+            match_count=params["match_count"],
+            match_threshold=params["match_threshold"],
         )
         # Re-ranking using the zero-cost RRF/MMR implementation
         documents = cohere_rerank(last_query, documents)
+        # Fallback: relax filtering and class constraint if nothing found
+        if not documents:
+            documents = retrieve_rag_documents(
+                query=last_query,
+                selected_class=None,
+                match_count=params["relaxed_count"],
+                match_threshold=params["relaxed_threshold"],
+            )
+            documents = cohere_rerank(last_query, documents)
         # Telemetry: average similarity and request metrics
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
@@ -350,6 +392,7 @@ RULES:
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
             },
         )
         
