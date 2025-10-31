@@ -83,6 +83,7 @@ OPTIONAL_METADATA = [
     "page_number",
     "links",
     "retrieval_date",
+    "content_hash",
 ]
 
 def validate_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -100,6 +101,9 @@ def validate_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     if "retrieval_date" not in metadata:
         metadata["retrieval_date"] = datetime.datetime.now().isoformat()
+
+    if "content_hash" in metadata and metadata["content_hash"] is not None:
+        metadata["content_hash"] = str(metadata["content_hash"])
 
     # Remove None values
     return {k: v for k, v in metadata.items() if v is not None}
@@ -247,6 +251,43 @@ async def url_exists_in_db(url: str) -> bool:
         return False
 
 
+async def content_has_changed(url: str, new_hash: str) -> bool:
+    """Return True when the stored content hash differs from the new hash."""
+    if not url or not new_hash:
+        return True
+    if not supabase:
+        return True
+
+    try:
+        def _execute_query():
+            return (
+                supabase
+                .table("documents")
+                .select("metadata")
+                .eq("metadata->>source_url", url)
+                .limit(1)
+                .execute()
+            )
+
+        response = await asyncio.to_thread(_execute_query)
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+
+        if not data:
+            return True
+
+        first_record = data[0] if isinstance(data, list) else data
+        stored_metadata = (first_record or {}).get("metadata") or {}
+        stored_hash = stored_metadata.get("content_hash")
+        if stored_hash is None:
+            return True
+        return stored_hash != new_hash
+    except Exception as e:
+        logging.error(f"Error comparing content hash for '{url}': {e}")
+        return True
+
+
 # --- Synchronous helpers for harvesting pipeline ---
 def check_if_embedded_recently_sync(filter: Dict[str, Any], days: int = 2) -> bool:
     """Synchronous variant to check for recently embedded content.
@@ -301,6 +342,59 @@ def url_exists_in_db_sync(url: str) -> bool:
     except Exception as e:
         logging.error(f"Error (sync) checking Supabase for existing URL '{url}': {e}")
         return False
+
+
+def content_has_changed_sync(url: str, new_hash: str) -> bool:
+    """Synchronous variant of content_has_changed."""
+    if not url or not new_hash:
+        return True
+    if not supabase:
+        return True
+
+    try:
+        response = (
+            supabase
+            .table("documents")
+            .select("metadata")
+            .eq("metadata->>source_url", url)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+
+        if not data:
+            return True
+
+        first_record = data[0] if isinstance(data, list) else data
+        stored_metadata = (first_record or {}).get("metadata") or {}
+        stored_hash = stored_metadata.get("content_hash")
+        if stored_hash is None:
+            return True
+        return stored_hash != new_hash
+    except Exception as e:
+        logging.error(f"Error (sync) comparing content hash for '{url}': {e}")
+        return True
+
+
+def delete_documents_by_source_url(url: str) -> None:
+    """Delete all documents whose metadata.source_url matches the provided URL."""
+    if not supabase or not url:
+        return
+
+    try:
+        (
+            supabase
+            .table("documents")
+            .delete()
+            .eq("metadata->>source_url", url)
+            .execute()
+        )
+        logging.info("Deleted existing documents for source URL %s", url)
+    except Exception as e:
+        logging.error(f"Failed to delete documents for '{url}': {e}")
+        raise
 
 
 # --- Optional: Test Initialization ---

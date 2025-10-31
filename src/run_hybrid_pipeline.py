@@ -185,9 +185,11 @@ def process_single_resource(
                 if not target_pdf_path:
                     raise ValueError("No PDF path available for processing.")
 
-                logging.info(f"   Processing PDF content from: {target_pdf_path}")
+                logging.info(f"   Processing PDF content from: {target_pdf_path}")
                 try:
                     pages_data = pdf_processing.process_pdf(target_pdf_path)  # Takes path
+                    page_entries: List[Dict[str, Any]] = []
+
                     for page_data in pages_data:
                         # Combine text & image descriptions
                         combined_text = page_data.get("text", "")
@@ -204,17 +206,42 @@ def process_single_resource(
                         if len(combined_text) < 50:
                             continue  # Skip empty pages
 
-                        metadata = {
-                            **metadata_base,
-                            "content_type": "pdf_page",
-                            "source_file": os.path.basename(target_pdf_path),
-                            "page_number": page_data.get("page_number"),
-                            "links": page_data.get("links", []),
-                        }
-                        metadata = {k: v for k, v in metadata.items() if v is not None}
+                        page_entries.append(
+                            {
+                                "text": combined_text,
+                                "metadata": {
+                                    **metadata_base,
+                                    "content_type": "pdf_page",
+                                    "source_file": os.path.basename(target_pdf_path),
+                                    "page_number": page_data.get("page_number"),
+                                    "links": page_data.get("links", []),
+                                },
+                            }
+                        )
 
-                        logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
-                        embedding.chunk_and_embed_text(combined_text, metadata)
+                    if not page_entries:
+                        logging.info("   Skipping embedding: no PDF pages with sufficient content.")
+                        return True
+
+                    aggregated_text = "\n\n".join(entry["text"] for entry in page_entries)
+                    content_hash = utils.calculate_content_hash(aggregated_text)
+
+                    has_changed = True
+                    if DEDUP_BY_URL:
+                        has_changed = embedding.content_has_changed_sync(url, content_hash)
+
+                    if not has_changed:
+                        logging.info(f"   Content unchanged for {url}; skipping embedding.")
+                        return False
+
+                    embedding.delete_documents_by_source_url(url)
+                    logging.info(f"   Embedding updated PDF content (hash={content_hash[:12]}…)")
+
+                    for entry in page_entries:
+                        metadata = {**entry["metadata"], "content_hash": content_hash}
+                        metadata = {k: v for k, v in metadata.items() if v is not None}
+                        logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
+                        embedding.chunk_and_embed_text(entry["text"], metadata)
                 # Telemetry: count successfully processed PDF documents (once per file)
                 try:
                     stats["pdf_documents_processed"] = stats.get("pdf_documents_processed", 0) + 1
@@ -235,14 +262,27 @@ def process_single_resource(
                 clean_text = cleaning.clean_transcript_with_llm(raw_content_data) # Use same cleaner for now
                 if not clean_text: raise ValueError("Cleaning returned empty text.")
 
+                content_hash = utils.calculate_content_hash(clean_text)
+
+                has_changed = True
+                if DEDUP_BY_URL:
+                    has_changed = embedding.content_has_changed_sync(url, content_hash)
+
+                if not has_changed:
+                    logging.info(f"   Content unchanged for {url}; skipping embedding.")
+                    return False
+
+                embedding.delete_documents_by_source_url(url)
+
                 metadata = {
                     **metadata_base,
                     "content_type": content_type_tag,
                     "lecture_date": date_obj.strftime('%Y-%m-%d') if date_obj and content_type_tag == "recording_transcript" else None,
+                    "content_hash": content_hash,
                 }
                 metadata = {k: v for k, v in metadata.items() if v is not None}
 
-                logging.info(f"   Embedding extracted {content_type_tag} content...")
+                logging.info(f"   Embedding extracted {content_type_tag} content (hash={content_hash[:12]}…)")
                 embedding.chunk_and_embed_text(clean_text, metadata)
 
             else:
@@ -309,7 +349,6 @@ def main_pipeline(mode="daily"):
         with navigation.launch_and_login() as driver:
             # Caches remain at pipeline scope
             recent_check_cache: dict[str, bool] = {}
-            db_url_exists_cache: dict[str, bool] = {}
             # seen_urls is now replaced by processed_resource_urls set for de-duplication
 
             # --- Navigation and Resource Discovery ---
@@ -444,15 +483,6 @@ def main_pipeline(mode="daily"):
 
                                         # Deduplication Check (DB and Current Run)
                                         if should_process:
-                                            if DEDUP_BY_URL:
-                                                exists_in_db = db_url_exists_cache.get(url)
-                                                if exists_in_db is None:
-                                                    exists_in_db = embedding.url_exists_in_db_sync(url)
-                                                db_url_exists_cache[url] = exists_in_db
-                                                if exists_in_db:
-                                                    logging.info(f"      Duplicate URL already in DB, skipping: {url}")
-                                                    continue
-
                                             # Check against attempted URLs to prevent duplicate processing attempts
                                             if url in attempted_resource_urls:
                                                 logging.info(f"      Duplicate URL (this run), skipping: {url}")
