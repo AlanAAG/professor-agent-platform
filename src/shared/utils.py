@@ -225,8 +225,8 @@ def _normalize_doc_input(obj: Any) -> Dict[str, Any]:
 
 
 def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Reranking orchestrator using Query Expansion + RRF + Boosting + MMR.
-    
+    """Reranking orchestrator that applies MMR directly over provided documents.
+
     This function acts as a zero-cost drop-in replacement for Cohere.
     """
     # Track whether caller passed LangChain Documents (for faithful return type)
@@ -234,54 +234,19 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
     # Normalize input docs in case caller passes LangChain Documents
     normalized_input_docs: List[Dict[str, Any]] = [_normalize_doc_input(d) for d in (documents or [])]
     
-    class_name = ""
-    # Attempt to infer class from provided docs as a fallback boost context
-    for d in normalized_input_docs:
-        c = _get_doc_class(d)
-        if c:
-            class_name = c
-            break
-
-    # Expand queries
-    queries = expand_query(query)
-
-    # OPTIMIZATION: Batch embed all query variants in a single API call
-    try:
-        query_embeddings = embed_queries_batch(queries)
-    except Exception as e:
-        logging.warning(f"Batch embedding failed, falling back to individual calls: {e}")
-        query_embeddings = [None] * len(queries)  # Will trigger individual embedding in retrieve_rag_documents
-
-    # Retrieve candidates for each query using pre-computed embeddings
-    results_per_query: List[List[Dict[str, Any]]] = []
-    for q, q_embedding in zip(queries, query_embeddings):
-        try:
-            # Pass pre-computed embedding to avoid redundant API calls
-            retrieved = retrieve_rag_documents(
-                q, 
-                selected_class=class_name if class_name else None, 
-                match_count=30, 
-                match_threshold=0.7,
-                query_embedding=q_embedding
-            )
-        except Exception as e:
-            logging.warning(f"Retrieval failed for variant '{q}': {e}")
-            retrieved = []
-        results_per_query.append(retrieved)
-
-    # Build master map of id -> doc for all retrieved
+    # Build master map of id -> doc from the initial input documents
     all_docs_map: Dict[str, Dict[str, Any]] = {}
-    for lst in results_per_query:
-        for d in lst:
-            all_docs_map.setdefault(_get_doc_id(d), d)
-    # Also include any originals not in retrieval results
     for d in normalized_input_docs:
         all_docs_map.setdefault(_get_doc_id(d), d)
 
-    # Compute RRF with boosting
-    fused_scores = apply_rrf_and_boost(results_per_query, query=query, class_name=class_name)
+    # Use existing similarity score as the relevance score for MMR
+    fused_scores: Dict[str, float] = {}
+    for doc in normalized_input_docs:
+        doc_id = _get_doc_id(doc)
+        score = doc.get("similarity") or 0.0
+        fused_scores[doc_id] = float(score)
 
-    # --- Fallback: Return top RRF score only if query embedding fails ---
+    # --- Fallback: Return original documents if no scores are available ---
     if not fused_scores:
         # Fall back to original documents if retrieval was completely empty
         selected_dicts = normalized_input_docs[:7]
@@ -293,8 +258,8 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
     try:
         q_emb = embed_query(query)
     except Exception as e:
-        logging.warning(f"Query embedding failed for MMR; returning top by RRF only: {e}")
-        # If embedding fails, return top-7 by fused score without MMR
+        logging.warning(f"Query embedding failed for MMR; returning top by similarity only: {e}")
+        # If embedding fails, return top-7 by similarity score without MMR
         top_ids = [doc_id for doc_id, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:7]]
         selected_dicts = [all_docs_map[i] for i in top_ids if i in all_docs_map]
         if input_is_langchain and Document is not None:

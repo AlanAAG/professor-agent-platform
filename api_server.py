@@ -35,8 +35,6 @@ allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") i
 # Fallback defaults when env var not provided (Quick Test / local dev)
 if not allowed_origins:
     allowed_origins = [
-        # Lovable frontend
-        "https://93a4e185-b263-4e0d-83e0-9cf4863ef461.lovableproject.com",
         # Local development
         "http://localhost:5173",
         "http://localhost:3000",
