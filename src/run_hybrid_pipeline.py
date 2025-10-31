@@ -12,7 +12,9 @@ from selenium import webdriver
 
 # --- Import project modules (package-qualified for -m execution) ---
 from src.harvester import navigation, scraping, config
+from src.harvester.scraping import classify_url
 from src.refinery import cleaning, embedding, pdf_processing
+from src.refinery.recording_processor import extract_transcript
 from selenium.webdriver.common.by import By
 from src.shared import utils
 
@@ -135,8 +137,16 @@ def process_single_resource(
         # Prioritize known transcript platforms before generic content-type checks
         if "drive.google.com" in url or "zoom.us" in url:
             content_type_tag = "recording_transcript"
-            logging.info("   Content type: Recording Transcript. Scraping...")
-            transcript_text = scraping.scrape_transcript_from_url(driver, url)
+            logging.info("   Content type: Recording Transcript. Scraping...")
+            resource_type = classify_url(url)
+            transcript_text = extract_transcript(
+                driver,
+                url,
+                {
+                    "RECORDING_ZOOM": "ZOOM_RECORDING",
+                    "RECORDING_DRIVE": "DRIVE_RECORDING",
+                }.get(resource_type, resource_type),
+            )
             if transcript_text:
                 raw_content_data = transcript_text
                 # Telemetry: count successfully scraped transcripts
