@@ -41,6 +41,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y xvfb
       
       # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
       - name: Install Google Chrome
@@ -64,8 +66,6 @@ jobs:
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
           COACH_USERNAME=${{ secrets.COACH_USERNAME }}
           COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
-          # The re-ranking key is kept for compatibility but the code uses a local model now.
-          COHERE_API_KEY=${{ secrets.COHERE_API_KEY }}
           HARVESTER_SELENIUM_HEADLESS=true
           HARVESTER_PAGE_LOAD_TIMEOUT=60
           HARVESTER_WAIT_TIMEOUT=30
@@ -79,7 +79,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-          pytest -q -x tests/
+          xvfb-run -a pytest -q -x tests/
 
       # Step 8: Run Harvester Job
       - id: run_harvester_job
