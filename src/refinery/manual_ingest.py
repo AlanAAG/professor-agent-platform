@@ -24,7 +24,7 @@ LECTURE_SEGMENTATION_PATTERN = re.compile(
     r"^\s*(?P<title>[^\n].*?)\n"  # Line 1: title
     r"(?P<date_time>[^\n].*?)\n"     # Line 2: date time
     r"(?P<teacher_name>[^\n].*?)\n"  # Line 3: teacher name
-    r"(?P<body>.*?)(?=\n{2}(?=[^\n]+\n[^\n]+\n[^\n]+\n)|\Z)",
+    r"(?P<body>.*?)(?=^([^\n]+)\n([^\n]+)\n([^\n]+)\n{2}|\Z)",
     flags=re.MULTILINE | re.DOTALL,
 )
 
