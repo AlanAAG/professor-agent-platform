@@ -119,6 +119,18 @@ def _scroll_into_view_center(driver: webdriver.Chrome, element: WebElement) -> N
     )
 
 
+def _wait_for_document_ready(driver: webdriver.Chrome, timeout: float = 1.0) -> None:
+    """Wait briefly for the page to report an interactive or complete ready state."""
+    try:
+        WebDriverWait(driver, timeout, poll_frequency=0.1).until(
+            lambda d: (d.execute_script("return document.readyState") or "").lower()
+            in {"complete", "interactive"}
+        )
+    except Exception:
+        # Best-effort stabilization; swallow timeouts or script errors.
+        pass
+
+
 def _wait_for_aria_expansion(
     driver: webdriver.Chrome,
     header_supplier: Callable[[webdriver.Chrome], Optional[WebElement]],
@@ -635,7 +647,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
         except (TimeoutException, NoSuchElementException, StaleElementReferenceException) as e:
             logging.warning(f"Login attempt {attempt} failed (Element/Timeout): {e}. Retrying.")
-            time.sleep(2)
+            _wait_for_document_ready(driver, timeout=1.0)
             continue
 
         except Exception as e:
@@ -643,7 +655,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
                 logging.warning(
                     f"Login attempt {attempt} failed (Renderer Timeout). Pausing and retrying."
                 )
-                time.sleep(5)
+                _wait_for_document_ready(driver, timeout=2.5)
                 continue
             else:
                 logging.error(f"Login failed on attempt {attempt} due to critical error: {e}")
@@ -687,27 +699,21 @@ def safe_find(
     clickable: bool = False,
 ) -> WebElement:
     """Robust element finding with explicit waits."""
-    wait = WebDriverWait(driver, timeout)
+    wait = WebDriverWait(
+        driver,
+        timeout,
+        ignored_exceptions=(StaleElementReferenceException,),
+    )
     condition = EC.element_to_be_clickable(locator) if clickable else EC.presence_of_element_located(locator)
 
-    # Simple retry logic for StaleElementReferenceException
-    for attempt in range(3):
-        try:
-            return wait.until(condition)
-        except StaleElementReferenceException:
-            if attempt < 2:
-                time.sleep(1)
-                continue
-            raise
-        except (TimeoutException, NoSuchElementException) as e:
-            # --- START CRITICAL ERROR LOGGING ---
-            locator_string = f"{locator[0]}_{locator[1].replace('//', '').replace('/', '_').replace('[', '_').replace(']', '')[:50]}"
-            _take_error_screenshot(driver, f"find_timeout_{locator_string}")
-            # --- END CRITICAL ERROR LOGGING ---
-            raise TimeoutException(f"Timed out waiting for element located by {locator}. Original Error: {e}")
-            
-    # Keep the final implicit raise, though the new except block above covers most failures
-    raise TimeoutException(f"Timed out waiting for element located by {locator}") 
+    try:
+        return wait.until(condition)
+    except (TimeoutException, NoSuchElementException) as e:
+        # --- START CRITICAL ERROR LOGGING ---
+        locator_string = f"{locator[0]}_{locator[1].replace('//', '').replace('/', '_').replace('[', '_').replace(']', '')[:50]}"
+        _take_error_screenshot(driver, f"find_timeout_{locator_string}")
+        # --- END CRITICAL ERROR LOGGING ---
+        raise TimeoutException(f"Timed out waiting for element located by {locator}. Original Error: {e}")
 
 
 def safe_find_all(
@@ -734,8 +740,6 @@ def safe_click(driver: webdriver.Chrome, locator: Tuple[str, str], timeout: int 
     # Use JavaScript click (often more reliable than native .click() in headless environments)
     driver.execute_script("arguments[0].click();", element)
     logging.info(f"Clicked element located by {locator}")
-    # Small pause to allow UI transition
-    time.sleep(1.5)
 
 
 def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
@@ -795,9 +799,16 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         if is_default_visible:
             # PATH 1: Directly click the course link
             logging.info("Course %s is default-visible. Clicking link directly...", course_code)
-            course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", course_link)
-            time.sleep(1)
+            course_link = safe_find(
+                driver,
+                course_locator,
+                timeout=config.SETTINGS.wait_timeout,
+                clickable=True,
+            )
+            _scroll_into_view_center(driver, course_link)
+            course_link = WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+                EC.element_to_be_clickable(course_locator)
+            )
             driver.execute_script("arguments[0].click();", course_link)
         else:
             # PATH 2: Expand the group first, then click the course link
@@ -821,14 +832,14 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
                     config.GROUP_HEADER_XPATH_TEMPLATE.format(group_name=resolved_group),
                 )
                 try:
-                    group_header = safe_find(driver, group_locator, timeout=15)
+                    group_header = safe_find(driver, group_locator, timeout=15, clickable=True)
                     # Scroll and click to expand
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", group_header)
-                    time.sleep(1)
+                    _scroll_into_view_center(driver, group_header)
+                    group_header = WebDriverWait(driver, 15).until(
+                        EC.element_to_be_clickable(group_locator)
+                    )
                     driver.execute_script("arguments[0].click();", group_header)
                     logging.info("Clicked group header '%s'", resolved_group)
-                    # Allow content to render
-                    time.sleep(3)
                 except TimeoutException:
                     logging.warning(
                         "Group header '%s' not found or not clickable. Proceeding with full-page search.",
@@ -836,9 +847,16 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
                     )
 
             # Now find and click the course link
-            course_link = safe_find(driver, course_locator, timeout=config.SETTINGS.wait_timeout)
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", course_link)
-            time.sleep(1)
+            course_link = safe_find(
+                driver,
+                course_locator,
+                timeout=config.SETTINGS.wait_timeout,
+                clickable=True,
+            )
+            _scroll_into_view_center(driver, course_link)
+            course_link = WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+                EC.element_to_be_clickable(course_locator)
+            )
             driver.execute_script("arguments[0].click();", course_link)
 
         # 4) Confirm navigation reached the course page
@@ -1119,124 +1137,3 @@ def _locate_section_header_robust(
     except (TimeoutException, NoSuchElementException) as e:
         logging.error("All header locator strategies failed for '%s': %s", section_title, e)
         raise
-
-
-def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
-    """Expand a resource section header and return all link items within its container.
-
-    Fallback strategy:
-    1) Section Header Click (3 attempts):
-       - Primary: XPath from config with exact text match on header structure.
-       - Fallback 1: Any header-like div containing a <p class="name"> with exact title.
-       - Fallback 2: Any element with exact text; click its nearest ancestor div.
-       For each: scroll into view, wait visible and clickable, use JS click.
-
-    2) Container Location (2 attempts + pattern assist):
-       - Primary: following-sibling::div[1] of the clicked header XPath.
-       - Fallback: nearest header wrapper's following sibling; if still not found, search
-         parent area for resource-like patterns (classes including 'fileBox' or 'resource').
-
-    3) Link Extraction (comprehensive):
-       - Collect all descendant anchors: "div.fileBox a[href], div.fileContentCol a[href], a[href]".
-       - Filter empty/self-referential hrefs.
-
-    Returns (container_xpath_used, list_of_anchor_elements). If no content, returns (xpath or '', []).
-    """
-
-    # 1) Locate header robustly
-    header_el, header_xpath_used, strategy = _locate_section_header_robust(
-        driver, section_title, timeout=5
-    )
-
-    # Scroll into view and click via JS
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-        WebDriverWait(driver, 5).until(lambda d: header_el.is_displayed() and header_el.is_enabled())
-        driver.execute_script("arguments[0].click();", header_el)
-        logging.info("Clicked section header '%s' via strategy: %s", section_title, strategy)
-    except StaleElementReferenceException:
-        # Re-locate once on stale and retry click
-        logging.info("Header element went stale; re-locating for '%s'", section_title)
-        header_el, header_xpath_used, strategy = _locate_section_header_robust(driver, section_title, timeout=5)
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header_el)
-        WebDriverWait(driver, 5).until(lambda d: header_el.is_displayed() and header_el.is_enabled())
-        driver.execute_script("arguments[0].click();", header_el)
-        logging.info("Clicked (retry) section header '%s' via strategy: %s", section_title, strategy)
-
-    # Allow UI to render the content container
-    time.sleep(0.75)
-
-    # 2) Locate the container: Primary attempt - following sibling of the header XPath
-    container_xpath_primary = f"{header_xpath_used}/following-sibling::div[1]"
-    container_el: Optional[WebElement] = None
-    container_xpath_used: str = container_xpath_primary
-
-    try:
-        container_el = safe_find(driver, (By.XPATH, container_xpath_primary), timeout=5)
-        WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
-        logging.info("Container located via primary following-sibling: %s", container_xpath_primary)
-    except (TimeoutException, NoSuchElementException) as e:
-        logging.info("Primary container location failed; trying fallback for '%s': %s", section_title, e)
-        # Fallback: go to the nearest wrapper div around header, then its following sibling
-        wrapper_xpath = f"{header_xpath_used}/ancestor::div[1]"
-        fallback_container_xpath = f"{wrapper_xpath}/following-sibling::div[1]"
-        try:
-            container_el = safe_find(driver, (By.XPATH, fallback_container_xpath), timeout=5)
-            WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
-            container_xpath_used = fallback_container_xpath
-            logging.info("Container located via fallback sibling of wrapper: %s", fallback_container_xpath)
-        except (TimeoutException, NoSuchElementException) as e2:
-            # Last-resort within fallback scope: search parent area for resource-like content
-            pattern_xpath = (
-                f"({wrapper_xpath}//div[contains(@class,'fileBox') or "
-                f" contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'resource')]/ancestor::div[1])[1]"
-            )
-            try:
-                container_el = safe_find(driver, (By.XPATH, pattern_xpath), timeout=5)
-                WebDriverWait(driver, 5).until(EC.visibility_of(container_el))
-                container_xpath_used = pattern_xpath
-                logging.info("Container located via resource pattern search: %s", pattern_xpath)
-            except (TimeoutException, NoSuchElementException) as e3:
-                logging.info(
-                    "No visible container found for section '%s' after fallbacks. Returning empty list. Last errors: %s | %s | %s",
-                    section_title,
-                    e,
-                    e2,
-                    e3,
-                )
-                return "", []
-
-    # 3) Extract links comprehensively from the container
-    try:
-        link_selectors = [
-            "div.fileBox a[href]",
-            "div.fileContentCol a[href]",
-            "a[href]",
-        ]
-        selector_union = ", ".join(link_selectors)
-        anchors: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, selector_union) if container_el else []
-
-        # Filter out empty or self-referential hrefs
-        filtered: List[WebElement] = []
-        for a in anchors:
-            try:
-                href = (a.get_attribute("href") or "").strip()
-            except StaleElementReferenceException:
-                continue
-            if not href:
-                continue
-            lower_href = href.lower()
-            if lower_href.startswith("javascript:") or lower_href == "#":
-                continue
-            filtered.append(a)
-
-        logging.info(
-            "Extracted %d link(s) from section '%s' using container '%s'",
-            len(filtered),
-            section_title,
-            container_xpath_used,
-        )
-        return container_xpath_used, filtered
-    except Exception as e:
-        logging.warning("Failed extracting links for '%s': %s", section_title, e)
-        return container_xpath_used, []
