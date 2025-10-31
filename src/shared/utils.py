@@ -19,6 +19,15 @@ EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-00
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
 
+def calculate_content_hash(content: str) -> str:
+    """Return a stable SHA256 hash for the provided text content."""
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        content = str(content)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 # --- Helper Functions for RRF/MMR/Boosting (Option A) ---
 
 def expand_query(query: str) -> List[str]:
