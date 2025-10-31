@@ -39,14 +39,33 @@ COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
 # --- Course Details Page (Resources Tab Navigation) ---
 # Resources tab header: partner-provided structure using container class
 RESOURCES_TAB_XPATH = (
-    "//div[contains(@class,'sc-ckEbSK')]"
-    "[.//img[contains(@src,'resources.svg')] and .//p[normalize-space(text())='Resources']]"
+    "//div[(contains(@role,'tab')"
+    " or contains(concat(' ', normalize-space(@class), ' '), ' resources ')"
+    " or contains(@data-testid,'resources')"
+    " or contains(@data-track,'resources'))"
+    " and (.//p[normalize-space(text())='Resources']"
+    " or .//span[normalize-space(text())='Resources']"
+    " or normalize-space(text())='Resources')]"
 )
 
 # Section headers inside resources
 SECTION_HEADER_XPATH_TPL = (
-    "//div[contains(@class,'sc-kRJjUj')][.//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
-    " and normalize-space(text())='{section_title}']]"
+    "//*[self::div or self::section or self::button]"
+    "[("
+    ".//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
+    "  and normalize-space(text())='{section_title}']"
+    " or .//span[normalize-space(text())='{section_title}']"
+    " or .//h3[normalize-space(text())='{section_title}']"
+    " or .//h4[normalize-space(text())='{section_title}']"
+    " or normalize-space(text())='{section_title}'"
+    ")]"
+    "[("
+    " contains(@role,'button')"
+    " or @aria-controls"
+    " or .//*[@aria-controls]"
+    " or contains(concat(' ', normalize-space(@class), ' '), ' header ')"
+    " or contains(concat(' ', normalize-space(@class), ' '), ' accordion ')"
+    ")]"
 )
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"

@@ -5,7 +5,7 @@ import time
 import os
 import random
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 import requests
 from requests.exceptions import RequestException
@@ -203,6 +203,27 @@ def _resolve_url(base_url: str, href: str) -> str:
     return urljoin(base_url, href)
 
 
+def _collect_anchor_metadata(container: WebElement) -> List[Tuple[str, bool]]:
+    metadata: List[Tuple[str, bool]] = []
+    anchors = _try_find_all(container, By.XPATH, ".//a[@href]")
+    for anchor in anchors:
+        try:
+            href = (anchor.get_attribute("href") or "").strip()
+        except StaleElementReferenceException:
+            continue
+        if not href:
+            continue
+        lower_href = href.lower()
+        if lower_href.startswith("javascript:") or lower_href in {"#", ""}:
+            continue
+        try:
+            icon_flag = _is_icon_link(anchor)
+        except StaleElementReferenceException:
+            icon_flag = False
+        metadata.append((href, icon_flag))
+    return metadata
+
+
 def _extract_url_robust(anchor_or_container: WebElement, base_url: str) -> str:
     # 1) Direct href on the given element
     href = _safe_attr(anchor_or_container, "href")
@@ -217,24 +238,18 @@ def _extract_url_robust(anchor_or_container: WebElement, base_url: str) -> str:
         ".//ancestor-or-self::div[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'filebox') and not(contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'fileboxrow'))][1]",
     ) or container
 
-    anchors = _try_find_all(filebox, By.XPATH, ".//a[@href]")
-    # Prefer first visible and non-icon anchor; if none, fall back to first anchor
-    for a in anchors:
-        href = _safe_attr(a, "href")
-        if not href:
-            continue
-        if _is_icon_link(a):
-            continue
-        return _resolve_url(base_url, href)
-    if anchors:
-        return _resolve_url(base_url, _safe_attr(anchors[0], "href"))
+    anchor_metadata = _collect_anchor_metadata(filebox)
+    for anchor_href, is_icon in anchor_metadata:
+        if not is_icon:
+            return _resolve_url(base_url, anchor_href)
+    if anchor_metadata:
+        return _resolve_url(base_url, anchor_metadata[0][0])
 
     # 3) Any sibling/descendant anchors
-    anchors = _try_find_all(container, By.XPATH, ".//a[@href]")
-    for a in anchors:
-        href = _safe_attr(a, "href")
-        if href:
-            return _resolve_url(base_url, href)
+    fallback_metadata = _collect_anchor_metadata(container)
+    for anchor_href, _is_icon in fallback_metadata:
+        if anchor_href:
+            return _resolve_url(base_url, anchor_href)
     return ""
 
 

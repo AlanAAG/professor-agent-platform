@@ -15,7 +15,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Callable
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -38,6 +38,287 @@ _COURSE_LINKS_SEEN_CACHE: set[str] = set()
 def reset_course_tracking():
     """Resets the seen courses cache for a fresh pipeline run."""
     _COURSE_LINKS_SEEN_CACHE.clear()
+
+
+_RESOURCE_LINK_SELECTORS: List[str] = [
+    "[data-testid*='resource'] a[href]",
+    "[data-section*='resource'] a[href]",
+    "div.fileBox a[href]",
+    "div.fileContentCol a[href]",
+    "a[href]",
+]
+
+_RESOURCE_LINK_SELECTOR_UNION = ", ".join(dict.fromkeys(_RESOURCE_LINK_SELECTORS))
+
+
+_JS_LOCATE_SECTION_CONTAINER = """
+const header = arguments[0];
+const normalizedTitle = (arguments[1] || "").trim().toLowerCase();
+if (!header) {
+  return null;
+}
+
+const isContainer = (el) => {
+  if (!el || el.nodeType !== 1) return false;
+  if (el.matches("template,script,style")) return false;
+  if (el.hasAttribute("data-section-body") || el.hasAttribute("data-section-content")) return true;
+  const role = el.getAttribute("role") || "";
+  if (role === "region" || role === "tabpanel" || role === "group") return true;
+  return Boolean(el.querySelector && el.querySelector("a[href]"));
+};
+
+const ariaControls = header.getAttribute && header.getAttribute("aria-controls");
+if (ariaControls) {
+  const ids = ariaControls.split(/\\s+/).map((s) => s.trim()).filter(Boolean);
+  for (const id of ids) {
+    const candidate = document.getElementById(id);
+    if (isContainer(candidate)) return candidate;
+  }
+}
+
+let sibling = header.nextElementSibling;
+while (sibling) {
+  if (isContainer(sibling)) return sibling;
+  sibling = sibling.nextElementSibling;
+}
+
+let parent = header.parentElement;
+while (parent) {
+  const next = parent.nextElementSibling;
+  if (isContainer(next)) return next;
+  parent = parent.parentElement;
+}
+
+const labelled = Array.from(document.querySelectorAll("[aria-label], [data-section-title]"));
+for (const el of labelled) {
+  const label = (el.getAttribute("aria-label") || el.getAttribute("data-section-title") || "")
+    .trim()
+    .toLowerCase();
+  if (label && label === normalizedTitle && isContainer(el)) {
+    return el;
+  }
+}
+
+return null;
+"""
+
+
+def _is_stale(element: WebElement) -> bool:
+    try:
+        _ = element.is_enabled()
+        return False
+    except StaleElementReferenceException:
+        return True
+
+
+def _scroll_into_view_center(driver: webdriver.Chrome, element: WebElement) -> None:
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: arguments[1], inline: 'nearest'});",
+        element,
+        "center",
+    )
+
+
+def _wait_for_aria_expansion(
+    driver: webdriver.Chrome,
+    header_supplier: Callable[[webdriver.Chrome], Optional[WebElement]],
+    timeout: int = 5,
+) -> None:
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: (
+                lambda el: False
+                if el is None
+                else (
+                    (el.get_attribute("aria-expanded") or "").strip().lower()
+                    in {"", "true", "1"}
+                )
+            )(header_supplier(d))
+        )
+    except TimeoutException:
+        logging.debug("aria-expanded did not confirm expansion within %ss", timeout)
+    except Exception:
+        # Non-critical; fallback relies on link waits
+        pass
+
+
+def _make_locator_resolver(locator: Tuple[str, str]) -> Callable[[webdriver.Chrome], Optional[WebElement]]:
+    by, value = locator
+
+    def _resolver(driver: webdriver.Chrome) -> Optional[WebElement]:
+        try:
+            return driver.find_element(by, value)
+        except NoSuchElementException:
+            return None
+        except StaleElementReferenceException:
+            return None
+
+    return _resolver
+
+
+def _resolve_section_container(
+    driver: webdriver.Chrome,
+    header_el: WebElement,
+    header_xpath_used: str,
+    section_title: str,
+    timeout: int = 10,
+) -> Tuple[Optional[WebElement], Optional[Callable[[webdriver.Chrome], Optional[WebElement]]], str, str]:
+    strategies: List[Tuple[Tuple[str, str], str]] = []
+
+    def _register_locator(raw_value: str | None, label: str) -> None:
+        if not raw_value:
+            return
+        for token in raw_value.split():
+            candidate = token.strip()
+            if not candidate:
+                continue
+            if candidate.startswith("#"):
+                strategies.append(((By.CSS_SELECTOR, candidate), label))
+            else:
+                strategies.append(((By.ID, candidate), label))
+
+    # Inspect header attributes for explicit relationships
+    _register_locator(header_el.get_attribute("aria-controls"), "aria-controls")
+    for attr in ("data-controls", "data-target", "data-content", "data-section-id", "data-panel-id"):
+        raw = header_el.get_attribute(attr)
+        if raw and raw.startswith("#"):
+            strategies.append(((By.CSS_SELECTOR, raw), attr))
+        elif raw:
+            strategies.append(((By.ID, raw), attr))
+
+    if header_xpath_used:
+        container_xpath_primary = f"{header_xpath_used}/following-sibling::*[self::div or self::section][1]"
+        container_xpath_with_links = (
+            f"{header_xpath_used}/following-sibling::*[self::div or self::section]"
+            "[.//a[@href]][1]"
+        )
+        strategies.extend([
+            ((By.XPATH, container_xpath_primary), "following-sibling"),
+            ((By.XPATH, container_xpath_with_links), "following-sibling-links"),
+            (
+                (By.XPATH,
+                 f"{header_xpath_used}/ancestor::*[self::div or self::section][1]/following-sibling::*[self::div or self::section][.//a[@href]][1]"),
+                "ancestor-sibling-links",
+            ),
+        ])
+
+    normalized_title = section_title.strip()
+    if normalized_title:
+        normalized_xpath = (
+            "(//div[.//p[normalize-space(text())='" + normalized_title + "']"
+            " or .//h3[normalize-space(text())='" + normalized_title + "']"
+            " or .//h4[normalize-space(text())='" + normalized_title + "'])"
+            "[1]/following-sibling::*[self::div or self::section][.//a[@href]][1])"
+        )
+        strategies.append(((By.XPATH, normalized_xpath), "title-proximity"))
+
+    seen_locators: set[Tuple[str, str]] = set()
+    for locator, label in list(strategies):
+        if locator in seen_locators:
+            continue
+        seen_locators.add(locator)
+        try:
+            wait = WebDriverWait(driver, timeout)
+            container = wait.until(EC.presence_of_element_located(locator))
+            wait.until(EC.visibility_of(container))
+            if container:
+                descriptor = f"{locator[0]}::{locator[1]}"
+                return container, _make_locator_resolver(locator), label, descriptor
+        except TimeoutException:
+            continue
+        except Exception as e:
+            logging.debug("Container locator %s failed: %s", label, e)
+
+    # JavaScript proximity fallback
+    try:
+        header_for_js = header_el
+        if _is_stale(header_for_js) and header_xpath_used:
+            header_for_js = driver.find_element(By.XPATH, header_xpath_used)
+        container_js = driver.execute_script(
+            _JS_LOCATE_SECTION_CONTAINER,
+            header_for_js,
+            section_title,
+        )
+        if container_js:
+            def _resolver(drv: webdriver.Chrome) -> Optional[WebElement]:
+                try:
+                    header_current = header_for_js
+                    if (header_xpath_used and (_is_stale(header_current) or header_current is None)):
+                        header_current = drv.find_element(By.XPATH, header_xpath_used)
+                except Exception:
+                    header_current = None
+                if header_current is None:
+                    return None
+                try:
+                    return drv.execute_script(
+                        _JS_LOCATE_SECTION_CONTAINER,
+                        header_current,
+                        section_title,
+                    )
+                except Exception:
+                    return None
+
+            descriptor = "js-proximity"
+            return container_js, _resolver, "js-proximity", descriptor
+    except Exception as e:
+        logging.debug("JavaScript container resolution failed for '%s': %s", section_title, e)
+
+    return None, None, "unresolved", ""
+
+
+def _wait_for_links_in_container(
+    driver: webdriver.Chrome,
+    container_supplier: Callable[[webdriver.Chrome], Optional[WebElement]] | None,
+    initial_container: Optional[WebElement],
+    timeout: int,
+) -> List[WebElement]:
+    last_container = initial_container
+
+    def _locate_container(drv: webdriver.Chrome) -> Optional[WebElement]:
+        nonlocal last_container
+        if last_container and not _is_stale(last_container) and last_container.is_displayed():
+            return last_container
+        if container_supplier:
+            refreshed = container_supplier(drv)
+            if refreshed is not None:
+                last_container = refreshed
+                return refreshed
+        return last_container
+
+    def _collect(drv: webdriver.Chrome):
+        container = _locate_container(drv)
+        if not container or _is_stale(container):
+            return False
+        try:
+            anchors = container.find_elements(By.CSS_SELECTOR, _RESOURCE_LINK_SELECTOR_UNION)
+        except StaleElementReferenceException:
+            return False
+        if not anchors:
+            return False
+        filtered: List[WebElement] = []
+        seen_ids: set[str] = set()
+        for anchor in anchors:
+            try:
+                href = (anchor.get_attribute("href") or "").strip()
+            except StaleElementReferenceException:
+                continue
+            if not href:
+                continue
+            lower_href = href.lower()
+            if lower_href.startswith("javascript:") or lower_href == "#":
+                continue
+            anchor_id = getattr(anchor, "id", None)
+            if anchor_id and anchor_id in seen_ids:
+                continue
+            if anchor_id:
+                seen_ids.add(anchor_id)
+            filtered.append(anchor)
+        return filtered if filtered else False
+
+    try:
+        return WebDriverWait(driver, timeout).until(_collect)
+    except TimeoutException:
+        return []
 
 
 # --- Driver Management and Session Persistence ---
@@ -369,6 +650,10 @@ def perform_login(driver: webdriver.Chrome) -> bool:
                 break
 
     logging.error(f"Login failed after {MAX_LOGIN_ATTEMPTS} attempts.")
+    try:
+        os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
+    except Exception as mkdir_err:
+        logging.warning("Unable to create screenshot directory '%s': %s", config.SETTINGS.screenshot_dir, mkdir_err)
     driver.save_screenshot(os.path.join(config.SETTINGS.screenshot_dir, "login_failure.png"))
     return False
 
@@ -579,74 +864,193 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     Attempts the primary repository selector first, then tries alternate
     partner-provided selectors from the stable Colab script.
     """
-    # Primary selector from config
-    primary_locator = (By.XPATH, config.RESOURCES_TAB_XPATH)
-    # Fallbacks seen in partner Colab scripts/UI variants
-    fallback_locators: List[Tuple[By, str]] = [
-        (By.XPATH, "//div[contains(@class, 'sc-Rbkqr')]//h4[contains(text(), 'Resources')]")
+    normalized_resources_xpath = (
+        "translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='resources'"
+    )
+
+    locator_candidates: List[Tuple[str, str]] = [
+        (By.XPATH, config.RESOURCES_TAB_XPATH),
+        (By.CSS_SELECTOR, "[data-testid='resources-tab']"),
+        (By.CSS_SELECTOR, "[data-section='resources']"),
+        (By.XPATH, f"//button[{normalized_resources_xpath}]"),
+        (By.XPATH, f"//*[(@role='tab' or @role='button') and {normalized_resources_xpath}]")
     ]
 
-    candidates: List[Tuple[By, str]] = [primary_locator] + fallback_locators
-
     last_error: Optional[Exception] = None
-    for locator in candidates:
-        try:
-            safe_click(driver, locator, timeout=10)
-            time.sleep(2)  # allow content to swap in
-            logging.info("Navigated to Resources section via locator: %s", locator)
+
+    def _tab_supplier(by: str, value: str) -> Callable[[webdriver.Chrome], Optional[WebElement]]:
+        def _supply(drv: webdriver.Chrome) -> Optional[WebElement]:
+            try:
+                return drv.find_element(by, value)
+            except (NoSuchElementException, StaleElementReferenceException):
+                return None
+        return _supply
+
+    def _tab_activated(tab: Optional[WebElement]) -> bool:
+        if not tab or _is_stale(tab):
+            return False
+        attributes = [
+            (tab.get_attribute(attr) or "").strip().lower()
+            for attr in ("aria-selected", "aria-current", "data-selected", "data-active")
+        ]
+        if any(val in {"true", "1", "current", "active"} for val in attributes):
             return True
-        except Exception as e:
-            last_error = e
-            logging.debug("Resources click attempt failed for %s: %s", locator, e)
+        class_attr = (tab.get_attribute("class") or "").lower()
+        return any(flag in class_attr for flag in ("active", "selected"))
+
+    css_probe = ", ".join([
+        "[data-section-title]",
+        "[data-testid*='resource-section']",
+        "div.fileBox",
+    ])
+
+    def _resources_loaded(drv: webdriver.Chrome, tab_getter: Callable[[webdriver.Chrome], Optional[WebElement]]) -> bool:
+        tab_candidate = tab_getter(drv)
+        if _tab_activated(tab_candidate):
+            return True
+        # Fallback: check for resource containers appearing in DOM
+        return bool(drv.find_elements(By.CSS_SELECTOR, css_probe))
+
+    for by, value in locator_candidates:
+        tab_getter = _tab_supplier(by, value)
+        try:
+            wait = WebDriverWait(
+                driver,
+                timeout=10,
+                ignored_exceptions=(StaleElementReferenceException, NoSuchElementException),
+            )
+            tab = wait.until(EC.element_to_be_clickable((by, value)))
+            _scroll_into_view_center(driver, tab)
+            driver.execute_script("arguments[0].click();", tab)
+            WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+                lambda drv, supplier=tab_getter: _resources_loaded(drv, supplier)
+            )
+            logging.info("Navigated to Resources section via locator (%s, %s)", by, value)
+            return True
+        except Exception as exc:
+            last_error = exc
+            logging.debug("Resources tab activation failed for locator (%s, %s): %s", by, value, exc)
             continue
 
-    logging.warning("Resources tab not found or failed to click using all locators. Last error: %s", last_error)
+    logging.warning(
+        "Resources tab not found or failed to activate using available locators. Last error: %s",
+        last_error,
+    )
     return False
 
 
 def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
-    """Expands a specific resource section and returns its primary link elements (<a>)."""
-    
-    # 1. Find the section header and click to expand
-    section_locator = (By.XPATH, config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title))
-    
+    """
+    Expand a resource section and return anchor elements discovered within its container.
+
+    The routine avoids brittle structural XPath assumptions by:
+      * Locating headers through multi-strategy fallbacks (_locate_section_header_robust)
+      * Resolving containers through attribute inspection, structural heuristics, and JS proximity
+      * Waiting explicitly for populated anchors instead of relying on fixed sleeps
+    """
+
+    wait_timeout = max(10, min(25, config.SETTINGS.wait_timeout))
+
     try:
-        section_header = safe_find(driver, section_locator, timeout=10)
-        
-        # Click to expand the section (the header acts as the toggle)
-        driver.execute_script("arguments[0].click();", section_header)
-        logging.info(f"Expanded section: {section_title}")
-        # Allow UI to react and begin loading dynamic content
-        time.sleep(1)
+        header_el, header_xpath_used, strategy = _locate_section_header_robust(
+            driver,
+            section_title,
+            timeout=wait_timeout // 2,
+        )
+        logging.debug(
+            "Section header '%s' resolved via strategy '%s' (xpath=%s)",
+            section_title,
+            strategy,
+            header_xpath_used,
+        )
 
-        # 2. Define and locate the container that holds resource items (following the header)
-        container_xpath = f"{section_locator[1]}/following-sibling::div[1]"
-        container_el = safe_find(driver, (By.XPATH, container_xpath), timeout=10)
+        def _header_supplier(drv: webdriver.Chrome) -> Optional[WebElement]:
+            nonlocal header_el
+            if header_el and not _is_stale(header_el):
+                return header_el
+            if header_xpath_used:
+                try:
+                    header_el = drv.find_element(By.XPATH, header_xpath_used)
+                except NoSuchElementException:
+                    header_el = None
+            return header_el
 
-        # 3. Wait for at least one primary link (<a href="...">) to appear within the container
-        LINK_CSS_SELECTOR = "a[href]"
+        fresh_header = _header_supplier(driver)
+        if not fresh_header:
+            logging.info("Header supplier returned None while expanding '%s'", section_title)
+            return "", []
 
-        def _links_present(_):
-            return container_el.find_elements(By.CSS_SELECTOR, LINK_CSS_SELECTOR)
+        _scroll_into_view_center(driver, fresh_header)
 
+        should_click = True
         try:
-            # Increased timeout to improve robustness in headless/slow environments
-            WebDriverWait(driver, 15).until(lambda d: len(_links_present(d)) > 0)
-        except TimeoutException:
-            # It's acceptable for some sections to be empty; normalize to empty list
-            return container_xpath, []
+            aria_state = (fresh_header.get_attribute("aria-expanded") or "").strip().lower()
+            if aria_state in {"true", "1"}:
+                should_click = False
+        except Exception:
+            pass
 
-        # 4. Retrieve all relevant link elements within the container
-        items: List[WebElement] = container_el.find_elements(By.CSS_SELECTOR, LINK_CSS_SELECTOR)
+        if should_click:
+            try:
+                driver.execute_script("arguments[0].click();", fresh_header)
+            except StaleElementReferenceException:
+                refreshed = _header_supplier(driver)
+                if refreshed:
+                    driver.execute_script("arguments[0].click();", refreshed)
+                    header_el = refreshed
+            except Exception as click_err:
+                logging.error("Failed to click section header '%s': %s", section_title, click_err)
+                raise
+            else:
+                logging.info("Clicked section header '%s' via strategy '%s'", section_title, strategy)
 
-        # Return the XPath to the parent container and the list of item elements
-        return container_xpath, items
+        _wait_for_aria_expansion(driver, _header_supplier, timeout=6)
+
+        container_el, container_resolver, container_strategy, container_descriptor = _resolve_section_container(
+            driver,
+            header_el or fresh_header,
+            header_xpath_used,
+            section_title,
+            timeout=wait_timeout // 2,
+        )
+
+        if not container_el:
+            logging.info(
+                "Unable to resolve container for section '%s' (strategy=%s)",
+                section_title,
+                container_strategy,
+            )
+            return container_descriptor, []
+
+        anchors = _wait_for_links_in_container(
+            driver,
+            container_resolver,
+            container_el,
+            timeout=wait_timeout,
+        )
+
+        if not anchors:
+            logging.info(
+                "Section '%s' resolved (strategy=%s) but produced no anchors within %ss",
+                section_title,
+                container_strategy,
+                wait_timeout,
+            )
+            return container_descriptor, []
+
+        logging.info(
+            "Extracted %d anchor(s) for section '%s' using container strategy '%s'",
+            len(anchors),
+            section_title,
+            container_strategy,
+        )
+        return container_descriptor, anchors
 
     except TimeoutException:
-        logging.info(f"Section '{section_title}' contains no items or failed to load.")
+        logging.info("Section '%s' contains no items or timed out during expansion.", section_title)
         return "", []
     except Exception as e:
-        logging.error(f"Error expanding section '{section_title}': {e}")
+        logging.error("Error expanding section '%s': %s", section_title, e)
         raise
 
 # --- Robust replacements (appended to ensure override of earlier definitions) ---
