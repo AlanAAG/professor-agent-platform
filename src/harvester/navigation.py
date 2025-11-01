@@ -15,7 +15,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Dict, Any, List, Tuple, Optional, Callable
+from typing import Dict, Any, List, Tuple, Optional, Callable, TypeVar
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -26,6 +26,7 @@ from selenium.common.exceptions import (
     TimeoutException,
     NoSuchElementException,
     StaleElementReferenceException,
+    WebDriverException,
 )
 from . import config
 
@@ -34,6 +35,8 @@ from . import config
 # Cache to track which courses have been processed in the current pipeline run.
 # Used to prevent navigating to a course link twice if it appears in multiple groups.
 _COURSE_LINKS_SEEN_CACHE: set[str] = set()
+
+T = TypeVar("T")
 
 def reset_course_tracking():
     """Resets the seen courses cache for a fresh pipeline run."""
@@ -670,6 +673,88 @@ def perform_login(driver: webdriver.Chrome) -> bool:
     return False
 
 
+def _on_login_page(driver: webdriver.Chrome) -> bool:
+    login_url = getattr(config, "LOGIN_URL", "")
+    if not login_url:
+        return False
+    try:
+        current_url = driver.current_url or ""
+    except Exception:
+        return False
+    normalized_login = login_url.rstrip("/")
+    normalized_current = current_url.rstrip("/")
+    return normalized_current.startswith(normalized_login)
+
+
+def _exception_indicates_session_timeout(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutException):
+        return True
+    if isinstance(exc, WebDriverException):
+        message = str(exc).lower()
+        timeout_markers = (
+            "timeout",
+            "session not found",
+            "invalid session id",
+            "chrome not reachable",
+            "disconnected",
+        )
+        return any(marker in message for marker in timeout_markers)
+    return False
+
+
+def _session_timeout_detected(driver: webdriver.Chrome, exc: Optional[Exception]) -> bool:
+    if _on_login_page(driver):
+        return True
+    if exc is not None and _exception_indicates_session_timeout(exc):
+        return True
+    return False
+
+
+def resilient_session_action(
+    driver: webdriver.Chrome,
+    action_func: Callable[..., T],
+    *args,
+    **kwargs,
+) -> T:
+    """Execute an action with automatic session re-authentication on timeout."""
+
+    action_label = getattr(action_func, "__name__", repr(action_func))
+
+    for attempt in range(1, 3):
+        try:
+            result = action_func(driver, *args, **kwargs)
+        except Exception as exc:
+            if _session_timeout_detected(driver, exc):
+                if attempt == 1:
+                    logging.warning(
+                        "Session expired while executing %s; attempting re-authentication.",
+                        action_label,
+                    )
+                    if not perform_login(driver):
+                        raise RuntimeError(
+                            f"Re-authentication failed while executing {action_label}."
+                        ) from exc
+                    continue
+                raise
+            raise
+        else:
+            if _session_timeout_detected(driver, None):
+                if attempt == 1:
+                    logging.warning(
+                        "Session expired while executing %s; attempting re-authentication.",
+                        action_label,
+                    )
+                    if not perform_login(driver):
+                        raise RuntimeError(
+                            f"Re-authentication failed while executing {action_label}."
+                        )
+                    continue
+                raise RuntimeError(f"{action_label} redirected to login page after retry.")
+            return result
+
+    raise RuntimeError(f"{action_label} failed after re-authentication attempt.")
+
+
 @contextmanager
 def launch_and_login() -> webdriver.Chrome:
     """Context manager to initialize driver, manage session, and ensure login."""
@@ -742,8 +827,7 @@ def safe_click(driver: webdriver.Chrome, locator: Tuple[str, str], timeout: int 
     logging.info(f"Clicked element located by {locator}")
 
 
-def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
-    """Scrapes the course dashboard for all course codes visible to the user."""
+def _get_available_course_codes_impl(driver: webdriver.Chrome) -> set[str]:
     try:
         driver.get(config.COURSES_URL)
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
@@ -765,16 +849,16 @@ def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
         return set()
 
 
-def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group_name: str | None = None):
-    """Navigate from the courses dashboard into a specific course page.
+def get_available_course_codes(driver: webdriver.Chrome) -> set[str]:
+    """Scrapes the course dashboard for all course codes visible to the user."""
+    return resilient_session_action(driver, _get_available_course_codes_impl)
 
-    Logic mirrors the stable Colab flow:
-      - If the course is among default-visible cards, click it directly.
-      - Otherwise, expand the owning group header first, then click the link.
 
-    Uses JS-based clicks and scroll-into-view to maximize reliability.
-    """
-
+def _find_and_click_course_link_impl(
+    driver: webdriver.Chrome,
+    course_code: str,
+    group_name: str | None = None,
+):
     # 1) Avoid duplicate navigations within a single pipeline run
     if course_code in _COURSE_LINKS_SEEN_CACHE:
         logging.warning(
@@ -876,12 +960,29 @@ def find_and_click_course_link(driver: webdriver.Chrome, course_code: str, group
         raise
 
 
-def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
-    """Click the "Resources" tab on the course page, with selector fallbacks.
+def find_and_click_course_link(
+    driver: webdriver.Chrome,
+    course_code: str,
+    group_name: str | None = None,
+):
+    """Navigate from the courses dashboard into a specific course page.
 
-    Attempts the primary repository selector first, then tries alternate
-    partner-provided selectors from the stable Colab script.
+    Logic mirrors the stable Colab flow:
+      - If the course is among default-visible cards, click it directly.
+      - Otherwise, expand the owning group header first, then click the link.
+
+    Uses JS-based clicks and scroll-into-view to maximize reliability.
     """
+
+    return resilient_session_action(
+        driver,
+        _find_and_click_course_link_impl,
+        course_code,
+        group_name=group_name,
+    )
+
+
+def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
     normalized_resources_xpath = (
         "translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='resources'"
     )
@@ -957,15 +1058,13 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     return False
 
 
-def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
-    """
-    Expand a resource section and return anchor elements discovered within its container.
+def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
+    """Click the "Resources" tab on the course page, with selector fallbacks."""
 
-    The routine avoids brittle structural XPath assumptions by:
-      * Locating headers through multi-strategy fallbacks (_locate_section_header_robust)
-      * Resolving containers through attribute inspection, structural heuristics, and JS proximity
-      * Waiting explicitly for populated anchors instead of relying on fixed sleeps
-    """
+    return resilient_session_action(driver, _navigate_to_resources_section_impl)
+
+
+def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
 
     wait_timeout = max(10, min(25, config.SETTINGS.wait_timeout))
 
@@ -1071,7 +1170,25 @@ def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -
         logging.error("Error expanding section '%s': %s", section_title, e)
         raise
 
+def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
+    """
+    Expand a resource section and return anchor elements discovered within its container.
+
+    The routine avoids brittle structural XPath assumptions by:
+      * Locating headers through multi-strategy fallbacks (_locate_section_header_robust)
+      * Resolving containers through attribute inspection, structural heuristics, and JS proximity
+      * Waiting explicitly for populated anchors instead of relying on fixed sleeps
+    """
+
+    return resilient_session_action(
+        driver,
+        _expand_section_and_get_items_impl,
+        section_title,
+    )
+
+
 # --- Robust replacements (appended to ensure override of earlier definitions) ---
+
 
 def _locate_section_header_robust(
     driver: webdriver.Chrome,
