@@ -15,6 +15,10 @@ from dateutil import tz
 # Prefer the current public Google GenAI embedding model by default.
 # Can be overridden via EMBEDDING_MODEL_NAME env var.
 EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-004")
+# CRITICAL: This dimension must match the database vector column definition
+# See database/match_documents.sql line 5: vector(768)
+# Compatible models: text-embedding-004 (768), models/embedding-001 (768)
+EXPECTED_EMBEDDING_DIM = 768
 # OpenAI embedding model fallback
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
@@ -427,7 +431,17 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                     contents=[text],  # new SDK prefers 'contents'
                     task_type="retrieval_query",
                 )
-                return _extract_single(result)
+                result_vec = _extract_single(result)  # existing line
+
+                # Validate dimension matches database constraint
+                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                    raise ValueError(
+                        f"Embedding dimension mismatch: model {embedding_model} returned "
+                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                    )
+
+                return result_vec
             except TypeError:
                 # Older signature that accepts 'content='
                 try:
@@ -436,7 +450,17 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                         content=text,
                         task_type="retrieval_query",
                     )
-                    return _extract_single(result)
+                    result_vec = _extract_single(result)  # existing line
+
+                    # Validate dimension matches database constraint
+                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: model {embedding_model} returned "
+                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                        )
+
+                    return result_vec
                 except Exception:
                     pass
             except Exception:
@@ -451,7 +475,17 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                         model=embedding_model,
                         requests=[{"content": {"text": text}}],
                     )
-                    return _extract_single(result)
+                    result_vec = _extract_single(result)  # existing line
+
+                    # Validate dimension matches database constraint
+                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: model {embedding_model} returned "
+                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                        )
+
+                    return result_vec
             except Exception:
                 pass
 
@@ -463,20 +497,41 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                     content=text,
                     task_type="retrieval_query",
                 )
-                return _extract_single(result)
+                result_vec = _extract_single(result)  # existing line
+
+                # Validate dimension matches database constraint
+                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                    raise ValueError(
+                        f"Embedding dimension mismatch: model {embedding_model} returned "
+                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                    )
+
+                return result_vec
         except Exception:
             pass
     # OpenAI fallback
     _ensure_openai()
     if _OPENAI_CLIENT is not None:
         try:
+            openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
             resp = _OPENAI_CLIENT.embeddings.create(
-                model=os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL),
+                model=openai_model,
                 input=text,
             )
             data = getattr(resp, "data", None) or []
             if data and hasattr(data[0], "embedding"):
-                return data[0].embedding  # type: ignore[return-value]
+                result_vec = data[0].embedding  # type: ignore[assignment]
+
+                # Validate dimension matches database constraint
+                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                    raise ValueError(
+                        f"Embedding dimension mismatch: model {openai_model} returned "
+                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                    )
+
+                return result_vec
         except Exception as e:
             logging.warning(f"OpenAI embedding fallback failed: {e}")
 
@@ -545,7 +600,18 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                     contents=texts,
                     task_type="retrieval_query",
                 )
-                return _extract_batch(result)
+                vectors = _extract_batch(result)
+
+                # Validate dimension matches database constraint
+                for vec in vectors:
+                    if len(vec) != EXPECTED_EMBEDDING_DIM:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: model {embedding_model} returned "
+                            f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                        )
+
+                return vectors
             except TypeError:
                 try:
                     result = _GENAI_CLIENT.models.embed_content(
@@ -553,7 +619,18 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                         content=texts,
                         task_type="retrieval_query",
                     )
-                    return _extract_batch(result)
+                    vectors = _extract_batch(result)
+
+                    # Validate dimension matches database constraint
+                    for vec in vectors:
+                        if len(vec) != EXPECTED_EMBEDDING_DIM:
+                            raise ValueError(
+                                f"Embedding dimension mismatch: model {embedding_model} returned "
+                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                            )
+
+                    return vectors
                 except Exception:
                     pass
             except Exception:
@@ -567,7 +644,18 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                         model=embedding_model,
                         requests=[{"content": {"text": t}} for t in texts],
                     )
-                    return _extract_batch(result)
+                    vectors = _extract_batch(result)
+
+                    # Validate dimension matches database constraint
+                    for vec in vectors:
+                        if len(vec) != EXPECTED_EMBEDDING_DIM:
+                            raise ValueError(
+                                f"Embedding dimension mismatch: model {embedding_model} returned "
+                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                            )
+
+                    return vectors
             except Exception:
                 pass
 
@@ -579,15 +667,27 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                     content=texts,
                     task_type="retrieval_query",
                 )
-                return _extract_batch(result)
+                vectors = _extract_batch(result)
+
+                # Validate dimension matches database constraint
+                for vec in vectors:
+                    if len(vec) != EXPECTED_EMBEDDING_DIM:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: model {embedding_model} returned "
+                            f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                        )
+
+                return vectors
         except Exception:
             pass
     # OpenAI batch fallback
     _ensure_openai()
     if _OPENAI_CLIENT is not None:
         try:
+            openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
             resp = _OPENAI_CLIENT.embeddings.create(
-                model=os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL),
+                model=openai_model,
                 input=texts,
             )
             data = getattr(resp, "data", None) or []
@@ -605,6 +705,15 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                     if isinstance(vec, list):
                         vectors.append(vec)
                 if vectors:
+                    # Validate dimension matches database constraint
+                    for vec in vectors:
+                        if len(vec) != EXPECTED_EMBEDDING_DIM:
+                            raise ValueError(
+                                f"Embedding dimension mismatch: model {openai_model} returned "
+                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                            )
+
                     return vectors
         except Exception as e:
             logging.warning(f"OpenAI batch embedding fallback failed: {e}")
