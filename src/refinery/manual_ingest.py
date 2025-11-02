@@ -52,6 +52,28 @@ def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str
         teacher_name = (match.group("teacher_name") or "").strip()
         body = (match.group("body") or "").strip()
 
+        # Validate required fields
+        if not title:
+            logging.warning(
+                f"Skipping segment in {filename}: empty title. "
+                f"Date: {date_time_str}, Teacher: {teacher_name}"
+            )
+            continue
+
+        if not teacher_name:
+            logging.warning(
+                f"Skipping segment in {filename}: empty teacher name. "
+                f"Title: {title}, Date: {date_time_str}"
+            )
+            continue
+
+        if len(body.strip()) < 50:
+            logging.warning(
+                f"Skipping segment in {filename}: transcript body too short (<50 chars). "
+                f"Title: {title}"
+            )
+            continue
+
         lecture_date = parse_general_date(date_time_str)
 
         segments.append(
