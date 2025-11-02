@@ -79,7 +79,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-          xvfb-run -a pytest -q -x tests/
+          PYTHONPATH=. xvfb-run -a pytest -q -x tests/
 
       # Step 8: Run Harvester Job
       - id: run_harvester_job
