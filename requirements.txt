@@ -83,6 +83,7 @@ packaging==25.0
 pandas==2.3.3
 pillow==11.3.0
 selenium==4.25.0
+sentry-sdk[fastapi]==1.40.0
 postgrest==2.22.0
 proglog==0.1.12
 propcache==0.4.1
