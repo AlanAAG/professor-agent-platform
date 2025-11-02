@@ -315,11 +315,9 @@ def process_single_resource(
                         metadata = {k: v for k, v in metadata.items() if v is not None}
                         logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
                         embedding.chunk_and_embed_text(entry["text"], metadata)
-                # Telemetry: count successfully processed PDF documents (once per file)
-                try:
+                    # Telemetry: count successfully processed PDF documents (once per file)
                     stats["pdf_documents_processed"] = stats.get("pdf_documents_processed", 0) + 1
-                except Exception:
-                    pass
+
                 finally:
                     # Ensure temp PDF is deleted regardless of success/failure
                     if temp_pdf_path and isinstance(temp_pdf_path, str):
