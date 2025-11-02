@@ -5,11 +5,17 @@ import os
 import math
 import hashlib
 import logging
+import time
 import numpy as np
 from typing import List, Dict, Any, Optional
 import datetime
 from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
+
+try:
+    import sentry_sdk
+except Exception:  # pragma: no cover - optional dependency
+    sentry_sdk = None  # type: ignore[assignment]
 
 # Shared constants
 # Prefer the current public Google GenAI embedding model by default.
@@ -21,6 +27,7 @@ EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-00
 EXPECTED_EMBEDDING_DIM = 768
 # OpenAI embedding model fallback
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+SENTRY_DSN = os.environ.get("SENTRY_DSN")
 
 
 def calculate_content_hash(content: str) -> str:
@@ -730,35 +737,67 @@ def retrieve_rag_documents(
     match_threshold: float = 0.7,
     query_embedding: List[float] | None = None,
 ) -> list[dict]:
-    """Retrieve documents via Supabase 'match_documents' RPC.
-    
-    Args:
-        query: Query string (used for embedding if query_embedding not provided)
-        selected_class: Optional class filter
-        match_count: Number of documents to retrieve
-        match_threshold: Similarity threshold
-        query_embedding: Pre-computed embedding (if provided, skips embedding step)
-    """
+    """Retrieve documents via Supabase with performance tracking."""
+    start_time = time.time()
+
     supabase = _get_supabase_client()
-    
-    # Use pre-computed embedding if provided, otherwise compute it
-    if query_embedding is None:
-        # Avoid spamming logs on upstream batch failures; silently skip here
-        # so the caller can decide on keyword fallbacks.
-        try:
-            query_embedding = embed_query(query)
-        except Exception:
-            return []
-    
-    payload = {
-        "query_embedding": query_embedding,
-        "match_threshold": float(match_threshold),
-        "match_count": int(match_count),
-    }
-    if selected_class:
-        payload["filter_class"] = selected_class
-    response = supabase.rpc("match_documents", payload).execute()
-    return getattr(response, "data", None) or []
+
+    try:
+        if query_embedding is None:
+            embed_start = time.time()
+            try:
+                query_embedding = embed_query(query)
+                embed_duration_ms = (time.time() - embed_start) * 1000
+
+                # Track embedding costs (approximate)
+                # text-embedding-004: $0.00001 per 1K tokens
+                estimated_tokens = len(query.split()) * 1.3  # rough estimate
+                estimated_cost = (estimated_tokens / 1000) * 0.00001
+
+                logging.debug(
+                    f"EMBEDDING_METRICS | duration_ms={embed_duration_ms:.2f} "
+                    f"tokens~{estimated_tokens:.0f} cost_usd~{estimated_cost:.6f}"
+                )
+            except Exception:
+                return []
+
+        payload = {
+            "query_embedding": query_embedding,
+            "match_threshold": float(match_threshold),
+            "match_count": int(match_count),
+        }
+        if selected_class:
+            payload["filter_class"] = selected_class
+
+        response = supabase.rpc("match_documents", payload).execute()
+        results = getattr(response, "data", None) or []
+
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Log vector DB performance
+        logging.info(
+            f"VECTOR_DB_QUERY | duration_ms={duration_ms:.2f} "
+            f"results={len(results)} threshold={match_threshold} "
+            f"class_filter={selected_class or 'none'}"
+        )
+
+        # Alert on slow queries (>1s)
+        if duration_ms > 1000 and SENTRY_DSN and sentry_sdk:
+            sentry_sdk.capture_message(
+                f"Slow vector DB query: {duration_ms:.0f}ms",
+                level="warning",
+            )
+
+        return results
+
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        logging.error(
+            f"VECTOR_DB_ERROR | duration_ms={duration_ms:.2f} error={type(e).__name__}"
+        )
+        if SENTRY_DSN and sentry_sdk:
+            sentry_sdk.capture_exception(e)
+        raise
 
 
 def retrieve_rag_documents_keyword_fallback(
