@@ -7,7 +7,7 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from src.shared.utils import EMBEDDING_MODEL_NAME
+from src.shared.utils import EMBEDDING_MODEL_NAME, EXPECTED_EMBEDDING_DIM
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
@@ -44,6 +44,19 @@ try:
         google_api_key=gemini_api_key
     )
     logging.info("Gemini embedding model initialized.")
+
+    # Validate embedding dimensions match database schema
+    try:
+        test_embedding = embeddings_model.embed_query("dimension validation test")
+        if len(test_embedding) != EXPECTED_EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding model {EMBEDDING_MODEL_NAME} produces {len(test_embedding)}-dimensional "
+                f"vectors, but database expects {EXPECTED_EMBEDDING_DIM}. Check database/match_documents.sql"
+            )
+        logging.info(f"✓ Embedding dimension validated: {EXPECTED_EMBEDDING_DIM}")
+    except Exception as e:
+        logging.error(f"Embedding dimension validation failed: {e}")
+        raise
 
     # --- Initialize the Vector Store Client ---
     # Moved initialization here after ensuring supabase and embeddings_model are valid

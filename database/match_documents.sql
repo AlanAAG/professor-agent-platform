@@ -1,3 +1,19 @@
+-- ============================================================================
+-- CRITICAL CONSTRAINT: This function expects 768-dimensional embedding vectors
+-- 
+-- Compatible models:
+--   - Google text-embedding-004 (768 dimensions) - DEFAULT
+--   - Google models/embedding-001 (768 dimensions)
+-- 
+-- INCOMPATIBLE models (will cause errors):
+--   - OpenAI text-embedding-3-small (1536 dimensions)
+--   - OpenAI text-embedding-3-large (3072 dimensions)
+--
+-- To change dimensions:
+--   1. Update vector(768) to vector(NEW_DIM) in this file
+--   2. Update EXPECTED_EMBEDDING_DIM in src/shared/utils.py
+--   3. Recreate the documents table with new vector dimension
+-- ============================================================================
 -- Supabase RPC: Semantic document retrieval using pgvector
 -- Requires the `vector` extension and a `documents` table with an `embedding` column (vector(768)).
 
