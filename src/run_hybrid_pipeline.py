@@ -120,6 +120,16 @@ def process_single_resource(
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
     Determines content type and calls appropriate processing functions.
     """
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+    except OSError as e:
+        logging.error(f"Failed to ensure temp directory {TEMP_DIR}: {e}")
+        raise
+
+    if not os.access(TEMP_DIR, os.W_OK):
+        logging.error(f"Temp directory {TEMP_DIR} is not writable.")
+        raise PermissionError(f"Temp directory {TEMP_DIR} is not writable.")
+
     logging.info(f"Processing resource: {title} ({url})")
     raw_content_data = None # Store path (PDF) or text (HTML/Transcript)
     temp_pdf_path: str | None = None  # Track temp PDF path for reliable cleanup
@@ -259,11 +269,13 @@ def process_single_resource(
                     pass
                 finally:
                     # Ensure temp PDF is deleted regardless of success/failure
-                    if target_pdf_path and os.path.exists(target_pdf_path):
+                    if temp_pdf_path and isinstance(temp_pdf_path, str):
                         try:
-                            os.remove(target_pdf_path)
+                            if os.path.exists(temp_pdf_path):
+                                os.remove(temp_pdf_path)
+                                logging.debug(f"Cleaned up temp PDF: {temp_pdf_path}")
                         except OSError as e:
-                            logging.warning(f"   Could not delete temp PDF {target_pdf_path}: {e}")
+                            logging.warning(f"Could not delete temp PDF {temp_pdf_path}: {e}")
 
             elif content_type_tag in ["webpage", "recording_transcript"]:
                 # Process extracted text (HTML or Transcript)
