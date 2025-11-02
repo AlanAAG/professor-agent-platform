@@ -20,6 +20,60 @@ from typing import List, Dict, Optional, Any
 import logging
 import time
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
+
+
+def sanitize_sentry_event(event, hint):
+    """Remove sensitive data before sending to Sentry."""
+    if "request" in event and "env" in event["request"]:
+        sensitive_keys = [
+            "GEMINI_API_KEY",
+            "SUPABASE_KEY",
+            "SECRET_API_KEY",
+            "OPENAI_API_KEY",
+            "COACH_PASSWORD",
+            "SENTRY_DSN",
+        ]
+        for key in sensitive_keys:
+            if key in event["request"]["env"]:
+                event["request"]["env"][key] = "[REDACTED]"
+
+    if "request" in event and "headers" in event["request"]:
+        if "x-api-key" in event["request"]["headers"]:
+            event["request"]["headers"]["x-api-key"] = "[REDACTED]"
+        if "authorization" in event["request"]["headers"]:
+            event["request"]["headers"]["authorization"] = "[REDACTED]"
+
+    if "request" in event:
+        if "query_string" in event["request"]:
+            event["request"]["query_string"] = "[SANITIZED]"
+        if "data" in event["request"] and isinstance(event["request"]["data"], dict):
+            if "api_key" in event["request"]["data"]:
+                event["request"]["data"]["api_key"] = "[REDACTED]"
+
+    return event
+
+
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+        integrations=[
+            FastApiIntegration(transaction_style="endpoint"),
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        before_send=sanitize_sentry_event,
+        profiles_sample_rate=0.1,
+    )
+    logging.info("Sentry monitoring initialized")
+
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
 
