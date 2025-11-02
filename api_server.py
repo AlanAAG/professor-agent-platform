@@ -20,9 +20,15 @@ from typing import List, Dict, Optional, Any
 import logging
 import time
 
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.logging import LoggingIntegration
+# --- Sentry Integration (Optional) ---
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    HAS_SENTRY = True
+except ImportError:
+    sentry_sdk = None
+    HAS_SENTRY = False
 
 
 def sanitize_sentry_event(event, hint):
@@ -56,11 +62,12 @@ def sanitize_sentry_event(event, hint):
     return event
 
 
+# Initialize Sentry if DSN is provided
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
 SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
 
-if SENTRY_DSN:
+if SENTRY_DSN and HAS_SENTRY:
     sentry_sdk.init(
         dsn=SENTRY_DSN,
         environment=SENTRY_ENVIRONMENT,
@@ -73,6 +80,8 @@ if SENTRY_DSN:
         profiles_sample_rate=0.1,
     )
     logging.info("Sentry monitoring initialized")
+elif SENTRY_DSN and not HAS_SENTRY:
+    logging.warning("SENTRY_DSN provided but sentry-sdk not installed. Install with: pip install sentry-sdk[fastapi]")
 
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -81,15 +90,74 @@ app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# --- Performance Metrics (In-Memory) ---
+REQUEST_COUNT: Dict[str, int] = {}
+REQUEST_DURATION: Dict[str, List[float]] = {}
+EMBEDDING_COSTS = {"total_tokens": 0, "estimated_cost_usd": 0.0}
+VECTOR_DB_METRICS = {"query_count": 0, "avg_latency_ms": 0.0, "cache_hits": 0}
+
+
+@app.middleware("http")
+async def performance_monitoring_middleware(request: Request, call_next):
+    """Track request performance and log slow endpoints."""
+    start_time = time.time()
+    path = request.url.path
+
+    # Increment request count per path
+    REQUEST_COUNT[path] = REQUEST_COUNT.get(path, 0) + 1
+
+    try:
+        response = await call_next(request)
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Track request duration per path
+        if path not in REQUEST_DURATION:
+            REQUEST_DURATION[path] = []
+        REQUEST_DURATION[path].append(duration_ms)
+
+        # Log slow requests (>2 seconds)
+        if duration_ms > 2000:
+            logging.warning(
+                "SLOW_REQUEST | path=%s duration_ms=%.2f status=%s",
+                path,
+                duration_ms,
+                response.status_code,
+            )
+
+            if SENTRY_DSN and HAS_SENTRY:
+                with sentry_sdk.configure_scope() as scope:
+                    scope.set_context(
+                        "performance",
+                        {
+                            "endpoint": path,
+                            "duration_ms": duration_ms,
+                            "threshold_ms": 2000,
+                        },
+                    )
+                    sentry_sdk.capture_message(
+                        f"Slow endpoint: {path}",
+                        level="warning",
+                    )
+
+        return response
+    except Exception as exc:
+        duration_ms = (time.time() - start_time) * 1000
+        logging.error(
+            "REQUEST_ERROR | path=%s duration_ms=%.2f error=%s",
+            path,
+            duration_ms,
+            type(exc).__name__,
+        )
+        raise
+
+
 # --- CORS Setup (Robust, Environment-based) ---
-# Get Lovable frontend URL(s) from environment. Comma-separated.
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 
 # Fallback defaults when env var not provided (Quick Test / local dev)
 if not allowed_origins:
     allowed_origins = [
-        # Local development
         "http://localhost:5173",
         "http://localhost:3000",
     ]
@@ -103,7 +171,6 @@ app.add_middleware(
 )
 
 # --- Initialize clients ---
-# Uses GEMINI_API_KEY environment variable
 _GENAI_CLIENT = None
 _api_key = os.getenv("GEMINI_API_KEY")
 if _api_key:
@@ -120,41 +187,29 @@ try:
 except Exception:
     supabase = None
 
-# IMPORTANT: Keep this aligned with src/refinery/embedding.py
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
 
 # --- API Key Authentication Setup ---
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
 
+
 def get_api_key(api_key: str = Security(api_key_header)) -> str:
-    """
-    Robust API key validation with immediate rejection of invalid requests.
-    
-    Returns:
-        str: Valid API key
-        
-    Raises:
-        HTTPException: 500 if SECRET_API_KEY not configured
-        HTTPException: 403 if API key is invalid
-    """
+    """Robust API key validation with immediate rejection of invalid requests."""
     expected = os.getenv("SECRET_API_KEY")
     if not expected:
-        # Service misconfiguration; reject until configured
         raise HTTPException(status_code=500, detail="API key not configured")
     
-    # Handle whitespace issues (common with copy/paste)
     api_key = api_key.strip() if api_key else ""
     
-    # Validate minimum length to prevent empty/trivial keys
     if len(api_key) < 8:
         raise HTTPException(status_code=403, detail="Invalid API key")
     
     if api_key != expected:
-        # Use 403 Forbidden since the key is likely just wrong
         raise HTTPException(status_code=403, detail="Invalid API key")
     return api_key
 
-# --- Graceful Fallback Message when no documents are found ---
+
+# --- Graceful Fallback Message ---
 NO_DOCUMENTS_ANSWER = (
     "I couldn't find relevant materials. This could be because:\n"
     "- The content hasn't been uploaded yet\n"
@@ -162,22 +217,18 @@ NO_DOCUMENTS_ANSWER = (
     "- Contact alanayalag@gmail.com if this persists"
 )
 
-# --- Basic API logging setup (stdout). Avoid duplicate handlers.
+# --- Logging Setup ---
 logger = logging.getLogger("api")
 if not logger.handlers:
     handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        fmt='%(asctime)s - %(levelname)s - api - %(message)s'
-    )
+    formatter = logging.Formatter(fmt='%(asctime)s - %(levelname)s - api - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 
 def _check_db_status() -> Dict[str, Optional[bool]]:
-    """Perform a trivial Supabase query to confirm connectivity.
-    Returns a dict with keys 'connected' and 'ok'.
-    """
+    """Perform a trivial Supabase query to confirm connectivity."""
     if supabase is None:
         return {"connected": False, "ok": False}
     try:
@@ -197,7 +248,6 @@ def _get_rag_params() -> Dict[str, object]:
         match_count = int(os.getenv("RAG_MATCH_COUNT", "8"))
     except Exception:
         match_count = 8
-    # Relaxed fallback params if no docs found on first pass
     relaxed_threshold = min(match_threshold, 0.3)
     relaxed_count = max(match_count, 10)
     return {
@@ -207,10 +257,10 @@ def _get_rag_params() -> Dict[str, object]:
         "relaxed_count": relaxed_count,
     }
 
+
 class Message(BaseModel):
     role: str
     content: str
-    # Accept optional sources array from frontend; backend will ignore when forwarding to AI
     sources: Optional[List[Dict[str, Any]]] = None
 
 
@@ -219,13 +269,22 @@ class ChatRequest(BaseModel):
     selectedClass: Optional[str] = None
     persona: str = "balanced"
 
+
 class RAGRequest(BaseModel):
     query: str
     selectedClass: Optional[str] = None
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Track application start time for uptime metrics."""
+    app.state.start_time = time.time()
+
+
 @app.get("/")
-async def health_check():
-    """Enhanced health check for Render monitoring"""
+@limiter.limit("100/minute")
+async def health_check(request: Request):
+    """Enhanced health check for monitoring."""
     db_status = _check_db_status()
     return {
         "status": "healthy",
@@ -237,42 +296,59 @@ async def health_check():
         "endpoints": {
             "chat": "/api/chat",
             "rag_search": "/api/rag-search",
-            "health": "/health"
+            "health": "/health",
+            "metrics": "/metrics"
         }
     }
 
+
 @app.get("/health")
-async def health():
-    """Dedicated health endpoint for uptime monitoring"""
+@limiter.limit("100/minute")
+async def health(request: Request):
+    """Dedicated health endpoint for uptime monitoring."""
     db_status = _check_db_status()
     return {"status": "ok", "database": db_status}
+
+
+@app.get("/metrics")
+async def get_metrics(api_key: str = Depends(get_api_key)):
+    """Expose performance metrics for monitoring (protected by API key)."""
+    metrics = {
+        "request_counts": REQUEST_COUNT,
+        "avg_response_times_ms": {
+            path: (sum(durations) / len(durations)) if durations else 0
+            for path, durations in REQUEST_DURATION.items()
+        },
+        "embedding_costs": EMBEDDING_COSTS,
+        "vector_db_metrics": VECTOR_DB_METRICS,
+        "uptime_seconds": time.time() - getattr(app.state, "start_time", time.time()),
+    }
+    return metrics
+
 
 @app.post("/api/rag-search")
 @limiter.limit("20/minute")
 async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depends(get_api_key)):
     _t0 = time.time()
     try:
-        # RAG params from environment with sane defaults
         params = _get_rag_params()
-        # Standardized retrieval via shared utility (Supabase RPC + Gemini embeddings)
         documents = retrieve_rag_documents(
             query=payload.query,
             selected_class=payload.selectedClass,
             match_count=params["match_count"],
             match_threshold=params["match_threshold"],
         )
-        # Re-ranking using the zero-cost RRF/MMR implementation
         documents = cohere_rerank(payload.query, documents)
-        # Fallback: relax filtering and class constraint if nothing found
+        
         if not documents:
             documents = retrieve_rag_documents(
                 query=payload.query,
-                selected_class=None,  # remove class constraint for wider recall
+                selected_class=None,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
             )
             documents = cohere_rerank(payload.query, documents)
-        # Telemetry: average similarity
+        
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
             logger.info(
@@ -282,22 +358,21 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
                 avg_sim,
                 int((time.time() - _t0) * 1000),
             )
-        # Graceful fallback when no documents are found
+        
         if not documents:
-            # Try a keyword fallback directly against the documents table
             kw_docs = retrieve_rag_documents_keyword_fallback(
                 query=payload.query,
                 selected_class=payload.selectedClass,
                 limit=params["relaxed_count"],
             )
             if not kw_docs and payload.selectedClass:
-                # Widen class constraint
                 kw_docs = retrieve_rag_documents_keyword_fallback(
                     query=payload.query,
                     selected_class=None,
                     limit=params["relaxed_count"],
                 )
             documents = kw_docs
+        
         if not documents:
             logger.warning(
                 "RAG_SEARCH failure | NO_DOCUMENTS_ANSWER | query_len=%s latency_ms=%s",
@@ -313,16 +388,15 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
         logger.exception("RAG_SEARCH error | latency_ms=%s", int((time.time() - _t0) * 1000))
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/chat")
 @limiter.limit("10/minute")
 async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Depends(get_api_key)):
     _t0 = time.time()
     try:
-        # Get RAG context
         user_messages = [m for m in payload.messages if (m.role or "").lower() == "user"]
         last_query = user_messages[-1].content if user_messages else ""
 
-        # Retrieve documents directly with env-driven params
         params = _get_rag_params()
         documents = retrieve_rag_documents(
             query=last_query,
@@ -330,9 +404,8 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             match_count=params["match_count"],
             match_threshold=params["match_threshold"],
         )
-        # Re-ranking using the zero-cost RRF/MMR implementation
         documents = cohere_rerank(last_query, documents)
-        # Fallback: relax filtering and class constraint if nothing found
+        
         if not documents:
             documents = retrieve_rag_documents(
                 query=last_query,
@@ -341,7 +414,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 match_threshold=params["relaxed_threshold"],
             )
             documents = cohere_rerank(last_query, documents)
-        # Keyword fallback when vector retrieval yields nothing
+        
         if not documents:
             kw_docs = retrieve_rag_documents_keyword_fallback(
                 query=last_query,
@@ -355,7 +428,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                     limit=params["relaxed_count"],
                 )
             documents = kw_docs
-        # Telemetry: average similarity and request metrics
+        
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
         else:
@@ -368,13 +441,11 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             int((time.time() - _t0) * 1000),
         )
         
-        # Build context
         context = "\n\n".join([
             f"Source {i+1}:\nClass: {doc.get('class_name', 'N/A')}\n{doc.get('content', '')}"
             for i, doc in enumerate(documents)
         ]) if documents else "No relevant course materials found."
 
-        # System prompt
         personas = {
             "study": "You are a study buddy helping review material...",
             "professor": "You are an experienced professor teaching...",
@@ -390,8 +461,6 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 "- Be conversational but accurate"
             )
         else:
-            # When no materials are found, answer helpfully from general knowledge
-            # while being transparent about the limitation.
             rules = (
                 "- No course materials were found for this query.\n"
                 "- Answer based on your general knowledge and reasoning.\n"
@@ -407,14 +476,11 @@ COURSE MATERIALS:
 RULES:
 {rules}"""
         
-        # Prepare messages in Gemini-friendly format
-        # Use system_instruction for the system prompt, and map chat roles to Gemini roles.
         def _to_genai_contents(chat_messages: List[Dict[str, str]]):
             contents: List[Dict[str, object]] = []
             for m in chat_messages:
                 role_raw = (m.get("role") or "").lower()
                 if role_raw == "system":
-                    # We pass system prompts via system_instruction, so skip here
                     continue
                 role = "user" if role_raw == "user" else "model" if role_raw == "assistant" else "user"
                 contents.append({
@@ -422,15 +488,13 @@ RULES:
                     "parts": [{"text": m.get("content", "")}],
                 })
             return contents
-        # Strip non-AI fields (like sources) before forwarding to Gemini
+        
         clean_messages: List[Dict[str, str]] = [
             {"role": m.role, "content": m.content} for m in payload.messages
         ]
         genai_contents = _to_genai_contents(clean_messages)
         
-        # Stream response
         async def generate():
-            # Send sources first (possibly empty list)
             sources_payload = {
                 "sources": [
                     {
@@ -454,7 +518,6 @@ RULES:
                 )
             yield f"data: {json.dumps(sources_payload)}\n\n"
             
-            # Stream AI response
             if _GENAI_CLIENT is None:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
@@ -475,7 +538,6 @@ RULES:
                         }
                         yield f"data: {json.dumps(data)}\n\n"
             except Exception as stream_err:
-                # Emit an error payload to the client before closing
                 err_payload = {"error": str(stream_err)}
                 yield f"data: {json.dumps(err_payload)}\n\n"
             
