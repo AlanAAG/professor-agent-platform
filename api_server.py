@@ -194,7 +194,8 @@ async def health():
     return {"status": "ok", "database": db_status}
 
 @app.post("/api/rag-search")
-async def rag_search(payload: RAGRequest, api_key: str = Depends(get_api_key)):
+@limiter.limit("20/minute")
+async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depends(get_api_key)):
     _t0 = time.time()
     try:
         # RAG params from environment with sane defaults
