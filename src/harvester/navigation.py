@@ -12,6 +12,8 @@ import time
 import re
 import shutil
 import tempfile
+import signal
+import threading
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
@@ -495,6 +497,47 @@ def _create_driver(download_path: str | None = None) -> webdriver.Chrome:
         raise
 
 
+def _force_kill_driver_process(driver: webdriver.Chrome) -> None:
+    """Best-effort termination of lingering Chrome/Chromedriver processes."""
+    service = getattr(driver, "service", None)
+    process = getattr(service, "process", None)
+    pid = getattr(process, "pid", None)
+
+    if not process:
+        logging.debug("No WebDriver service process found to terminate.")
+        return
+
+    if pid:
+        logging.warning("Attempting to forcefully terminate lingering WebDriver process (pid=%s).", pid)
+    else:
+        logging.warning("Attempting to forcefully terminate lingering WebDriver process with unknown pid.")
+
+    try:
+        process.terminate()
+    except Exception as terminate_err:
+        logging.debug("process.terminate() failed: %s", terminate_err)
+
+    try:
+        process.wait(timeout=3)
+        logging.info("WebDriver process terminated after forced kill attempt.")
+        return
+    except Exception as wait_err:
+        logging.debug("Waiting for WebDriver process termination failed: %s", wait_err)
+
+    try:
+        process.kill()
+        logging.info("WebDriver process killed via process.kill().")
+    except Exception as kill_err:
+        logging.debug("process.kill() failed: %s", kill_err)
+
+    if pid:
+        sig = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
+        try:
+            os.kill(pid, sig)
+            logging.info("WebDriver OS-level kill signal dispatched for pid %s.", pid)
+        except Exception as os_kill_err:
+            logging.debug("OS-level kill attempt for pid %s failed: %s", pid, os_kill_err)
+
 def _load_session_state(driver: webdriver.Chrome):
     """Loads cookies and localStorage from the persisted auth state file."""
     if not os.path.exists(config.AUTH_STATE_FILE):
@@ -770,9 +813,38 @@ def launch_and_login() -> webdriver.Chrome:
         yield driver
         
     finally:
-        # Guarantee driver cleanup
-        driver.quit()
-        logging.info("WebDriver quit.")
+        if driver:
+            timeout_seconds = 5
+            quit_completed = threading.Event()
+            # Ensure quit is attempted even if driver is in invalid state
+            if hasattr(driver, "quit"):
+                def _on_quit_timeout():
+                    if quit_completed.is_set():
+                        return
+                    logging.warning(
+                        "WebDriver quit timed out after %s seconds; attempting forced termination.",
+                        timeout_seconds,
+                    )
+                    _force_kill_driver_process(driver)
+
+                timer = threading.Timer(timeout_seconds, _on_quit_timeout)
+                timer.daemon = True
+                timer.start()
+                try:
+                    try:
+                        driver.quit()
+                        quit_completed.set()
+                        logging.info("WebDriver quit successfully.")
+                    except Exception as e:
+                        quit_completed.set()
+                        # Swallow all exceptions - quit() may fail if browser crashed
+                        logging.warning(f"WebDriver quit failed (browser may have crashed): {e}")
+                        # Don't re-raise - we're in a finally block and cleanup is best-effort
+                        _force_kill_driver_process(driver)
+                finally:
+                    timer.cancel()
+            else:
+                logging.debug("Driver object missing 'quit'; skipping cleanup.")
 
 
 # --- Core Navigation Helpers ---
