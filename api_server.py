@@ -20,6 +20,11 @@ from typing import List, Dict, Optional, Any
 import logging
 import time
 
+try:
+    import sentry_sdk  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    sentry_sdk = None
+
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
 
@@ -100,6 +105,28 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
         raise HTTPException(status_code=403, detail="Invalid API key")
     return api_key
 
+
+@app.get("/metrics")
+async def get_metrics(api_key: str = Depends(get_api_key)):
+    """Expose performance metrics for monitoring."""
+    metrics = {
+        "request_counts": REQUEST_COUNT,
+        "avg_response_times_ms": {
+            path: (sum(durations) / len(durations)) if durations else 0
+            for path, durations in REQUEST_DURATION.items()
+        },
+        "embedding_costs": EMBEDDING_COSTS,
+        "vector_db_metrics": VECTOR_DB_METRICS,
+        "uptime_seconds": time.time() - getattr(app.state, "start_time", time.time()),
+    }
+    return metrics
+
+
+@app.on_event("startup")
+async def startup_event():
+    app.state.start_time = time.time()
+
+
 # --- Graceful Fallback Message when no documents are found ---
 NO_DOCUMENTS_ANSWER = (
     "I couldn't find relevant materials. This could be because:\n"
@@ -118,6 +145,69 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+
+# Prometheus-style in-memory metrics containers
+REQUEST_COUNT: Dict[str, int] = {}
+REQUEST_DURATION: Dict[str, List[float]] = {}
+EMBEDDING_COSTS = {"total_tokens": 0, "estimated_cost_usd": 0.0}
+VECTOR_DB_METRICS = {"query_count": 0, "avg_latency_ms": 0.0, "cache_hits": 0}
+
+
+@app.middleware("http")
+async def performance_monitoring_middleware(request: Request, call_next):
+    """Track request performance and log slow endpoints."""
+    start_time = time.time()
+    path = request.url.path
+
+    # Increment request count per path
+    REQUEST_COUNT[path] = REQUEST_COUNT.get(path, 0) + 1
+
+    try:
+        response = await call_next(request)
+        duration_ms = (time.time() - start_time) * 1000
+
+        # Track request duration per path
+        if path not in REQUEST_DURATION:
+            REQUEST_DURATION[path] = []
+        REQUEST_DURATION[path].append(duration_ms)
+
+        # Log slow requests (>2 seconds)
+        if duration_ms > 2000:
+            logger.warning(
+                "SLOW_REQUEST | path=%s duration_ms=%.2f status=%s",
+                path,
+                duration_ms,
+                response.status_code,
+            )
+
+            if SENTRY_DSN and sentry_sdk:
+                with sentry_sdk.configure_scope() as scope:
+                    scope.set_context(
+                        "performance",
+                        {
+                            "endpoint": path,
+                            "duration_ms": duration_ms,
+                            "threshold_ms": 2000,
+                        },
+                    )
+                    sentry_sdk.capture_message(
+                        f"Slow endpoint: {path}",
+                        level="warning",
+                    )
+
+        return response
+    except Exception as exc:  # pragma: no cover - pass through exception
+        duration_ms = (time.time() - start_time) * 1000
+        logger.error(
+            "REQUEST_ERROR | path=%s duration_ms=%.2f error=%s",
+            path,
+            duration_ms,
+            type(exc).__name__,
+        )
+        raise
 
 
 def _check_db_status() -> Dict[str, Optional[bool]]:
