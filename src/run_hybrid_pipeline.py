@@ -21,34 +21,39 @@ from selenium.webdriver.common.by import By
 from src.shared import utils
 
 
-def sanitize_sentry_event(event, hint):
-    """Remove sensitive data before sending to Sentry."""
-    if "request" in event and "env" in event["request"]:
-        sensitive_keys = [
-            "GEMINI_API_KEY",
-            "SUPABASE_KEY",
-            "SECRET_API_KEY",
-            "OPENAI_API_KEY",
-            "COACH_PASSWORD",
-            "SENTRY_DSN",
-        ]
-        for key in sensitive_keys:
-            if key in event["request"]["env"]:
-                event["request"]["env"][key] = "[REDACTED]"
+def sanitize_pipeline_event(event, hint):
+    """Sanitize sensitive data from pipeline events."""
+    sensitive_patterns = [
+        "GEMINI_API_KEY",
+        "SUPABASE_KEY",
+        "COACH_PASSWORD",
+        "SECRET_API_KEY",
+        "OPENAI_API_KEY",
+    ]
 
-    if "request" in event and "headers" in event["request"]:
-        if "x-api-key" in event["request"]["headers"]:
-            event["request"]["headers"]["x-api-key"] = "[REDACTED]"
-        if "authorization" in event["request"]["headers"]:
-            event["request"]["headers"]["authorization"] = "[REDACTED]"
+    def contains_sensitive(text: str) -> bool:
+        upper_text = text.upper()
+        return any(pattern in upper_text for pattern in sensitive_patterns)
 
-    if "request" in event:
-        if "query_string" in event["request"]:
-            event["request"]["query_string"] = "[SANITIZED]"
-        if "data" in event["request"] and isinstance(event["request"]["data"], dict):
-            if "api_key" in event["request"]["data"]:
-                event["request"]["data"]["api_key"] = "[REDACTED]"
+    def sanitize(value):
+        if isinstance(value, dict):
+            for key, val in list(value.items()):
+                key_str = str(key)
+                if contains_sensitive(key_str):
+                    value[key] = "[REDACTED]"
+                    continue
+                if isinstance(val, str) and contains_sensitive(val):
+                    value[key] = "[REDACTED]"
+                else:
+                    sanitize(val)
+        elif isinstance(value, list):
+            for idx, item in enumerate(value):
+                if isinstance(item, str) and contains_sensitive(item):
+                    value[idx] = "[REDACTED]"
+                else:
+                    sanitize(item)
 
+    sanitize(event)
     return event
 
 # --- Setup Logging ---
@@ -75,7 +80,7 @@ if SENTRY_DSN:
         environment=SENTRY_ENVIRONMENT,
         traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
         integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
-        before_send=sanitize_sentry_event,
+        before_send=sanitize_pipeline_event,
         profiles_sample_rate=0.1,
     )
     logging.info("Sentry monitoring initialized for hybrid pipeline")
@@ -375,303 +380,335 @@ def process_single_resource(
 
 
 def main_pipeline(mode="daily"):
-    """Main orchestration with summary generation."""
-    start_time = datetime.datetime.now()
-    start_epoch = time.time()
-    logging.info(
-        f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode})"
-    )
-    
-    # Reset course links seen in navigation to handle duplicates correctly.
-    navigation.reset_course_tracking()
-    
-    # Determine cutoff date based on mode
-    if mode == "daily":
-        cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
-        logging.info(f"Processing resources from the last 24 hours (since {cutoff_date.isoformat()})")
-    elif mode == "backlog":
-        cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-        logging.info("Processing all historical resources (backlog mode).")
-    else:
-        raise ValueError(f"Unsupported pipeline mode: {mode}")
-
-    # Initialize stats & errors
-    stats: Dict[str, Any] = {
-        "courses_attempted": 0,
-        "courses_successful": 0,
-        "resources_discovered": 0,
-        # Telemetry metrics
-        "resources_found": 0,
-        "zoom_transcripts_scraped": 0,
-        "pdf_documents_processed": 0,
-        "resources_processed": 0,
-        "resources_failed": 0,
-    }
-
-    errors: List[Dict[str, str]] = []
-    
-    # Tracks URLs attempted in this run to avoid duplicate processing attempts
-    attempted_resource_urls: set[str] = set()
-    # Tracks URLs successfully processed in this run for reporting
-    successfully_processed_urls: set[str] = set()
-
-    try:
-        with navigation.launch_and_login() as driver:
-            # Caches remain at pipeline scope
-            recent_check_cache: dict[str, bool] = {}
-            # seen_urls is now replaced by processed_resource_urls set for de-duplication
-
-            # --- Navigation and Resource Discovery ---
-            
-            logging.info("\n--- Starting Navigation Phase ---")
-            
-            # Course Filtering Logic (Retained from existing code)
-            course_filter_env = os.environ.get("COURSE_CODES") or os.environ.get("COURSE_FILTER")
-            if course_filter_env:
-                selected_codes = [code.strip() for code in course_filter_env.split(",") if code.strip()]
-                course_items = [
-                    (code, config.COURSE_MAP[code]) for code in selected_codes if code in config.COURSE_MAP
-                ]
-            else:
-                course_items = list(config.COURSE_MAP.items())
-
-            # Auto-detect available courses on the page and filter out missing ones
-            try:
-                available_codes = navigation.get_available_course_codes(driver)
-                if available_codes:
-                    course_items = [(c, d) for (c, d) in course_items if c in available_codes]
-                else:
-                    logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
-            except Exception as detect_err:
-                logging.warning(f"Failed to detect available courses: {detect_err}")
-
-
-            # Update course attempts after filtering
-            stats["courses_attempted"] = len(course_items)
-
-            # Process courses one at a time (lighter memory footprint)
-            for course_code, course_details in course_items:
-                class_name = course_details["name"]
-                group_name = course_details.get("group")
-                
-                logging.info(f"\n{'='*60}")
-                logging.info(f"Course: {class_name} ({course_code})")
-                logging.info(f"{'='*60}")
-                
-                # Batch for this course (No longer needed to store all resources in one list, processing happens immediately)
-                
-                try:
-                    # Navigation will check internal cache and skip if already navigated in this run.
-                    navigation.find_and_click_course_link(driver, course_code, group_name)
-                    
-                    if navigation.navigate_to_resources_section(driver):
-                        
-                        sections = [
-                            ("pre_read", config.PRE_READ_SECTION_TITLE),
-                            ("in_class", config.IN_CLASS_SECTION_TITLE),
-                            ("post_class", config.POST_CLASS_SECTION_TITLE),
-                            ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
-                        ]
-                        
-                        for section_tag, title_text in sections:
-                            logging.info(f"--- Section: {section_tag} ---")
-                            try:
-                                container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
-                                # Telemetry: count items found at navigation stage
-                                try:
-                                    stats["resources_found"] += len(items)
-                                except Exception:
-                                    pass
-                                logging.info(f"   Found {len(items)} items")
-                                
-                                # --- START IMMEDIATE RESOURCE PROCESSING ---
-                                for idx in range(len(items)):
-                                    url, title, date_text = None, None, None
-                                    try:
-                                        # Resource Scraping Logic (Retained from existing code)
-                                        # Re-find current item by index to avoid staleness
-                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                                        
-                                        # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
-                                        # Robustly locate the resource link for all section layouts
-                                        link_el = None
-                                        # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
-                                        link_locators = [
-                                            (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
-                                            (By.CSS_SELECTOR, "a[href]"),
-                                            (By.XPATH, ".//ancestor::a[1]"),
-                                        ]
-                                        for by, selector in link_locators:
-                                            try:
-                                                link_el = item.find_element(by, selector)
-                                                if link_el is not None:
-                                                    break
-                                            except Exception:
-                                                continue
-                                        
-                                        if link_el is not None:
-                                            href = link_el.get_attribute("href")
-                                            if href and not href.startswith("http"):
-                                                href = config.BASE_URL + href.lstrip('/')
-                                            url = href
-                                            try:
-                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                                title = title_el.text
-                                            except Exception:
-                                                title = url or ""
-                                            try:
-                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                                date_text = date_el.text
-                                            except Exception:
-                                                date_text = None
-                                        
-                                        if not url or not title:
-                                            logging.info("      Skipping item (missing URL or Title)")
-                                            continue
-                                            
-                                        if "youtube.com" in url or "youtu.be" in url:
-                                            logging.info(f"      Skipping YouTube video: {title}")
-                                            continue
-
-                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                        should_process = False
-                                        
-                                        # Filtering Logic (Date / Recent Check)
-                                        if parsed_date:
-                                            if parsed_date >= cutoff_date:
-                                                should_process = True
-                                            else:
-                                                logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                        else:
-                                            exists_recently = recent_check_cache.get(url)
-                                            if exists_recently is None:
-                                                exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
-                                            recent_check_cache[url] = exists_recently
-                                            should_process = not exists_recently
-                                            if not should_process:
-                                                logging.info(f"      Skipping undated resource (found in recent DB): {url}")
-
-                                        # Deduplication Check (DB and Current Run)
-                                        if should_process:
-                                            # Check against attempted URLs to prevent duplicate processing attempts
-                                            if url in attempted_resource_urls:
-                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                                continue
-                                            
-                                            stats["resources_discovered"] += 1
-                                            
-                                            # Mark URL as attempted to prevent duplicate processing attempts
-                                            attempted_resource_urls.add(url)
-                                            
-                                            # --- PROCESS RESOURCE IMMEDIATELY ---
-                                            logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                            
-                                            try:
-                                                success = process_single_resource(
-                                                    driver,
-                                                    url,
-                                                    title,
-                                                    parsed_date,
-                                                    class_name,
-                                                    section_tag,
-                                                    stats,
-                                                )
-                                                if success:
-                                                    stats["resources_processed"] += 1
-                                                    # Track URL as successfully processed for reporting
-                                                    successfully_processed_urls.add(url) 
-                                            except Exception as e:
-                                                logging.error(f"❌ Failed to process {title}: {e}")
-                                                stats["resources_failed"] += 1
-                                                errors.append(
-                                                    {
-                                                        "resource_title": title,
-                                                        "resource_url": url,
-                                                        "class_name": class_name,
-                                                        "error_type": type(e).__name__,
-                                                        "error_message": str(e),
-                                                        "timestamp": datetime.datetime.now().isoformat(),
-                                                    }
-                                                )
-                                        
-                                    except Exception as item_err:
-                                        logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
-                                        continue
-                                        
-                                # --- END IMMEDIATE RESOURCE PROCESSING ---
-                                        
-                            except Exception as section_err:
-                                logging.warning(f"   Section '{section_tag}' failed: {section_err}")
-                                continue
-                        
-                        stats["courses_successful"] += 1
-                        
-                except Exception as course_err:
-                    logging.error(f"❌ Course {class_name} failed: {course_err}")
-                    try:
-                        driver.get(config.COURSES_URL)
-                    except Exception:
-                        pass
-                    continue
-
-    except Exception as pipeline_err:
-        logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
-        errors.append(
-            {
-                "error_type": "CRITICAL_PIPELINE_FAILURE",
-                "error_message": str(pipeline_err),
-                "timestamp": datetime.datetime.now().isoformat(),
-            }
-        )
-    finally:
-        # Always save summary, even on failure
-        try:
-            save_run_summary(stats, mode, start_time, errors)
-        except Exception as summary_err:
-            logging.error(f"Failed to save run summary: {summary_err}")
-
-        # Timer-based runtime and final metrics log
-        total_runtime_sec = round(time.time() - start_epoch, 2)
-        subjects_failed = max(stats.get("courses_attempted", 0) - stats.get("courses_successful", 0), 0)
+    """Main orchestration with monitoring and summary generation."""
+    with sentry_sdk.start_transaction(op="pipeline", name=f"pipeline_{mode}"):
+        start_time = datetime.datetime.now()
+        start_epoch = time.time()
         logging.info(
-            (
-                "📈 Pipeline Metrics | runtime_s=%s resources_found=%s resources_processed=%s "
-                "zoom_transcripts_scraped=%s pdf_documents_processed=%s subjects_failed=%s"
-            ),
-            total_runtime_sec,
-            stats.get("resources_found", 0),
-            stats.get("resources_processed", 0),
-            stats.get("zoom_transcripts_scraped", 0),
-            stats.get("pdf_documents_processed", 0),
-            subjects_failed,
+            f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode})"
         )
+        
+        # Reset course links seen in navigation to handle duplicates correctly.
+        navigation.reset_course_tracking()
+        
+        # Determine cutoff date based on mode
+        if mode == "daily":
+            cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+            logging.info(f"Processing resources from the last 24 hours (since {cutoff_date.isoformat()})")
+        elif mode == "backlog":
+            cutoff_date = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+            logging.info("Processing all historical resources (backlog mode).")
+        else:
+            raise ValueError(f"Unsupported pipeline mode: {mode}")
 
-        # Persist concise status JSON for external monitors
+        # Initialize stats & errors
+        stats: Dict[str, Any] = {
+            "courses_attempted": 0,
+            "courses_successful": 0,
+            "resources_discovered": 0,
+            # Telemetry metrics
+            "resources_found": 0,
+            "zoom_transcripts_scraped": 0,
+            "pdf_documents_processed": 0,
+            "resources_processed": 0,
+            "resources_failed": 0,
+        }
+
+        errors: List[Dict[str, str]] = []
+        
+        # Tracks URLs attempted in this run to avoid duplicate processing attempts
+        attempted_resource_urls: set[str] = set()
+        # Tracks URLs successfully processed in this run for reporting
+        successfully_processed_urls: set[str] = set()
+
         try:
-            os.makedirs("data", exist_ok=True)
+            with navigation.launch_and_login() as driver:
+                # Caches remain at pipeline scope
+                recent_check_cache: dict[str, bool] = {}
+                # seen_urls is now replaced by processed_resource_urls set for de-duplication
+
+                # --- Navigation and Resource Discovery ---
+                
+                logging.info("\n--- Starting Navigation Phase ---")
+                
+                # Course Filtering Logic (Retained from existing code)
+                course_filter_env = os.environ.get("COURSE_CODES") or os.environ.get("COURSE_FILTER")
+                if course_filter_env:
+                    selected_codes = [code.strip() for code in course_filter_env.split(",") if code.strip()]
+                    course_items = [
+                        (code, config.COURSE_MAP[code]) for code in selected_codes if code in config.COURSE_MAP
+                    ]
+                else:
+                    course_items = list(config.COURSE_MAP.items())
+
+                # Auto-detect available courses on the page and filter out missing ones
+                try:
+                    available_codes = navigation.get_available_course_codes(driver)
+                    if available_codes:
+                        course_items = [(c, d) for (c, d) in course_items if c in available_codes]
+                    else:
+                        logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
+                except Exception as detect_err:
+                    logging.warning(f"Failed to detect available courses: {detect_err}")
+
+
+                # Update course attempts after filtering
+                stats["courses_attempted"] = len(course_items)
+
+                # Process courses one at a time (lighter memory footprint)
+                for course_code, course_details in course_items:
+                    class_name = course_details["name"]
+                    group_name = course_details.get("group")
+                    
+                    logging.info(f"\n{'='*60}")
+                    logging.info(f"Course: {class_name} ({course_code})")
+                    logging.info(f"{'='*60}")
+                    
+                    # Batch for this course (No longer needed to store all resources in one list, processing happens immediately)
+                    
+                    try:
+                        # Navigation will check internal cache and skip if already navigated in this run.
+                        navigation.find_and_click_course_link(driver, course_code, group_name)
+                        
+                        if navigation.navigate_to_resources_section(driver):
+                            
+                            sections = [
+                                ("pre_read", config.PRE_READ_SECTION_TITLE),
+                                ("in_class", config.IN_CLASS_SECTION_TITLE),
+                                ("post_class", config.POST_CLASS_SECTION_TITLE),
+                                ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
+                            ]
+                            
+                            for section_tag, title_text in sections:
+                                logging.info(f"--- Section: {section_tag} ---")
+                                try:
+                                    container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
+                                    # Telemetry: count items found at navigation stage
+                                    try:
+                                        stats["resources_found"] += len(items)
+                                    except Exception:
+                                        pass
+                                    logging.info(f"   Found {len(items)} items")
+                                    
+                                    # --- START IMMEDIATE RESOURCE PROCESSING ---
+                                    for idx in range(len(items)):
+                                        url, title, date_text = None, None, None
+                                        try:
+                                            # Resource Scraping Logic (Retained from existing code)
+                                            # Re-find current item by index to avoid staleness
+                                            item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
+                                            
+                                            # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
+                                            # Robustly locate the resource link for all section layouts
+                                            link_el = None
+                                            # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
+                                            link_locators = [
+                                                (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
+                                                (By.CSS_SELECTOR, "a[href]"),
+                                                (By.XPATH, ".//ancestor::a[1]"),
+                                            ]
+                                            for by, selector in link_locators:
+                                                try:
+                                                    link_el = item.find_element(by, selector)
+                                                    if link_el is not None:
+                                                        break
+                                                except Exception:
+                                                    continue
+                                            
+                                            if link_el is not None:
+                                                href = link_el.get_attribute("href")
+                                                if href and not href.startswith("http"):
+                                                    href = config.BASE_URL + href.lstrip('/')
+                                                url = href
+                                                try:
+                                                    title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                                    title = title_el.text
+                                                except Exception:
+                                                    title = url or ""
+                                                try:
+                                                    date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                                    date_text = date_el.text
+                                                except Exception:
+                                                    date_text = None
+                                            
+                                            if not url or not title:
+                                                logging.info("      Skipping item (missing URL or Title)")
+                                                continue
+                                                
+                                            if "youtube.com" in url or "youtu.be" in url:
+                                                logging.info(f"      Skipping YouTube video: {title}")
+                                                continue
+
+                                            parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                            should_process = False
+                                            
+                                            # Filtering Logic (Date / Recent Check)
+                                            if parsed_date:
+                                                if parsed_date >= cutoff_date:
+                                                    should_process = True
+                                                else:
+                                                    logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
+                                            else:
+                                                exists_recently = recent_check_cache.get(url)
+                                                if exists_recently is None:
+                                                    exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
+                                                recent_check_cache[url] = exists_recently
+                                                should_process = not exists_recently
+                                                if not should_process:
+                                                    logging.info(f"      Skipping undated resource (found in recent DB): {url}")
+
+                                            # Deduplication Check (DB and Current Run)
+                                            if should_process:
+                                                # Check against attempted URLs to prevent duplicate processing attempts
+                                                if url in attempted_resource_urls:
+                                                    logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                                    continue
+                                                
+                                                stats["resources_discovered"] += 1
+                                                
+                                                # Mark URL as attempted to prevent duplicate processing attempts
+                                                attempted_resource_urls.add(url)
+                                                
+                                                # --- PROCESS RESOURCE IMMEDIATELY ---
+                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
+                                                
+                                                try:
+                                                    success = process_single_resource(
+                                                        driver,
+                                                        url,
+                                                        title,
+                                                        parsed_date,
+                                                        class_name,
+                                                        section_tag,
+                                                        stats,
+                                                    )
+                                                    if success:
+                                                        stats["resources_processed"] += 1
+                                                        # Track URL as successfully processed for reporting
+                                                        successfully_processed_urls.add(url) 
+                                                except Exception as e:
+                                                    logging.error(f"❌ Failed to process {title}: {e}")
+                                                    stats["resources_failed"] += 1
+                                                    errors.append(
+                                                        {
+                                                            "resource_title": title,
+                                                            "resource_url": url,
+                                                            "class_name": class_name,
+                                                            "error_type": type(e).__name__,
+                                                            "error_message": str(e),
+                                                            "timestamp": datetime.datetime.now().isoformat(),
+                                                        }
+                                                    )
+                                        
+                                        except Exception as item_err:
+                                            logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                            continue
+                                        
+                                    # --- END IMMEDIATE RESOURCE PROCESSING ---
+                                        
+                                except Exception as section_err:
+                                    logging.warning(f"   Section '{section_tag}' failed: {section_err}")
+                                    continue
+                            
+                            stats["courses_successful"] += 1
+                            
+                    except Exception as course_err:
+                        logging.error(f"❌ Course {class_name} failed: {course_err}")
+                        try:
+                            driver.get(config.COURSES_URL)
+                        except Exception:
+                            pass
+                        continue
+
+        except Exception as pipeline_err:
+            logging.critical(f"Pipeline failed with critical error: {pipeline_err}", exc_info=True)
+            errors.append(
+                {
+                    "error_type": "CRITICAL_PIPELINE_FAILURE",
+                    "error_message": str(pipeline_err),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                }
+            )
+            if SENTRY_DSN:
+                with sentry_sdk.push_scope() as scope:
+                    scope.set_context(
+                        "pipeline",
+                        {
+                            "mode": mode,
+                            "stats": stats,
+                            "errors_count": len(errors),
+                        },
+                    )
+                    scope.set_extra("exception_message", str(pipeline_err))
+                    sentry_sdk.capture_exception(pipeline_err)
+            raise
+        finally:
+            # Always save summary, even on failure
+            try:
+                save_run_summary(stats, mode, start_time, errors)
+            except Exception as summary_err:
+                logging.error(f"Failed to save run summary: {summary_err}")
+
+            # Timer-based runtime and final metrics log
+            total_runtime_sec = round(time.time() - start_epoch, 2)
+            subjects_failed = max(stats.get("courses_attempted", 0) - stats.get("courses_successful", 0), 0)
+            logging.info(
+                (
+                    "📈 Pipeline Metrics | runtime_s=%s resources_found=%s resources_processed=%s "
+                    "zoom_transcripts_scraped=%s pdf_documents_processed=%s subjects_failed=%s"
+                ),
+                total_runtime_sec,
+                stats.get("resources_found", 0),
+                stats.get("resources_processed", 0),
+                stats.get("zoom_transcripts_scraped", 0),
+                stats.get("pdf_documents_processed", 0),
+                subjects_failed,
+            )
+
             final_status = (
                 "SUCCESS" if (len(errors) == 0 and stats.get("resources_failed", 0) == 0) else "FAILURE"
             )
-            concise_report = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "status": final_status,
-                "runtime_seconds": total_runtime_sec,
-                "metrics": {
-                    "resources_found": stats.get("resources_found", 0),
-                    "resources_processed": stats.get("resources_processed", 0),
-                    "zoom_transcripts_scraped": stats.get("zoom_transcripts_scraped", 0),
-                    "pdf_documents_processed": stats.get("pdf_documents_processed", 0),
-                    "subjects_failed": subjects_failed,
-                },
-            }
-            report_path = getattr(config.SETTINGS, "metrics_report_path", "data/pipeline_status.json")
-            with open(report_path, "w") as f:
-                json.dump(concise_report, f, indent=2)
-            logging.info("📄 Pipeline status saved to %s", report_path)
-        except Exception as e:
-            logging.error("Failed to write pipeline status JSON: %s", e)
 
-        logging.info("🚀 Hybrid Pipeline Finished.")
+            # Persist concise status JSON for external monitors
+            try:
+                os.makedirs("data", exist_ok=True)
+                concise_report = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "status": final_status,
+                    "runtime_seconds": total_runtime_sec,
+                    "metrics": {
+                        "resources_found": stats.get("resources_found", 0),
+                        "resources_processed": stats.get("resources_processed", 0),
+                        "zoom_transcripts_scraped": stats.get("zoom_transcripts_scraped", 0),
+                        "pdf_documents_processed": stats.get("pdf_documents_processed", 0),
+                        "subjects_failed": subjects_failed,
+                    },
+                }
+                report_path = getattr(config.SETTINGS, "metrics_report_path", "data/pipeline_status.json")
+                with open(report_path, "w") as f:
+                    json.dump(concise_report, f, indent=2)
+                logging.info("📄 Pipeline status saved to %s", report_path)
+            except Exception as e:
+                logging.error("Failed to write pipeline status JSON: %s", e)
+
+            if SENTRY_DSN:
+                with sentry_sdk.push_scope() as scope:
+                    scope.set_context(
+                        "pipeline",
+                        {
+                            "mode": mode,
+                            "stats": stats,
+                            "errors_count": len(errors),
+                            "duration_seconds": total_runtime_sec,
+                            "final_status": final_status,
+                        },
+                    )
+                    sentry_sdk.capture_message(
+                        f"Pipeline {mode} completed",
+                        level="info",
+                    )
+
+            logging.info("🚀 Hybrid Pipeline Finished.")
 
 
 # --- Allow running the script directly ---
