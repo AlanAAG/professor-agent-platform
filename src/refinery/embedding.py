@@ -127,6 +127,11 @@ def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
     Takes clean text, splits it into chunks, and embeds it
     into the Supabase vector store with metadata.
     """
+    if not vector_store or not embeddings_model or not supabase:
+        raise EnvironmentError(
+            "Embedding system not initialized. Check that GEMINI_API_KEY, SUPABASE_URL, "
+            "and SUPABASE_KEY are correctly set in your environment variables."
+        )
     if not vector_store:
         # This check is important because initialization may have failed gracefully.
         raise EnvironmentError("Vector store is not initialized.")
