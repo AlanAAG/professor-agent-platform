@@ -123,6 +123,11 @@ def _add_documents_with_retry(documents: List[Any]):
 
 # --- Main Function to be Called by Other Scripts ---
 def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
+    if not vector_store or not embeddings_model or not supabase:
+        raise EnvironmentError(
+            "Embedding system not initialized. Check that GEMINI_API_KEY, SUPABASE_URL, "
+            "and SUPABASE_KEY are correctly set in your environment variables."
+        )
     """
     Takes clean text, splits it into chunks, and embeds it
     into the Supabase vector store with metadata.
