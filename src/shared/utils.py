@@ -340,6 +340,11 @@ _GENAI_EMBED_WARNING_EMITTED = False
 _OPENAI_DISABLED = False
 _OPENAI_DISABLED_REASON = ""
 
+_MATCH_DOCUMENTS_RPC_STYLE: Optional[str] = None
+_MATCH_DOCUMENTS_RPC_STYLE_HINT = os.environ.get("MATCH_DOCUMENTS_RPC_STYLE", "").strip().lower()
+if _MATCH_DOCUMENTS_RPC_STYLE_HINT in {"legacy", "modern"}:
+    _MATCH_DOCUMENTS_RPC_STYLE = _MATCH_DOCUMENTS_RPC_STYLE_HINT
+
 
 def _build_embed_config(task_type: str | None = "retrieval_query"):
     """Return google-genai EmbedContentConfig when available."""
@@ -444,6 +449,109 @@ def _ensure_openai():
         _OPENAI_CLIENT = OpenAI()
     except Exception:
         _OPENAI_CLIENT = None
+
+
+def _is_supabase_signature_mismatch(exc: Exception) -> bool:
+    """Return True if the Supabase RPC error looks like a signature mismatch."""
+    try:
+        fragments: List[str] = [str(exc)]
+    except Exception:
+        fragments = []
+
+    for attr in ("message", "hint", "details"):
+        value = getattr(exc, attr, None)
+        if value:
+            text = str(value)
+            if text not in fragments:
+                fragments.append(text)
+
+    blob = " ".join(fragments)
+    if "match_documents(filter" in blob:
+        return True
+    if "No function matches the given name" in blob and "match_documents" in blob:
+        return True
+
+    code = getattr(exc, "code", "")
+    if code == "PGRST202":
+        return True
+    if PostgrestAPIError is not None and isinstance(exc, PostgrestAPIError):
+        if getattr(exc, "code", "") == "PGRST202":
+            return True
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 404:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None:
+        resp_status = getattr(response, "status_code", None)
+        if resp_status == 404:
+            return True
+
+    return False
+
+
+def _invoke_match_documents_rpc(
+    supabase_client,
+    *,
+    query_embedding: List[float],
+    match_threshold: float,
+    match_count: int,
+    selected_class: Optional[str],
+):
+    """Call match_documents with adaptive payloads, caching the working signature."""
+    global _MATCH_DOCUMENTS_RPC_STYLE
+
+    style_preference: List[str] = []
+    if _MATCH_DOCUMENTS_RPC_STYLE:
+        style_preference.append(_MATCH_DOCUMENTS_RPC_STYLE)
+    elif _MATCH_DOCUMENTS_RPC_STYLE_HINT:
+        style_preference.append(_MATCH_DOCUMENTS_RPC_STYLE_HINT)
+    else:
+        style_preference.append("legacy")
+
+    if "modern" not in style_preference:
+        style_preference.append("modern")
+    if "legacy" not in style_preference:
+        style_preference.append("legacy")
+
+    last_exc: Exception | None = None
+
+    for style in style_preference:
+        class_filter = (selected_class or "").strip() or None
+        if style == "modern":
+            payload = {
+                "query_embedding": query_embedding,
+                "match_threshold": float(match_threshold),
+                "match_count": int(match_count),
+            }
+            if class_filter:
+                payload["filter_class"] = class_filter
+        else:  # legacy JSON filter signature
+            legacy_filter: Dict[str, Any] = {"match_threshold": float(match_threshold)}
+            if class_filter:
+                legacy_filter["class_name"] = class_filter
+            payload = {
+                "query_embedding": query_embedding,
+                "match_count": int(match_count),
+                "filter": legacy_filter,
+            }
+
+        try:
+            response = supabase_client.rpc("match_documents", payload).execute()
+            if _MATCH_DOCUMENTS_RPC_STYLE != style:
+                _MATCH_DOCUMENTS_RPC_STYLE = style
+                logging.info("Supabase match_documents RPC signature detected: %s", style)
+            return response
+        except Exception as exc:
+            last_exc = exc
+            if _is_supabase_signature_mismatch(exc):
+                logging.debug("match_documents payload style '%s' rejected: %s", style, exc)
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Unable to execute match_documents RPC with available payload styles")
 
 
 def embed_query(text: str, model: str | None = None) -> list[float]:
@@ -894,47 +1002,17 @@ def retrieve_rag_documents(
             except Exception:
                 return []
 
-        payload = {
-            "query_embedding": query_embedding,
-            "match_threshold": float(match_threshold),
-            "match_count": int(match_count),
-        }
-        if selected_class:
-            payload["filter_class"] = selected_class
-
         try:
-            response = supabase.rpc("match_documents", payload).execute()
+            response = _invoke_match_documents_rpc(
+                supabase,
+                query_embedding=query_embedding,
+                match_threshold=float(match_threshold),
+                match_count=int(match_count),
+                selected_class=selected_class,
+            )
         except Exception as rpc_exc:
-            error_fragments = [str(rpc_exc)]
-            for attr in ("message", "hint", "details"):
-                value = getattr(rpc_exc, attr, None)
-                if value:
-                    as_text = str(value)
-                    if as_text not in error_fragments:
-                        error_fragments.append(as_text)
-            error_blob = " ".join(error_fragments)
-
-            expect_legacy_signature = "match_documents(filter" in error_blob
-            if not expect_legacy_signature and PostgrestAPIError is not None:
-                expect_legacy_signature = isinstance(rpc_exc, PostgrestAPIError) and getattr(rpc_exc, "code", "") == "PGRST202"
-            if not expect_legacy_signature:
-                expect_legacy_signature = getattr(rpc_exc, "code", "") == "PGRST202"
-
-            if expect_legacy_signature:
-                logging.warning(
-                    "Supabase match_documents() signature mismatch detected; retrying with legacy payload"
-                )
-                legacy_filter: Dict[str, Any] = {"match_threshold": float(match_threshold)}
-                if selected_class:
-                    legacy_filter["class_name"] = selected_class
-                legacy_payload = {
-                    "query_embedding": query_embedding,
-                    "match_count": int(match_count),
-                    "filter": legacy_filter,
-                }
-                response = supabase.rpc("match_documents", legacy_payload).execute()
-            else:
-                raise
+            logging.error("Supabase match_documents RPC failed: %s", rpc_exc)
+            raise
         results = getattr(response, "data", None) or []
 
         duration_ms = (time.time() - start_time) * 1000
