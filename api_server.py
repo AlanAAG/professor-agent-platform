@@ -12,10 +12,34 @@ from src.shared.utils import (
     retrieve_rag_documents,
     retrieve_rag_documents_keyword_fallback,
 )
+_genai_import_errors = []
+genai = None
+_GENAI_SDK_FLAVOR = "unknown"
+
 try:
-    import google.generativeai as genai
-except ImportError:  # pragma: no cover - new SDK path
-    from google import genai  # type: ignore[import]
+    from google import genai as _modern_genai  # type: ignore[import]
+except ImportError as _modern_err:  # pragma: no cover - SDK not installed this way
+    _genai_import_errors.append(_modern_err)
+else:
+    genai = _modern_genai
+    _GENAI_SDK_FLAVOR = "google-genai"
+
+if genai is None:
+    try:
+        import google.generativeai as _legacy_genai
+    except ImportError as _legacy_err:  # pragma: no cover - SDK missing entirely
+        _genai_import_errors.append(_legacy_err)
+    else:
+        genai = _legacy_genai
+        _GENAI_SDK_FLAVOR = "google-generativeai"
+
+if genai is None:  # pragma: no cover - fail fast if SDK unavailable
+    raise ImportError(
+        "Unable to import the Google Gemini SDK. Install either 'google-genai' or 'google-generativeai'."
+    )
+
+_GENAI_HAS_GENERATIVE_MODEL = hasattr(genai, "GenerativeModel")
+_GENAI_HAS_CLIENT = hasattr(genai, "Client")
 import os
 import json
 import re
@@ -396,12 +420,29 @@ app.add_middleware(
 
 # --- Initialize clients ---
 _GENAI_CLIENT = None
+_GENAI_MODEL_NAME = "gemini-2.5-flash"
 _api_key = os.getenv("GEMINI_API_KEY")
 if _api_key:
-    try:
-        _GENAI_CLIENT = genai.Client(api_key=_api_key)
-    except Exception:
-        _GENAI_CLIENT = None
+    client_ctor = getattr(genai, "Client", None)
+    if callable(client_ctor):
+        try:
+            _GENAI_CLIENT = client_ctor(api_key=_api_key)
+        except Exception as client_err:  # pragma: no cover - SDK differences
+            logger.warning("Gemini Client initialization failed via Client(): %s", client_err)
+            _GENAI_CLIENT = None
+    if _GENAI_CLIENT is None and hasattr(genai, "configure"):
+        try:
+            genai.configure(api_key=_api_key)
+            logger.debug("Configured Gemini SDK via configure().")
+        except Exception as cfg_err:  # pragma: no cover - configuration failure
+            logger.warning("Gemini SDK configure() failed: %s", cfg_err)
+
+logger.info(
+    "Gemini SDK flavor=%s | has_generative_model=%s | has_client=%s",
+    _GENAI_SDK_FLAVOR,
+    _GENAI_HAS_GENERATIVE_MODEL,
+    _GENAI_HAS_CLIENT,
+)
 
 # Optional Supabase client for health checks
 supabase = None
@@ -470,6 +511,107 @@ def _get_rag_params() -> Dict[str, object]:
         "relaxed_threshold": relaxed_threshold,
         "relaxed_count": relaxed_count,
     }
+
+
+def _stream_genai_response(
+    contents: List[Dict[str, object]],
+    system_instruction: str,
+):
+    """Return a streaming iterator compatible with both Gemini SDKs."""
+    model_ctor = getattr(genai, "GenerativeModel", None)
+    if callable(model_ctor):
+        init_variants: List[Dict[str, object]] = []
+        if _GENAI_CLIENT is not None:
+            init_variants.extend(
+                [
+                    {
+                        "model_name": _GENAI_MODEL_NAME,
+                        "system_instruction": system_instruction,
+                        "client": _GENAI_CLIENT,
+                    },
+                    {
+                        "model": _GENAI_MODEL_NAME,
+                        "system_instruction": system_instruction,
+                        "client": _GENAI_CLIENT,
+                    },
+                ]
+            )
+        init_variants.extend(
+            [
+                {
+                    "model_name": _GENAI_MODEL_NAME,
+                    "system_instruction": system_instruction,
+                },
+                {
+                    "model": _GENAI_MODEL_NAME,
+                    "system_instruction": system_instruction,
+                },
+                {"model_name": _GENAI_MODEL_NAME},
+                {"model": _GENAI_MODEL_NAME},
+            ]
+        )
+
+        model_instance = None
+        for init_kwargs in init_variants:
+            try:
+                model_instance = model_ctor(**init_kwargs)
+                break
+            except TypeError:
+                continue
+
+        if model_instance is None:
+            model_instance = model_ctor(_GENAI_MODEL_NAME)
+
+        return model_instance.generate_content(contents=contents, stream=True)
+
+    client = _GENAI_CLIENT
+    if client is not None:
+        models_iface = getattr(client, "models", None)
+        if models_iface is not None and hasattr(models_iface, "generate_content"):
+            base_kwargs = {
+                "model": _GENAI_MODEL_NAME,
+                "contents": contents,
+                "stream": True,
+            }
+            if system_instruction:
+                try:
+                    return models_iface.generate_content(
+                        system_instruction=system_instruction,
+                        **base_kwargs,
+                    )
+                except TypeError:
+                    try:
+                        return models_iface.generate_content(
+                            config={"system_instruction": system_instruction},
+                            **base_kwargs,
+                        )
+                    except TypeError:
+                        logger.debug(
+                            "Gemini models.generate_content does not accept system_instruction directly; continuing without it."
+                        )
+            return models_iface.generate_content(**base_kwargs)
+
+        responses_iface = getattr(client, "responses", None)
+        if responses_iface is not None and hasattr(responses_iface, "stream_generate"):
+            response_kwargs = {
+                "model": _GENAI_MODEL_NAME,
+                "contents": contents,
+            }
+            if system_instruction:
+                try:
+                    return responses_iface.stream_generate(
+                        system_instruction=system_instruction,
+                        **response_kwargs,
+                    )
+                except TypeError:
+                    logger.debug(
+                        "Gemini responses.stream_generate does not accept system_instruction directly; continuing without it."
+                    )
+            return responses_iface.stream_generate(**response_kwargs)
+
+    raise RuntimeError(
+        "Gemini client is not initialized with a compatible SDK. Check GEMINI_API_KEY and installed SDK version."
+    )
 
 
 class Message(BaseModel):
@@ -748,19 +890,13 @@ RULES:
                 )
             yield f"data: {json.dumps(sources_payload)}\n\n"
             
-            if _GENAI_CLIENT is None:
+            if _GENAI_CLIENT is None and not _GENAI_HAS_GENERATIVE_MODEL:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
             try:
-                model = genai.GenerativeModel(
-                    model_name="gemini-2.5-flash",
-                    system_instruction=system_prompt,
-                    client=_GENAI_CLIENT,
-                )
-
-                response = model.generate_content(
+                response = _stream_genai_response(
                     contents=genai_contents,
-                    stream=True,
+                    system_instruction=system_prompt,
                 )
 
                 for chunk in response:
