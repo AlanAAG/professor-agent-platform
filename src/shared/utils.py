@@ -7,7 +7,7 @@ import hashlib
 import logging
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import datetime
 from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
@@ -27,6 +27,7 @@ EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-00
 EXPECTED_EMBEDDING_DIM = 768
 # OpenAI embedding model fallback
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+DISABLE_OPENAI_FALLBACK = os.environ.get("DISABLE_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
 
 
@@ -317,6 +318,30 @@ except Exception:
 _SUPABASE_CLIENT = None
 _GENAI_CLIENT = None
 _OPENAI_CLIENT = None
+_GENAI_EMBED_WARNING_EMITTED = False
+_OPENAI_DISABLED = False
+_OPENAI_DISABLED_REASON = ""
+
+
+def _handle_openai_embedding_error(error: Exception) -> None:
+    """Set a sticky flag when OpenAI fallback is unusable."""
+    global _OPENAI_DISABLED, _OPENAI_DISABLED_REASON
+    message = str(error) if error else ""
+    # Prefer stricter matching on known status codes when available
+    status_code = getattr(getattr(error, "response", None), "status_code", None)
+    http_status = getattr(error, "status_code", None)
+    status = status_code or http_status
+
+    if status == 429 or "insufficient_quota" in message.lower() or "exceeded your current quota" in message.lower():
+        _OPENAI_DISABLED = True
+        _OPENAI_DISABLED_REASON = "insufficient_quota"
+        logging.error(
+            "OpenAI embedding fallback disabled after insufficient quota error. "
+            "Provide a funded OpenAI account or configure GEMINI_API_KEY/GOOGLE_API_KEY to avoid this fallback. "
+            "Set DISABLE_OPENAI_FALLBACK=1 to suppress OpenAI usage altogether."
+        )
+    else:
+        logging.warning(f"OpenAI embedding fallback failed: {error}")
 
 
 def _get_supabase_client():
@@ -341,12 +366,17 @@ def _get_supabase_client():
 
 def _ensure_genai():
     """Best-effort initialize Google GenAI; don't raise to allow fallbacks."""
-    global _GENAI_CLIENT
+    global _GENAI_CLIENT, _GENAI_EMBED_WARNING_EMITTED
     try:
         if genai is None:
             return
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
+            if not _GENAI_EMBED_WARNING_EMITTED:
+                logging.warning(
+                    "Google GenAI embeddings unavailable: set GEMINI_API_KEY or GOOGLE_API_KEY to avoid falling back to OpenAI."
+                )
+                _GENAI_EMBED_WARNING_EMITTED = True
             return
         if getattr(genai, "Client", None) is not None:
             if _GENAI_CLIENT is None:
@@ -360,11 +390,18 @@ def _ensure_genai():
     except Exception:
         # Swallow to allow OpenAI fallback
         _GENAI_CLIENT = None
+        if not _GENAI_EMBED_WARNING_EMITTED:
+            logging.warning(
+                "Failed to initialize Google GenAI embeddings; will attempt OpenAI fallback if enabled."
+            )
+            _GENAI_EMBED_WARNING_EMITTED = True
 
 
 def _ensure_openai():
     """Best-effort initialize OpenAI client for embeddings fallback."""
     global _OPENAI_CLIENT
+    if DISABLE_OPENAI_FALLBACK or _OPENAI_DISABLED:
+        return
     if _OPENAI_CLIENT is not None:
         return
     try:
@@ -388,6 +425,9 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
     for m in (primary_model, "text-embedding-004", "models/embedding-001"):
         if m and m not in candidate_models:
             candidate_models.append(m)
+
+    gemini_attempted = False
+    last_gemini_error: Exception | None = None
 
     def _extract_single(result: Any) -> list[float]:
         # Common forms
@@ -436,6 +476,7 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
         # Try modern client API first (prefer 'contents' per new SDK)
         if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
             try:
+                gemini_attempted = True
                 result = _GENAI_CLIENT.models.embed_content(
                     model=embedding_model,
                     contents=[text],  # new SDK prefers 'contents'
@@ -450,11 +491,12 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                         f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                         f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                     )
-
                 return result_vec
-            except TypeError:
+            except TypeError as err:
+                last_gemini_error = err
                 # Older signature that accepts 'content='
                 try:
+                    gemini_attempted = True
                     result = _GENAI_CLIENT.models.embed_content(
                         model=embedding_model,
                         content=text,
@@ -469,18 +511,19 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                             f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                             f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                         )
-
                     return result_vec
-                except Exception:
+                except Exception as err:
+                    last_gemini_error = err
                     pass
-            except Exception:
+            except Exception as err:
                 # Try alternative API below
-                pass
+                last_gemini_error = err
 
             # Alternative new API: generate_content_embeddings
             try:
                 gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
                 if gce is not None:
+                    gemini_attempted = True
                     result = gce(
                         model=embedding_model,
                         requests=[{"content": {"text": text}}],
@@ -494,14 +537,15 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                             f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                             f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                         )
-
                     return result_vec
-            except Exception:
+            except Exception as err:
+                last_gemini_error = err
                 pass
 
         # Fallback: module-level API (older libraries or tests)
         try:
             if hasattr(genai, "embed_content"):
+                gemini_attempted = True
                 result = genai.embed_content(
                     model=embedding_model,
                     content=text,
@@ -516,34 +560,53 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                         f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                         f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                     )
-
                 return result_vec
-        except Exception:
+        except Exception as err:
+            last_gemini_error = err
             pass
-    # OpenAI fallback
-    _ensure_openai()
-    if _OPENAI_CLIENT is not None:
-        try:
-            openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
-            resp = _OPENAI_CLIENT.embeddings.create(
-                model=openai_model,
-                input=text,
+    if gemini_attempted:
+        if last_gemini_error:
+            logging.warning(
+                "Gemini embedding attempts failed for all candidate models; last error: %s",
+                last_gemini_error,
             )
-            data = getattr(resp, "data", None) or []
-            if data and hasattr(data[0], "embedding"):
-                result_vec = data[0].embedding  # type: ignore[assignment]
+    else:
+        logging.warning(
+            "Gemini embeddings were not attempted. Verify GEMINI_API_KEY or GOOGLE_API_KEY configuration to avoid OpenAI fallback."
+        )
 
-                # Validate dimension matches database constraint
-                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                    raise ValueError(
-                        f"Embedding dimension mismatch: model {openai_model} returned "
-                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                    )
+    # OpenAI fallback
+    if DISABLE_OPENAI_FALLBACK:
+        logging.debug("Skipping OpenAI embedding fallback because DISABLE_OPENAI_FALLBACK is set.")
+    else:
+        _ensure_openai()
+        if _OPENAI_CLIENT is not None and not _OPENAI_DISABLED:
+            try:
+                openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
+                resp = _OPENAI_CLIENT.embeddings.create(
+                    model=openai_model,
+                    input=text,
+                )
+                data = getattr(resp, "data", None) or []
+                if data and hasattr(data[0], "embedding"):
+                    result_vec = data[0].embedding  # type: ignore[assignment]
 
-                return result_vec
-        except Exception as e:
-            logging.warning(f"OpenAI embedding fallback failed: {e}")
+                    # Validate dimension matches database constraint
+                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
+                        raise ValueError(
+                            f"Embedding dimension mismatch: model {openai_model} returned "
+                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                        )
+
+                    return result_vec
+            except Exception as e:
+                _handle_openai_embedding_error(e)
+        elif _OPENAI_DISABLED:
+            logging.debug(
+                "Skipping OpenAI embedding fallback because it was previously disabled (%s).",
+                _OPENAI_DISABLED_REASON or "unknown reason",
+            )
 
     raise RuntimeError("Failed to obtain embedding via available Google GenAI or OpenAI interfaces.")
 
@@ -560,6 +623,9 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
     for m in (primary_model, "text-embedding-004", "models/embedding-001"):
         if m and m not in candidate_models:
             candidate_models.append(m)
+
+    gemini_attempted = False
+    last_gemini_error: Exception | None = None
 
     def _extract_batch(result: Any) -> List[List[float]]:
         # Dict-like
@@ -605,6 +671,7 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
         # Try modern client API first (prefer 'contents' per new SDK)
         if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
             try:
+                gemini_attempted = True
                 result = _GENAI_CLIENT.models.embed_content(
                     model=embedding_model,
                     contents=texts,
@@ -620,10 +687,11 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                             f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                             f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                         )
-
                 return vectors
-            except TypeError:
+            except TypeError as err:
+                last_gemini_error = err
                 try:
+                    gemini_attempted = True
                     result = _GENAI_CLIENT.models.embed_content(
                         model=embedding_model,
                         content=texts,
@@ -639,17 +707,19 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                                 f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                                 f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                             )
-
                     return vectors
-                except Exception:
+                except Exception as err:
+                    last_gemini_error = err
                     pass
-            except Exception:
+            except Exception as err:
+                last_gemini_error = err
                 pass
 
             # Alternative new API: generate_content_embeddings
             try:
                 gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
                 if gce is not None:
+                    gemini_attempted = True
                     result = gce(
                         model=embedding_model,
                         requests=[{"content": {"text": t}} for t in texts],
@@ -664,14 +734,15 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                                 f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                                 f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                             )
-
                     return vectors
-            except Exception:
+            except Exception as err:
+                last_gemini_error = err
                 pass
 
         # Fallback: module-level API (older libraries or tests)
         try:
             if hasattr(genai, "embed_content"):
+                gemini_attempted = True
                 result = genai.embed_content(
                     model=embedding_model,
                     content=texts,
@@ -687,46 +758,65 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                             f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
                             f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
                         )
-
                 return vectors
-        except Exception:
+        except Exception as err:
+            last_gemini_error = err
             pass
-    # OpenAI batch fallback
-    _ensure_openai()
-    if _OPENAI_CLIENT is not None:
-        try:
-            openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
-            resp = _OPENAI_CLIENT.embeddings.create(
-                model=openai_model,
-                input=texts,
+    if gemini_attempted:
+        if last_gemini_error:
+            logging.warning(
+                "Gemini batch embedding attempts failed for all candidate models; last error: %s",
+                last_gemini_error,
             )
-            data = getattr(resp, "data", None) or []
-            if data:
-                # Ensure order aligns with inputs
-                vectors: List[List[float]] = []
-                # Some SDK versions return a list where each item has an 'index'
-                # We'll sort to be safe, then map to embeddings
-                try:
-                    data_sorted = sorted(data, key=lambda d: getattr(d, "index", 0))
-                except Exception:
-                    data_sorted = data
-                for item in data_sorted:
-                    vec = getattr(item, "embedding", None)
-                    if isinstance(vec, list):
-                        vectors.append(vec)
-                if vectors:
-                    # Validate dimension matches database constraint
-                    for vec in vectors:
-                        if len(vec) != EXPECTED_EMBEDDING_DIM:
-                            raise ValueError(
-                                f"Embedding dimension mismatch: model {openai_model} returned "
-                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                            )
+    else:
+        logging.warning(
+            "Gemini batch embeddings were not attempted. Verify GEMINI_API_KEY or GOOGLE_API_KEY configuration to avoid OpenAI fallback."
+        )
 
-                    return vectors
-        except Exception as e:
-            logging.warning(f"OpenAI batch embedding fallback failed: {e}")
+    # OpenAI batch fallback
+    if DISABLE_OPENAI_FALLBACK:
+        logging.debug("Skipping OpenAI batch embedding fallback because DISABLE_OPENAI_FALLBACK is set.")
+    else:
+        _ensure_openai()
+        if _OPENAI_CLIENT is not None and not _OPENAI_DISABLED:
+            try:
+                openai_model = os.environ.get("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL)
+                resp = _OPENAI_CLIENT.embeddings.create(
+                    model=openai_model,
+                    input=texts,
+                )
+                data = getattr(resp, "data", None) or []
+                if data:
+                    # Ensure order aligns with inputs
+                    vectors: List[List[float]] = []
+                    # Some SDK versions return a list where each item has an 'index'
+                    # We'll sort to be safe, then map to embeddings
+                    try:
+                        data_sorted = sorted(data, key=lambda d: getattr(d, "index", 0))
+                    except Exception:
+                        data_sorted = data
+                    for item in data_sorted:
+                        vec = getattr(item, "embedding", None)
+                        if isinstance(vec, list):
+                            vectors.append(vec)
+                    if vectors:
+                        # Validate dimension matches database constraint
+                        for vec in vectors:
+                            if len(vec) != EXPECTED_EMBEDDING_DIM:
+                                raise ValueError(
+                                    f"Embedding dimension mismatch: model {openai_model} returned "
+                                    f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+                                    f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+                                )
+
+                        return vectors
+            except Exception as e:
+                _handle_openai_embedding_error(e)
+        elif _OPENAI_DISABLED:
+            logging.debug(
+                "Skipping OpenAI batch embedding fallback because it was previously disabled (%s).",
+                _OPENAI_DISABLED_REASON or "unknown reason",
+            )
 
     # Ultimate fallback: individual calls
     logging.warning("Batch embedding failed, falling back to individual calls")
@@ -833,20 +923,33 @@ def retrieve_rag_documents_keyword_fallback(
     if len(qtext) > 200:
         qtext = qtext[:200]
 
+    # Sanitize aggressively to avoid PostgREST parsing errors (e.g., ?, :, wildcards)
+    sanitized = re.sub(r"[^\w\s]", " ", qtext)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    like_pattern = f"%{sanitized}%" if sanitized else None
+    # For FTS configs, join tokens with AND to reduce syntax errors
+    fts_query = " "
+    if sanitized:
+        tokens = [t for t in sanitized.split(" ") if t]
+        if tokens:
+            fts_query = " & ".join(tokens)
+    fts_query = fts_query.strip() or sanitized or qtext
+
     # Try multiple strategies to avoid PostgREST 400s across environments.
     # Prefer ILIKE first (works on TEXT) before FTS operators that may require tsvector.
-    strategies = [
-        # Percent-based ILIKE (widely supported on TEXT columns)
-        ("ilike_percent",    lambda q: q.ilike("content", f"%{qtext}%")),
-        ("filter_ilike_pct", lambda q: q.filter("content", "ilike", f"%{qtext}%")),
-        # Also search title as a fallback if content ILIKE yields nothing
-        ("ilike_title",      lambda q: q.ilike("metadata->>title", f"%{qtext}%")),
-        # Full-text variants (may 400 if column isn't tsvector)
-        ("text_search_web",  lambda q: q.text_search("content", qtext, config="english", type="websearch")),
-        ("filter_phfts",     lambda q: q.filter("content", "phfts", qtext)),
-        ("filter_fts",       lambda q: q.filter("content", "fts", qtext)),
-        ("filter_wfts",      lambda q: q.filter("content", "wfts", qtext)),
-    ]
+    strategies: list[tuple[str, Callable[[Any], Any]]] = []
+    if like_pattern:
+        strategies.extend([
+            ("ilike_percent",    lambda q: q.ilike("content", like_pattern)),
+            ("filter_ilike_pct", lambda q: q.filter("content", "ilike", like_pattern)),
+            ("ilike_title",      lambda q: q.ilike("metadata->>title", like_pattern)),
+        ])
+    strategies.extend([
+        ("text_search_web",  lambda q: q.text_search("content", fts_query, config="english", type="websearch")),
+        ("filter_phfts",     lambda q: q.filter("content", "phfts", fts_query)),
+        ("filter_fts",       lambda q: q.filter("content", "fts", fts_query)),
+        ("filter_wfts",      lambda q: q.filter("content", "wfts", fts_query)),
+    ])
 
     for _name, apply_strategy in strategies:
         try:
@@ -876,7 +979,8 @@ def retrieve_rag_documents_keyword_fallback(
                     }
                 )
             return norm
-        except Exception:
+        except Exception as exc:
+            logging.debug("Keyword fallback strategy %s failed: %s", _name, exc)
             # Try the next strategy on any error (including HTTP 400)
             continue
 
