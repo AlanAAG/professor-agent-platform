@@ -163,6 +163,7 @@ def _prepare_cors_allowances(
     regex: Optional[str],
     default_lovable_suffixes: Optional[List[str]] = None,
     allow_dynamic_lovable: bool = True,
+    default_dynamic_domains: Optional[List[str]] = None,
 ) -> Tuple[List[str], Optional[str], bool]:
     allow_credentials = True
 
@@ -171,6 +172,12 @@ def _prepare_cors_allowances(
 
     explicit: List[str] = []
     wildcard_regexes: List[str] = []
+
+    dynamic_domains: set[str] = set(
+        domain.strip().lower().lstrip(".")
+        for domain in (default_dynamic_domains or [])
+        if domain and domain.strip()
+    )
 
     for origin in raw_origins:
         normalized = _normalize_origin(origin)
@@ -208,11 +215,15 @@ def _prepare_cors_allowances(
         except Exception:
             continue
         host = (parsed.netloc or "").split(":", 1)[0]
-        if not host or "lovable." not in host:
+        host_lower = host.lower()
+        if not host_lower:
             continue
-        suffix = host.split("lovable.", 1)[1].lower()
-        if suffix:
-            lovable_suffixes.add(suffix)
+        if "lovable." in host_lower:
+            suffix = host_lower.split("lovable.", 1)[1]
+            if suffix:
+                lovable_suffixes.add(suffix)
+        if host_lower.endswith("lovableproject.com"):
+            dynamic_domains.add("lovableproject.com")
 
     if lovable_suffixes:
         lovable_patterns = [
@@ -220,6 +231,24 @@ def _prepare_cors_allowances(
             for suffix in sorted(lovable_suffixes)
         ]
         final_regex = _merge_regex_patterns(final_regex, *lovable_patterns)
+
+    if dynamic_domains:
+        domain_patterns = []
+        for domain in sorted(dynamic_domains):
+            sanitized = domain.strip().lower()
+            if not sanitized:
+                continue
+            if sanitized.startswith("http://") or sanitized.startswith("https://"):
+                try:
+                    parsed = urlparse(sanitized)
+                    sanitized = (parsed.netloc or "").split(":", 1)[0]
+                except Exception:
+                    continue
+            domain_patterns.append(
+                rf"^https://(?:.*\.)?{re.escape(sanitized)}(?::\d+)?$"
+            )
+        if domain_patterns:
+            final_regex = _merge_regex_patterns(final_regex, *domain_patterns)
 
     return explicit, final_regex, allow_credentials
 
@@ -317,11 +346,24 @@ if allow_dynamic_lovable_origins:
         if suffix and suffix.strip()
     ]
 
+lovable_dynamic_domains: List[str] = []
+if allow_dynamic_lovable_origins:
+    domains_raw = os.getenv(
+        "LOVABLE_DYNAMIC_DOMAINS",
+        "lovable.app,lovableproject.com,lovable.dev",
+    )
+    lovable_dynamic_domains = [
+        domain.strip().lstrip(".")
+        for domain in domains_raw.split(",")
+        if domain and domain.strip()
+    ]
+
 allowed_origins, allowed_origin_regex, allow_credentials = _prepare_cors_allowances(
     raw_allowed_origins,
     allowed_origin_regex_env,
     lovable_dynamic_suffixes,
     allow_dynamic_lovable_origins,
+    lovable_dynamic_domains,
 )
 
 # Fallback defaults when env var not provided (Quick Test / local dev)
@@ -337,7 +379,10 @@ logger.info(
     allowed_origin_regex,
     allow_credentials,
     allow_dynamic_lovable_origins,
-    lovable_dynamic_suffixes,
+    {
+        "suffixes": lovable_dynamic_suffixes,
+        "domains": lovable_dynamic_domains,
+    },
 )
 
 app.add_middleware(

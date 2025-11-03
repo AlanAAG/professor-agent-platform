@@ -80,3 +80,26 @@ def test_lovable_preview_preflight_allowed(cors_test_client: TestClient) -> None
     allowed_headers = headers.get("access-control-allow-headers", "")
     assert "content-type" in allowed_headers.lower()
     assert "x-api-key" in allowed_headers.lower()
+
+
+def test_lovable_project_preflight_allowed(cors_test_client: TestClient) -> None:
+    origin = "https://93a4e185-b263-4e0d-83e0-9cf4863ef461.lovableproject.com"
+    response = cors_test_client.options(
+        "/api/chat",
+        headers={
+            "origin": origin,
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "content-type,x-api-key",
+        },
+    )
+
+    assert response.status_code == 200
+
+    headers = {k.lower(): v for k, v in response.headers.items()}
+    assert headers["access-control-allow-origin"] == origin
+    assert "post" in headers["access-control-allow-methods"].lower()
+    assert "options" in headers["access-control-allow-methods"].lower()
+
+    allowed_headers = headers.get("access-control-allow-headers", "")
+    assert "content-type" in allowed_headers.lower()
+    assert "x-api-key" in allowed_headers.lower()
