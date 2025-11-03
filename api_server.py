@@ -5,7 +5,7 @@ from fastapi.security import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from src.shared.utils import (
     EMBEDDING_MODEL_NAME,
     cohere_rerank,
@@ -480,13 +480,23 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[Message]
-    selectedClass: Optional[str] = None
+    selectedClass: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("selectedClass", "class_id"),
+    )
     persona: str = "balanced"
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RAGRequest(BaseModel):
     query: str
-    selectedClass: Optional[str] = None
+    selectedClass: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("selectedClass", "class_id"),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @app.on_event("startup")
