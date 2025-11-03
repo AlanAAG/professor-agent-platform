@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Security, Request
+from fastapi import FastAPI, HTTPException, Depends, Security, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -100,6 +100,13 @@ elif SENTRY_DSN and not HAS_SENTRY:
 
 # --- CORS Utilities ---
 
+
+def _parse_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 def _normalize_origin(origin: str) -> str:
     return origin.strip().rstrip("/") if origin else ""
 
@@ -151,7 +158,12 @@ def _merge_regex_patterns(*patterns: Optional[str]) -> Optional[str]:
     return "|".join(f"(?:{p})" for p in unique)
 
 
-def _prepare_cors_allowances(raw_origins: List[str], regex: Optional[str]) -> Tuple[List[str], Optional[str], bool]:
+def _prepare_cors_allowances(
+    raw_origins: List[str],
+    regex: Optional[str],
+    default_lovable_suffixes: Optional[List[str]] = None,
+    allow_dynamic_lovable: bool = True,
+) -> Tuple[List[str], Optional[str], bool]:
     allow_credentials = True
 
     if any((origin or "").strip() == "*" for origin in raw_origins):
@@ -180,7 +192,16 @@ def _prepare_cors_allowances(raw_origins: List[str], regex: Optional[str]) -> Tu
 
     final_regex = _merge_regex_patterns(regex, *wildcard_regexes)
 
-    lovable_suffixes = set()
+    if allow_dynamic_lovable:
+        normalized_defaults = {
+            suffix.strip().lower().lstrip(".")
+            for suffix in (default_lovable_suffixes or [])
+            if suffix and suffix.strip()
+        }
+    else:
+        normalized_defaults = set()
+
+    lovable_suffixes = set(normalized_defaults)
     for origin in explicit:
         try:
             parsed = urlparse(origin if "://" in origin else f"https://{origin}")
@@ -189,7 +210,7 @@ def _prepare_cors_allowances(raw_origins: List[str], regex: Optional[str]) -> Tu
         host = (parsed.netloc or "").split(":", 1)[0]
         if not host or "lovable." not in host:
             continue
-        suffix = host.split("lovable.", 1)[1]
+        suffix = host.split("lovable.", 1)[1].lower()
         if suffix:
             lovable_suffixes.add(suffix)
 
@@ -283,9 +304,24 @@ if render_external_url:
 
 allowed_origin_regex_env = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
 
+allow_dynamic_lovable_origins = _parse_bool(
+    os.getenv("ALLOW_DYNAMIC_LOVABLE_ORIGINS"),
+    True,
+)
+lovable_dynamic_suffixes: List[str] = []
+if allow_dynamic_lovable_origins:
+    suffixes_raw = os.getenv("LOVABLE_DYNAMIC_SUFFIXES", "app")
+    lovable_dynamic_suffixes = [
+        suffix.strip().lstrip(".")
+        for suffix in suffixes_raw.split(",")
+        if suffix and suffix.strip()
+    ]
+
 allowed_origins, allowed_origin_regex, allow_credentials = _prepare_cors_allowances(
     raw_allowed_origins,
     allowed_origin_regex_env,
+    lovable_dynamic_suffixes,
+    allow_dynamic_lovable_origins,
 )
 
 # Fallback defaults when env var not provided (Quick Test / local dev)
@@ -296,10 +332,12 @@ if not allowed_origins and not allowed_origin_regex:
     ]
 
 logger.info(
-    "CORS configuration | origins=%s | origin_regex=%s | credentials=%s",
+    "CORS configuration | origins=%s | origin_regex=%s | credentials=%s | dynamic_lovable=%s | lovable_suffixes=%s",
     allowed_origins,
     allowed_origin_regex,
     allow_credentials,
+    allow_dynamic_lovable_origins,
+    lovable_dynamic_suffixes,
 )
 
 app.add_middleware(
@@ -518,6 +556,12 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
     except Exception as e:
         logger.exception("RAG_SEARCH error | latency_ms=%s", int((time.time() - _t0) * 1000))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.options("/api/chat")
+async def chat_preflight() -> Response:
+    """Handle browser CORS preflight checks explicitly."""
+    return Response(status_code=200)
 
 
 @app.post("/api/chat")
