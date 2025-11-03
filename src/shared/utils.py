@@ -296,13 +296,26 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
     return mmr_selected_dicts
 
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
+genai = None
+genai_types = None
 try:
-    import google.generativeai as genai  # Preferred modern import path
+    from google import genai as _genai_mod  # Preferred for google-genai>=1.0
+    genai = _genai_mod
 except Exception:
     try:
-        from google import genai  # Fallback for older google-genai releases
+        import google.generativeai as _legacy_genai  # Backwards compatibility
+        genai = _legacy_genai
     except Exception:
         genai = None  # Optional dependency
+
+if genai is not None:
+    try:
+        from google.genai import types as genai_types  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            genai_types = getattr(genai, "types", None)  # legacy packages
+        except Exception:
+            genai_types = None
 
 try:
     from supabase import create_client, Client
@@ -321,6 +334,18 @@ _OPENAI_CLIENT = None
 _GENAI_EMBED_WARNING_EMITTED = False
 _OPENAI_DISABLED = False
 _OPENAI_DISABLED_REASON = ""
+
+
+def _build_embed_config(task_type: str | None = "retrieval_query"):
+    """Return google-genai EmbedContentConfig when available."""
+    if not task_type or genai_types is None:
+        return None
+    for key in ("taskType", "task_type"):
+        try:
+            return genai_types.EmbedContentConfig(**{key: task_type})  # type: ignore[arg-type]
+        except Exception:
+            continue
+    return None
 
 
 def _handle_openai_embedding_error(error: Exception) -> None:
@@ -460,6 +485,8 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                     return first["values"]
                 if isinstance(first, list):
                     return first
+                if hasattr(first, "values") and isinstance(getattr(first, "values"), list):
+                    return list(getattr(first, "values"))  # type: ignore[arg-type]
         # Index-like
         try:
             emb = result["embedding"]  # type: ignore[index]
@@ -475,13 +502,16 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
     for embedding_model in candidate_models:
         # Try modern client API first (prefer 'contents' per new SDK)
         if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
+            config = _build_embed_config("retrieval_query")
+            kwargs = {
+                "model": embedding_model,
+                "contents": [text],
+            }
+            if config is not None:
+                kwargs["config"] = config
             try:
                 gemini_attempted = True
-                result = _GENAI_CLIENT.models.embed_content(
-                    model=embedding_model,
-                    contents=[text],  # new SDK prefers 'contents'
-                    task_type="retrieval_query",
-                )
+                result = _GENAI_CLIENT.models.embed_content(**kwargs)
                 result_vec = _extract_single(result)  # existing line
 
                 # Validate dimension matches database constraint
@@ -662,6 +692,8 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                         out.append(item["values"])  # type: ignore[list-item]
                     elif isinstance(item, list):
                         out.append(item)
+                    elif hasattr(item, "values") and isinstance(getattr(item, "values"), list):
+                        out.append(list(getattr(item, "values")))  # type: ignore[list-item]
                 if out:
                     return out
         raise RuntimeError(f"Unexpected batch embed_content result shape: {type(result)}")
@@ -670,13 +702,16 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
     for embedding_model in candidate_models:
         # Try modern client API first (prefer 'contents' per new SDK)
         if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
+            config = _build_embed_config("retrieval_query")
+            kwargs = {
+                "model": embedding_model,
+                "contents": texts,
+            }
+            if config is not None:
+                kwargs["config"] = config
             try:
                 gemini_attempted = True
-                result = _GENAI_CLIENT.models.embed_content(
-                    model=embedding_model,
-                    contents=texts,
-                    task_type="retrieval_query",
-                )
+                result = _GENAI_CLIENT.models.embed_content(**kwargs)
                 vectors = _extract_batch(result)
 
                 # Validate dimension matches database constraint
@@ -912,7 +947,9 @@ def retrieve_rag_documents_keyword_fallback(
 
     # Build a base query once
     def _base_query():
-        q0 = supabase.table("documents").select("id, content, metadata, created_at")
+        # Request only columns that are guaranteed to exist across deployments;
+        # some tables omit created_at and PostgREST will respond with 400 otherwise.
+        q0 = supabase.table("documents").select("id, content, metadata")
         if selected_class:
             q0 = q0.filter("metadata->>class_name", "eq", selected_class)
         return q0
