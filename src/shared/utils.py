@@ -13,6 +13,11 @@ from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
 
 try:
+    from postgrest.exceptions import APIError as PostgrestAPIError
+except Exception:  # pragma: no cover - optional dependency in some environments
+    PostgrestAPIError = None  # type: ignore[assignment]
+
+try:
     import sentry_sdk
 except Exception:  # pragma: no cover - optional dependency
     sentry_sdk = None  # type: ignore[assignment]
@@ -897,7 +902,39 @@ def retrieve_rag_documents(
         if selected_class:
             payload["filter_class"] = selected_class
 
-        response = supabase.rpc("match_documents", payload).execute()
+        try:
+            response = supabase.rpc("match_documents", payload).execute()
+        except Exception as rpc_exc:
+            error_fragments = [str(rpc_exc)]
+            for attr in ("message", "hint", "details"):
+                value = getattr(rpc_exc, attr, None)
+                if value:
+                    as_text = str(value)
+                    if as_text not in error_fragments:
+                        error_fragments.append(as_text)
+            error_blob = " ".join(error_fragments)
+
+            expect_legacy_signature = "match_documents(filter" in error_blob
+            if not expect_legacy_signature and PostgrestAPIError is not None:
+                expect_legacy_signature = isinstance(rpc_exc, PostgrestAPIError) and getattr(rpc_exc, "code", "") == "PGRST202"
+            if not expect_legacy_signature:
+                expect_legacy_signature = getattr(rpc_exc, "code", "") == "PGRST202"
+
+            if expect_legacy_signature:
+                logging.warning(
+                    "Supabase match_documents() signature mismatch detected; retrying with legacy payload"
+                )
+                legacy_filter: Dict[str, Any] = {"match_threshold": float(match_threshold)}
+                if selected_class:
+                    legacy_filter["class_name"] = selected_class
+                legacy_payload = {
+                    "query_embedding": query_embedding,
+                    "match_count": int(match_count),
+                    "filter": legacy_filter,
+                }
+                response = supabase.rpc("match_documents", legacy_payload).execute()
+            else:
+                raise
         results = getattr(response, "data", None) or []
 
         duration_ms = (time.time() - start_time) * 1000
