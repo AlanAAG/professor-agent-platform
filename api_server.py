@@ -12,7 +12,7 @@ from src.shared.utils import (
     retrieve_rag_documents,
     retrieve_rag_documents_keyword_fallback,
 )
-from google import genai
+import google.generativeai as genai
 import os
 import json
 from datetime import datetime
