@@ -522,18 +522,36 @@ RULES:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
             try:
-                response = _GENAI_CLIENT.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=genai_contents,
+                model = genai.GenerativeModel(
+                    model_name="gemini-2.5-flash",
                     system_instruction=system_prompt,
+                    client=_GENAI_CLIENT,
+                )
+
+                response = model.generate_content(
+                    contents=genai_contents,
                     stream=True,
                 )
 
                 for chunk in response:
-                    if getattr(chunk, "text", None):
+                    chunk_text = getattr(chunk, "text", None)
+
+                    if not chunk_text and getattr(chunk, "candidates", None):
+                        parts: List[str] = []
+                        for candidate in chunk.candidates:
+                            content = getattr(candidate, "content", None)
+                            if not content:
+                                continue
+                            for part in getattr(content, "parts", []) or []:
+                                text = getattr(part, "text", None)
+                                if text:
+                                    parts.append(text)
+                        chunk_text = "".join(parts) if parts else None
+
+                    if chunk_text:
                         data = {
                             "choices": [{
-                                "delta": {"content": chunk.text}
+                                "delta": {"content": chunk_text}
                             }]
                         }
                         yield f"data: {json.dumps(data)}\n\n"
