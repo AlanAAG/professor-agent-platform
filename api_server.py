@@ -156,7 +156,13 @@ async def performance_monitoring_middleware(request: Request, call_next):
 
 # --- CORS Setup (Robust, Environment-based) ---
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_env.split(",") if origin.strip()]
+
+render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+if render_external_url:
+    normalized_render_url = render_external_url.rstrip("/")
+    if normalized_render_url and normalized_render_url not in allowed_origins:
+        allowed_origins.append(normalized_render_url)
 
 # Fallback defaults when env var not provided (Quick Test / local dev)
 if not allowed_origins:
@@ -165,9 +171,18 @@ if not allowed_origins:
         "http://localhost:3000",
     ]
 
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
+
+logger.info(
+    "CORS configuration | origins=%s | origin_regex=%s",
+    allowed_origins,
+    allowed_origin_regex,
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
