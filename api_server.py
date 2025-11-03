@@ -23,6 +23,15 @@ from typing import List, Dict, Optional, Any
 import logging
 import time
 
+# --- Logging Setup ---
+logger = logging.getLogger("api")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(fmt='%(asctime)s - %(levelname)s - api - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
 # --- Sentry Integration (Optional) ---
 try:
     import sentry_sdk
@@ -234,16 +243,6 @@ NO_DOCUMENTS_ANSWER = (
     "- Try rephrasing your question\n"
     "- Contact alanayalag@gmail.com if this persists"
 )
-
-# --- Logging Setup ---
-logger = logging.getLogger("api")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(fmt='%(asctime)s - %(levelname)s - api - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
 
 def _check_db_status() -> Dict[str, Optional[bool]]:
     """Perform a trivial Supabase query to confirm connectivity."""
