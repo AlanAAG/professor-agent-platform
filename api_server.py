@@ -18,8 +18,10 @@ except ImportError:  # pragma: no cover - new SDK path
     from google import genai  # type: ignore[import]
 import os
 import json
+import re
 from datetime import datetime
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
+from urllib.parse import urlparse
 import logging
 import time
 
@@ -95,6 +97,112 @@ if SENTRY_DSN and HAS_SENTRY:
 elif SENTRY_DSN and not HAS_SENTRY:
     logging.warning("SENTRY_DSN provided but sentry-sdk not installed. Install with: pip install sentry-sdk[fastapi]")
 
+
+# --- CORS Utilities ---
+
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/") if origin else ""
+
+
+def _wildcard_origin_to_regex(origin: str) -> Optional[str]:
+    normalized = _normalize_origin(origin)
+    if not normalized or "*" not in normalized:
+        return None
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+    escaped = re.escape(normalized)
+    pattern = "^" + escaped.replace("\\*", ".*") + "$"
+    return pattern
+
+
+def _derive_lovable_variants(origins: List[str]) -> List[str]:
+    variants: List[str] = []
+    for origin in origins:
+        if ".lovable." not in origin:
+            continue
+        try:
+            parsed = urlparse(origin if "://" in origin else f"https://{origin}")
+        except Exception:
+            continue
+        host = parsed.netloc or ""
+        if not host:
+            continue
+        if "-preview" in host:
+            alt_host = host.replace("-preview", "", 1)
+            if alt_host and alt_host != host:
+                scheme = parsed.scheme or "https"
+                variants.append(f"{scheme}://{alt_host}".rstrip("/"))
+    return variants
+
+
+def _merge_regex_patterns(*patterns: Optional[str]) -> Optional[str]:
+    cleaned: List[str] = []
+    for pattern in patterns:
+        if not pattern:
+            continue
+        candidate = pattern.strip()
+        if candidate:
+            cleaned.append(candidate)
+    if not cleaned:
+        return None
+    unique = list(dict.fromkeys(cleaned))
+    if len(unique) == 1:
+        return unique[0]
+    return "|".join(f"(?:{p})" for p in unique)
+
+
+def _prepare_cors_allowances(raw_origins: List[str], regex: Optional[str]) -> Tuple[List[str], Optional[str], bool]:
+    allow_credentials = True
+
+    if any((origin or "").strip() == "*" for origin in raw_origins):
+        return ["*"], None, False
+
+    explicit: List[str] = []
+    wildcard_regexes: List[str] = []
+
+    for origin in raw_origins:
+        normalized = _normalize_origin(origin)
+        if not normalized:
+            continue
+        if "*" in normalized:
+            wildcard_pattern = _wildcard_origin_to_regex(normalized)
+            if wildcard_pattern:
+                wildcard_regexes.append(wildcard_pattern)
+            continue
+        explicit.append(normalized)
+
+    explicit = list(dict.fromkeys(explicit))
+
+    derived = _derive_lovable_variants(explicit)
+    for variant in derived:
+        if variant not in explicit:
+            explicit.append(variant)
+
+    final_regex = _merge_regex_patterns(regex, *wildcard_regexes)
+
+    lovable_suffixes = set()
+    for origin in explicit:
+        try:
+            parsed = urlparse(origin if "://" in origin else f"https://{origin}")
+        except Exception:
+            continue
+        host = (parsed.netloc or "").split(":", 1)[0]
+        if not host or "lovable." not in host:
+            continue
+        suffix = host.split("lovable.", 1)[1]
+        if suffix:
+            lovable_suffixes.add(suffix)
+
+    if lovable_suffixes:
+        lovable_patterns = [
+            rf"^https://(?:.*\.)?lovable\.{re.escape(suffix)}(?::\d+)?$"
+            for suffix in sorted(lovable_suffixes)
+        ]
+        final_regex = _merge_regex_patterns(final_regex, *lovable_patterns)
+
+    return explicit, final_regex, allow_credentials
+
+
 # --- Rate Limiter Setup ---
 limiter = Limiter(key_func=get_remote_address)
 
@@ -165,34 +273,40 @@ async def performance_monitoring_middleware(request: Request, call_next):
 
 # --- CORS Setup (Robust, Environment-based) ---
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_env.split(",") if origin.strip()]
+raw_allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_env.split(",") if origin.strip()]
 
 render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 if render_external_url:
     normalized_render_url = render_external_url.rstrip("/")
-    if normalized_render_url and normalized_render_url not in allowed_origins:
-        allowed_origins.append(normalized_render_url)
+    if normalized_render_url and normalized_render_url not in raw_allowed_origins:
+        raw_allowed_origins.append(normalized_render_url)
+
+allowed_origin_regex_env = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
+
+allowed_origins, allowed_origin_regex, allow_credentials = _prepare_cors_allowances(
+    raw_allowed_origins,
+    allowed_origin_regex_env,
+)
 
 # Fallback defaults when env var not provided (Quick Test / local dev)
-if not allowed_origins:
+if not allowed_origins and not allowed_origin_regex:
     allowed_origins = [
         "http://localhost:5173",
         "http://localhost:3000",
     ]
 
-allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
-
 logger.info(
-    "CORS configuration | origins=%s | origin_regex=%s",
+    "CORS configuration | origins=%s | origin_regex=%s | credentials=%s",
     allowed_origins,
     allowed_origin_regex,
+    allow_credentials,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_origin_regex=allowed_origin_regex,
-    allow_credentials=True,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
