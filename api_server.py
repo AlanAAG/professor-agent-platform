@@ -518,6 +518,22 @@ def _stream_genai_response(
     system_instruction: str,
 ):
     """Return a streaming iterator compatible with both Gemini SDKs."""
+    def _try_call(callable_obj, variants: List[Dict[str, object]]):
+        last_type_error: Optional[TypeError] = None
+        for kwargs in variants:
+            try:
+                return callable_obj(**kwargs)
+            except TypeError as exc:
+                last_type_error = exc
+                continue
+        if last_type_error:
+            logger.debug(
+                "Gemini streaming variant rejected for %s: %s",
+                getattr(callable_obj, "__qualname__", repr(callable_obj)),
+                last_type_error,
+            )
+        return None
+
     model_ctor = getattr(genai, "GenerativeModel", None)
     if callable(model_ctor):
         init_variants: List[Dict[str, object]] = []
@@ -562,34 +578,116 @@ def _stream_genai_response(
         if model_instance is None:
             model_instance = model_ctor(_GENAI_MODEL_NAME)
 
-        return model_instance.generate_content(contents=contents, stream=True)
+        stream_call_variants: List[Dict[str, object]] = []
+        if system_instruction:
+            stream_call_variants.extend(
+                [
+                    {
+                        "contents": contents,
+                        "system_instruction": system_instruction,
+                    },
+                    {
+                        "contents": contents,
+                        "config": {"system_instruction": system_instruction},
+                    },
+                ]
+            )
+        stream_call_variants.extend(
+            [
+                {"contents": contents},
+                {"input": contents},
+            ]
+        )
+
+        stream_method = getattr(model_instance, "generate_content_stream", None)
+        if callable(stream_method):
+            response = _try_call(stream_method, stream_call_variants)
+            if response is not None:
+                return response
+
+        legacy_variants: List[Dict[str, object]] = []
+        if system_instruction:
+            legacy_variants.extend(
+                [
+                    {
+                        "contents": contents,
+                        "system_instruction": system_instruction,
+                        "stream": True,
+                    },
+                    {
+                        "contents": contents,
+                        "config": {"system_instruction": system_instruction},
+                        "stream": True,
+                    },
+                    {
+                        "content": contents,
+                        "system_instruction": system_instruction,
+                        "stream": True,
+                    },
+                ]
+            )
+        legacy_variants.extend(
+            [
+                {"contents": contents, "stream": True},
+                {"content": contents, "stream": True},
+            ]
+        )
+
+        legacy_method = getattr(model_instance, "generate_content", None)
+        if callable(legacy_method):
+            response = _try_call(legacy_method, legacy_variants)
+            if response is not None:
+                return response
 
     client = _GENAI_CLIENT
     if client is not None:
         models_iface = getattr(client, "models", None)
-        if models_iface is not None and hasattr(models_iface, "generate_content"):
-            base_kwargs = {
-                "model": _GENAI_MODEL_NAME,
-                "contents": contents,
-                "stream": True,
-            }
+        if models_iface is not None:
+            models_stream_variants: List[Dict[str, object]] = []
             if system_instruction:
-                try:
-                    return models_iface.generate_content(
-                        system_instruction=system_instruction,
-                        **base_kwargs,
-                    )
-                except TypeError:
-                    try:
-                        return models_iface.generate_content(
-                            config={"system_instruction": system_instruction},
-                            **base_kwargs,
-                        )
-                    except TypeError:
-                        logger.debug(
-                            "Gemini models.generate_content does not accept system_instruction directly; continuing without it."
-                        )
-            return models_iface.generate_content(**base_kwargs)
+                models_stream_variants.extend(
+                    [
+                        {
+                            "model": _GENAI_MODEL_NAME,
+                            "contents": contents,
+                            "system_instruction": system_instruction,
+                        },
+                        {
+                            "model": _GENAI_MODEL_NAME,
+                            "contents": contents,
+                            "config": {"system_instruction": system_instruction},
+                        },
+                    ]
+                )
+            models_stream_variants.extend(
+                [
+                    {
+                        "model": _GENAI_MODEL_NAME,
+                        "contents": contents,
+                    },
+                    {
+                        "model": _GENAI_MODEL_NAME,
+                        "input": contents,
+                    },
+                ]
+            )
+
+            stream_method = getattr(models_iface, "generate_content_stream", None)
+            if callable(stream_method):
+                response = _try_call(stream_method, models_stream_variants)
+                if response is not None:
+                    return response
+
+            generate_method = getattr(models_iface, "generate_content", None)
+            if callable(generate_method):
+                legacy_variants: List[Dict[str, object]] = []
+                for variant in models_stream_variants:
+                    legacy_variant = dict(variant)
+                    legacy_variant["stream"] = True
+                    legacy_variants.append(legacy_variant)
+                response = _try_call(generate_method, legacy_variants)
+                if response is not None:
+                    return response
 
         responses_iface = getattr(client, "responses", None)
         if responses_iface is not None and hasattr(responses_iface, "stream_generate"):
