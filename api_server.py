@@ -12,7 +12,10 @@ from src.shared.utils import (
     retrieve_rag_documents,
     retrieve_rag_documents_keyword_fallback,
 )
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:  # pragma: no cover - new SDK path
+    from google import genai  # type: ignore[import]
 import os
 import json
 from datetime import datetime
