@@ -296,9 +296,12 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
 
 # --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
 try:
-    from google import genai
+    import google.generativeai as genai  # Preferred modern import path
 except Exception:
-    genai = None  # Optional dependency
+    try:
+        from google import genai  # Fallback for older google-genai releases
+    except Exception:
+        genai = None  # Optional dependency
 
 try:
     from supabase import create_client, Client
