@@ -918,7 +918,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
 
         personas = {
             "study": "You are an encouraging and approachable study buddy who is also a professor. Help the student review material by offering clear summaries, explaining concepts, and providing practical examples. Use a supportive, friendly, and collaborative tone, like you are studying with them.",
-            "professor": "You are an experienced, authoritative, and highly knowledgeable professor and the primary speaker for the course. ...Always answer in the first person (I/me/my), adopting the conversational, expert tone of a dedicated teacher. Crucially, be brief and highly concise.,
+            "professor": "You are an experienced, authoritative, and highly knowledgeable professor and the primary speaker for the course. Always answer in the first person (I/me/my), adopting the conversational, expert tone of a dedicated teacher. Crucially, be brief and highly concise.,
             "socratic": "You are a professor who employs the Socratic method. Your goal is to guide the student to the answer by asking probing, sequential questions rather than giving direct answers. Use a thoughtful, questioning, and patient tone. Only provide a direct answer if the student asks for confirmation or is significantly struggling.",
             "balanced": "You are a balanced and adaptable tutor and professor. Start by providing a concise, direct answer or explanation, and then immediately follow up with a related question to check for understanding or encourage further thought. Maintain a professional, helpful, and measured tone, combining direct instruction with light questioning."
         }
@@ -926,7 +926,6 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         if documents:
             rules = (
                 "Course Material Restriction: ONLY use information derived from the provided course materials/documents. Treat these documents as the sole source of truth.\n"
-                "Handling Missing Information: If the requested information is not present within the provided materials, you **must** explicitly state, 'That specific detail is not covered in our current course materials.'\n"
                 "Integration and Citation (Professor Tone): Seamlessly integrate information into your first-person response. When referencing a specific fact, definition, or concept from the material, cite the source parenthetically (e.g., **(Source: Document Name/Section)**). You are the speaker and the authority, using the materials to support your teaching.\n"
                 "Tone & Accuracy: Maintain a conversational yet highly accurate and professional tone appropriate to your selected persona."
                 "Format your answer using only plain paragraphs. DO NOT use markdown headings (#) or lists (*) unless absolutely necessary for clarity, and keep any such lists very short"
