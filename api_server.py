@@ -918,7 +918,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
 
         personas = {
             "study": "You are a study buddy helping review material...",
-            "professor": "You are an experienced professor teaching...",
+            "professor": "You are an experienced professor and the primary speaker for the course. Always answer in the **first person (I/me/my)**, adopting the conversational, expert tone of a dedicated teacher.",
             "socratic": "You use the Socratic method...",
             "balanced": "You are a balanced tutor..."
         }
@@ -927,7 +927,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             rules = (
                 "- ONLY use information from the provided course materials\n"
                 "- If information is not in the materials, say so\n"
-                "- Cite sources when referencing specific content\n"
+                "- Integrate information seamlessly into your first-person response. Cite sources when referencing specific content\n. You are the speaker and the authority."
                 "- Be conversational but accurate"
             )
         else:
