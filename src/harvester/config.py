@@ -7,6 +7,7 @@ XPaths/CSS selectors and keeps course mappings and URLs separated from logic.
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, AliasChoices
+from selenium.webdriver.common.by import By
 import os
 
 # --- Core URLs ---
@@ -18,10 +19,25 @@ COURSES_URL = BASE_URL + "courses"
 AUTH_STATE_FILE = "data/auth_state.json"
 
 # --- Login Page Selectors (Selenium) ---
-# Use simple CSS or IDs where stable; fallback to names
-USERNAME_BY = ("css", 'input[name="officialEmail"]')
-PASSWORD_BY = ("css", 'input[name="password"]')
-LOGIN_BUTTON_BY = ("css", '#gtmLoginStd')
+# Prioritized selector lists to support resilient fallbacks.
+USERNAME_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="officialEmail"]'),
+    (By.ID, "officialEmail"),
+    (By.NAME, "officialEmail"),
+]
+
+PASSWORD_SELECTORS = [
+    (By.CSS_SELECTOR, 'input[name="password"]'),
+    (By.ID, "password"),
+    (By.NAME, "password"),
+]
+
+LOGIN_BUTTON_SELECTORS = [
+    (By.ID, "gtmLoginStd"),
+    (By.CSS_SELECTOR, "#gtmLoginStd"),
+    (By.CSS_SELECTOR, "button[data-testid='login-button']"),
+    (By.XPATH, "//button[contains(normalize-space(text()), 'Log In') or contains(normalize-space(text()), 'Sign In')]")
+]
 
 # A generic indicator that we are not on the login page anymore
 DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'

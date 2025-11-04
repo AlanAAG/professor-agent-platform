@@ -17,7 +17,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Dict, Any, List, Tuple, Optional, Callable, TypeVar
+from typing import Dict, Any, List, Tuple, Optional, Callable, TypeVar, Sequence
 from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -33,6 +33,7 @@ from selenium.common.exceptions import (
     InvalidElementStateException,
 )
 from . import config
+from .utils import resilient_find_element
 
 # --- Globals and Initialization ---
 
@@ -633,20 +634,6 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
         return False
 
 
-def _get_locator_by(locator_tuple: Tuple[str, str]) -> Tuple[By, str]:
-    """Transform config-style locator tuples into explicit Selenium By tuples.
-
-    Supports simple methods like "css" and "xpath"; defaults to CSS selector.
-    """
-    method, value = locator_tuple
-    if method == "css":
-        return By.CSS_SELECTOR, value
-    if method == "xpath":
-        return By.XPATH, value
-    # Default fallback to CSS
-    return By.CSS_SELECTOR, value
-
-
 def perform_login(driver: webdriver.Chrome) -> bool:
     """Performs the login sequence using stored credentials, with retry logic."""
     username = os.getenv("COACH_USERNAME")
@@ -657,11 +644,6 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
     MAX_LOGIN_ATTEMPTS = 3
 
-    # Define locators outside the loop for efficiency
-    username_locator = _get_locator_by(config.USERNAME_BY)
-    password_locator = _get_locator_by(config.PASSWORD_BY)
-    login_button_locator = _get_locator_by(config.LOGIN_BUTTON_BY)
-
     for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
         try:
             logging.info(f"Attempting fresh login (Attempt {attempt}/{MAX_LOGIN_ATTEMPTS})...")
@@ -671,21 +653,28 @@ def perform_login(driver: webdriver.Chrome) -> bool:
             _wait_for_document_ready(driver, timeout=2.0)
 
             # 2. Enter credentials after ensuring interactable inputs
-            safe_type(
+            _resilient_type(
                 driver,
-                username_locator,
+                config.USERNAME_SELECTORS,
                 username,
+                "username field",
                 timeout=config.SETTINGS.wait_timeout,
             )
-            safe_type(
+            _resilient_type(
                 driver,
-                password_locator,
+                config.PASSWORD_SELECTORS,
                 password,
+                "password field",
                 timeout=config.SETTINGS.wait_timeout,
             )
 
             # 3. Click login button after explicit wait
-            safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
+            _resilient_click(
+                driver,
+                config.LOGIN_BUTTON_SELECTORS,
+                "login button",
+                timeout=config.SETTINGS.wait_timeout,
+            )
 
             # --- Use an extended wait for post-login redirection ---
             EXTENDED_WAIT_TIMEOUT = 45
@@ -856,6 +845,148 @@ def launch_and_login() -> webdriver.Chrome:
 
 
 # --- Core Navigation Helpers ---
+
+def _wait_for_resilient_element(
+    driver: webdriver.Chrome,
+    selectors: Sequence[Tuple[str, str]],
+    name: str,
+    *,
+    timeout: int,
+    require_clickable: bool = False,
+) -> WebElement:
+    """Wait for an element via resilient selectors, ensuring visibility/interactability."""
+
+    wait = WebDriverWait(
+        driver,
+        timeout,
+        ignored_exceptions=(StaleElementReferenceException,),
+    )
+
+    def _locate(drv: webdriver.Chrome):
+        try:
+            element = resilient_find_element(drv, selectors, name)
+        except NoSuchElementException:
+            return False
+        except StaleElementReferenceException:
+            return False
+
+        try:
+            if require_clickable:
+                return element if element.is_displayed() and element.is_enabled() else False
+            return element if element.is_displayed() else False
+        except StaleElementReferenceException:
+            return False
+
+    return wait.until(_locate)
+
+
+def _resilient_type(
+    driver: webdriver.Chrome,
+    selectors: Sequence[Tuple[str, str]],
+    text: str,
+    name: str,
+    *,
+    timeout: int,
+    clear: bool = True,
+    click_before: bool = True,
+) -> WebElement:
+    """Type into an element resolved via resilient selectors with retry logic."""
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, 4):
+        try:
+            element = _wait_for_resilient_element(
+                driver,
+                selectors,
+                name,
+                timeout=timeout,
+                require_clickable=True,
+            )
+
+            try:
+                _scroll_into_view_center(driver, element)
+            except Exception:
+                pass
+
+            if click_before:
+                try:
+                    element.click()
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].focus();", element)
+                    except Exception:
+                        pass
+
+            if clear:
+                try:
+                    element.clear()
+                except StaleElementReferenceException:
+                    raise
+
+            element.send_keys(text)
+            logging.debug("Typed into %s using resilient selectors on attempt %s", name, attempt)
+            return element
+        except TimeoutException as err:
+            last_error = err
+            break
+        except (StaleElementReferenceException, ElementNotInteractableException, InvalidElementStateException) as err:
+            last_error = err
+            logging.debug("Retrying resilient type for %s due to %s (attempt %s)", name, err, attempt)
+            time.sleep(0.3)
+
+    if isinstance(last_error, TimeoutException):
+        raise last_error
+
+    raise TimeoutException(
+        f"Unable to interact with {name} after multiple resilient selector attempts. Last error: {last_error}"
+    ) from last_error
+
+
+def _resilient_click(
+    driver: webdriver.Chrome,
+    selectors: Sequence[Tuple[str, str]],
+    name: str,
+    *,
+    timeout: int,
+) -> WebElement:
+    """Click an element resolved via resilient selectors using JS for reliability."""
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, 4):
+        try:
+            element = _wait_for_resilient_element(
+                driver,
+                selectors,
+                name,
+                timeout=timeout,
+                require_clickable=True,
+            )
+
+            try:
+                _scroll_into_view_center(driver, element)
+            except Exception:
+                pass
+
+            driver.execute_script("arguments[0].click();", element)
+            logging.info("Clicked %s using resilient selectors (attempt %s)", name, attempt)
+            return element
+        except TimeoutException as err:
+            last_error = err
+            break
+        except (StaleElementReferenceException, ElementNotInteractableException) as err:
+            last_error = err
+            logging.debug("Retrying resilient click for %s due to %s (attempt %s)", name, err, attempt)
+            time.sleep(0.2)
+
+    if isinstance(last_error, TimeoutException):
+        raise last_error
+
+    raise TimeoutException(
+        f"Unable to click {name} after multiple resilient selector attempts. Last error: {last_error}"
+    ) from last_error
+
 
 def safe_find(
     driver: webdriver.Chrome,
