@@ -1349,12 +1349,12 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
             logging.debug("Resources tab activation failed for locator (%s, %s): %s", by, value, exc)
             continue
 
+    if last_error:
+        _take_error_screenshot(driver, "resources_tab_final_fail")
     logging.warning(
         "Resources tab not found or failed to activate using available locators. Last error: %s",
         last_error,
     )
-    if last_error:
-        _take_error_screenshot(driver, "resources_tab_final_fail")
     return False
 
 
