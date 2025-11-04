@@ -29,6 +29,8 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
     WebDriverException,
+    ElementNotInteractableException,
+    InvalidElementStateException,
 )
 from . import config
 
@@ -666,23 +668,29 @@ def perform_login(driver: webdriver.Chrome) -> bool:
 
             # 1. Navigate (or re-navigate) to Login Page
             driver.get(config.LOGIN_URL)
+            _wait_for_document_ready(driver, timeout=2.0)
 
-            # 2. Wait for the login form elements to be present
-            WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
-                EC.presence_of_element_located(username_locator)
+            # 2. Enter credentials after ensuring interactable inputs
+            safe_type(
+                driver,
+                username_locator,
+                username,
+                timeout=config.SETTINGS.wait_timeout,
+            )
+            safe_type(
+                driver,
+                password_locator,
+                password,
+                timeout=config.SETTINGS.wait_timeout,
             )
 
-            # 3. Enter credentials
-            driver.find_element(*username_locator).send_keys(username)
-            driver.find_element(*password_locator).send_keys(password)
-
-            # 4. Click login button
+            # 3. Click login button after explicit wait
             safe_click(driver, login_button_locator, timeout=config.SETTINGS.wait_timeout)
 
             # --- Use an extended wait for post-login redirection ---
             EXTENDED_WAIT_TIMEOUT = 45
 
-            # 5. Wait for redirection to the dashboard (or timeout)
+            # 4. Wait for redirection to the dashboard (or timeout)
             WebDriverWait(driver, EXTENDED_WAIT_TIMEOUT).until(
                 EC.url_contains(config.COURSES_URL)
             )
@@ -897,6 +905,78 @@ def safe_click(driver: webdriver.Chrome, locator: Tuple[str, str], timeout: int 
     # Use JavaScript click (often more reliable than native .click() in headless environments)
     driver.execute_script("arguments[0].click();", element)
     logging.info(f"Clicked element located by {locator}")
+
+
+def safe_type(
+    driver: webdriver.Chrome,
+    locator: Tuple[str, str],
+    text: str,
+    *,
+    timeout: int = 30,
+    clear: bool = True,
+    click_before: bool = True,
+):
+    """Type text into an input after waiting for it to be interactable."""
+    wait = WebDriverWait(
+        driver,
+        timeout,
+        poll_frequency=0.2,
+        ignored_exceptions=(StaleElementReferenceException,),
+    )
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, 4):
+        try:
+            element = wait.until(EC.element_to_be_clickable(locator))
+            try:
+                _scroll_into_view_center(driver, element)
+            except Exception:
+                pass
+
+            if click_before:
+                try:
+                    element.click()
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].focus();", element)
+                    except Exception:
+                        pass
+
+            if clear:
+                try:
+                    element.clear()
+                except StaleElementReferenceException:
+                    logging.debug("Input %s became stale during clear; retrying.", locator)
+                    raise
+
+            element.send_keys(text)
+            logging.debug("Typed into element located by %s on attempt %s", locator, attempt)
+            return element
+        except TimeoutException as err:
+            last_error = err
+            logging.debug(
+                "Timeout waiting for interactable element %s on attempt %s: %s",
+                locator,
+                attempt,
+                err,
+            )
+            break
+        except (StaleElementReferenceException, ElementNotInteractableException, InvalidElementStateException) as err:
+            last_error = err
+            logging.debug(
+                "Retrying typing into %s due to %s (attempt %s)",
+                locator,
+                err,
+                attempt,
+            )
+            time.sleep(0.3)
+
+    if isinstance(last_error, TimeoutException):
+        raise last_error
+
+    raise TimeoutException(
+        f"Unable to interact with element located by {locator} after multiple attempts. Last error: {last_error}"
+    ) from last_error
 
 
 def _get_available_course_codes_impl(driver: webdriver.Chrome) -> set[str]:
