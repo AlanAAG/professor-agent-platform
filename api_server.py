@@ -807,7 +807,7 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
         if not documents:
             documents = retrieve_rag_documents(
                 query=payload.query,
-                selected_class=None,
+                selected_class=payload.selectedClass,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
             )
@@ -824,18 +824,11 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
             )
         
         if not documents:
-            kw_docs = retrieve_rag_documents_keyword_fallback(
+            documents = retrieve_rag_documents_keyword_fallback(
                 query=payload.query,
                 selected_class=payload.selectedClass,
                 limit=params["relaxed_count"],
             )
-            if not kw_docs and payload.selectedClass:
-                kw_docs = retrieve_rag_documents_keyword_fallback(
-                    query=payload.query,
-                    selected_class=None,
-                    limit=params["relaxed_count"],
-                )
-            documents = kw_docs
         
         if not documents:
             logger.warning(
@@ -879,25 +872,18 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         if not documents:
             documents = retrieve_rag_documents(
                 query=last_query,
-                selected_class=None,
+                selected_class=payload.selectedClass,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
             )
             documents = cohere_rerank(last_query, documents)
         
         if not documents:
-            kw_docs = retrieve_rag_documents_keyword_fallback(
+            documents = retrieve_rag_documents_keyword_fallback(
                 query=last_query,
                 selected_class=payload.selectedClass,
                 limit=params["relaxed_count"],
             )
-            if not kw_docs and payload.selectedClass:
-                kw_docs = retrieve_rag_documents_keyword_fallback(
-                    query=last_query,
-                    selected_class=None,
-                    limit=params["relaxed_count"],
-                )
-            documents = kw_docs
         
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
