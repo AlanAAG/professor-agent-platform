@@ -652,6 +652,20 @@ def perform_login(driver: webdriver.Chrome) -> bool:
             driver.get(config.LOGIN_URL)
             _wait_for_document_ready(driver, timeout=2.0)
 
+            # --- START CRITICAL RELOAD CHECK ---
+            try:
+                # Check for the primary username input field. If it's missing, the page likely failed to load.
+                # NOTE: EC.presence_of_element_located requires a tuple (By, selector_value).
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located(config.USERNAME_SELECTORS[0])
+                )
+            except TimeoutException:
+                # Page failed to load critical element (e.g., received "Failed to load page" error).
+                logging.warning("Login page failed to load critical element. Forcing page refresh for recovery.")
+                driver.refresh()
+                _wait_for_document_ready(driver, timeout=2.0)
+            # --- END CRITICAL RELOAD CHECK ---
+
             # 2. Enter credentials after ensuring interactable inputs
             _resilient_type(
                 driver,
