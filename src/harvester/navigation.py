@@ -1338,6 +1338,7 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
             tab = wait.until(EC.element_to_be_clickable((by, value)))
             _scroll_into_view_center(driver, tab)
             driver.execute_script("arguments[0].click();", tab)
+            time.sleep(1.0)
             WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
                 lambda drv, supplier=tab_getter: _resources_loaded(drv, supplier)
             )
@@ -1352,6 +1353,8 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
         "Resources tab not found or failed to activate using available locators. Last error: %s",
         last_error,
     )
+    if last_error:
+        _take_error_screenshot(driver, "resources_tab_final_fail")
     return False
 
 
