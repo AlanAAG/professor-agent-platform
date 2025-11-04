@@ -53,16 +53,8 @@ GROUP_HEADER_XPATH_TEMPLATE = (
 COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
-# Resources tab header: partner-provided structure using container class
-RESOURCES_TAB_XPATH = (
-    "//div[(contains(@role,'tab')"
-    " or contains(concat(' ', normalize-space(@class), ' '), ' resources ')"
-    " or contains(@data-testid,'resources')"
-    " or contains(@data-track,'resources'))"
-    " and (.//p[normalize-space(text())='Resources']"
-    " or .//span[normalize-space(text())='Resources']"
-    " or normalize-space(text())='Resources')]"
-)
+# Resources tab header: parent div containing the Resources label
+RESOURCES_TAB_XPATH = "//div[./p[normalize-space(text())='Resources']]"
 
 # Section headers inside resources
 SECTION_HEADER_XPATH_TPL = (
