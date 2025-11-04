@@ -912,7 +912,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         if documents:
             rules = (
                 "Course Material Restriction: ONLY use information derived from the provided course materials/documents. Treat these documents as the sole source of truth.\n"
-                "Integration and Citation (Professor Tone): Seamlessly integrate information into your first-person response. When referencing a specific fact, definition, or concept from the material, cite the source parenthetically (e.g., **(Source: Document Name/Section)**). You are the speaker and the authority, using the materials to support your teaching.\n"
+                "Integration and Citation (Professor Tone): Seamlessly integrate information into your first-person response. You are the speaker and the authority, using the materials to support your teaching.\n"
                 "Tone & Accuracy: Maintain a conversational yet highly accurate and professional tone appropriate to your selected persona."
                 "Format your answer using only plain paragraphs. DO NOT use markdown headings (#) or lists (*) unless absolutely necessary for clarity, and keep any such lists very short"
                 "Be conversational, accurate, and most importantly, brief."
