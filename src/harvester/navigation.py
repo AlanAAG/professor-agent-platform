@@ -1318,12 +1318,20 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
         "[data-section-title]",
         "[data-testid*='resource-section']",
         "div.fileBox",
+        "div.sc-cAfnWV.arjPu",
+        "div.sc-jvUGGZ",
     ])
 
     def _resources_loaded(drv: webdriver.Chrome, tab_getter: Callable[[webdriver.Chrome], Optional[WebElement]]) -> bool:
         tab_candidate = tab_getter(drv)
         if _tab_activated(tab_candidate):
             return True
+        try:
+            header = drv.find_element(By.XPATH, "//p[normalize-space(text())='Pre-Read Materials']")
+            if header.is_displayed():
+                return True
+        except (NoSuchElementException, StaleElementReferenceException):
+            pass
         # Fallback: check for resource containers appearing in DOM
         return bool(drv.find_elements(By.CSS_SELECTOR, css_probe))
 
