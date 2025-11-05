@@ -56,7 +56,7 @@ RESOURCES_TAB_SELECTORS = [
 ]
 
 # Section headers inside resources
-SECTION_HEADER_XPATH_TPL = "//p[normalize-space(.)='{section_title}']"
+SECTION_HEADER_XPATH_TPL = "//p[contains(@class, 'name') and normalize-space(.)='{section_title}']"
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"
 IN_CLASS_SECTION_TITLE = "In Class Materials"
