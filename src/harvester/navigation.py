@@ -1342,13 +1342,21 @@ def _find_and_click_course_link_impl(
         logging.info("Successfully navigated to course: %s", course_code)
 
     except TimeoutException as e:
-        logging.error("Course link not found or navigation timed out for %s: %s", course_code, e)
+        logging.warning(
+            "Course link not found or navigation timed out for %s. Skipping. Error: %s",
+            course_code,
+            e,
+        )
         _take_error_screenshot(driver, f"nav_timeout_{course_code}")
-        raise
+        return
     except Exception as e:
-        logging.error("Error clicking course link for %s: %s", course_code, e)
+        logging.warning(
+            "Error clicking course link for %s. Skipping. Error: %s",
+            course_code,
+            e,
+        )
         _take_error_screenshot(driver, f"nav_error_{course_code}")
-        raise
+        return
 
 
 def find_and_click_course_link(
