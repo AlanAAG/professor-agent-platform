@@ -669,20 +669,29 @@ def is_session_valid(driver: webdriver.Chrome) -> bool:
     """Checks if the current session state is likely still logged in."""
     try:
         driver.get(config.COURSES_URL)
-        # Check if we were redirected back to the login page
-        if driver.current_url.startswith(config.LOGIN_URL):
-            logging.info("Session invalid: Redirected to login page.")
-            return False
-        
-        # Check for a reliable dashboard element
-        WebDriverWait(driver, 5).until(
+        DASHBOARD_CHECK_TIMEOUT = 10
+        WebDriverWait(driver, DASHBOARD_CHECK_TIMEOUT).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS))
         )
         logging.info("Session valid: Dashboard indicator found.")
         return True
     except TimeoutException:
-        logging.info("Session status inconclusive (timeout).")
-        return False
+        current_url = ""
+        try:
+            current_url = driver.current_url or ""
+        except Exception as url_error:
+            logging.debug("Unable to read current URL after dashboard indicator timeout: %s", url_error)
+
+        if current_url.startswith(config.LOGIN_URL):
+            logging.info("Session invalid: Dashboard indicator missing and login page detected.")
+            return False
+
+        logging.info(
+            "Dashboard indicator not found within %ss but current URL '%s' does not match login page; assuming session remains valid.",
+            DASHBOARD_CHECK_TIMEOUT,
+            current_url,
+        )
+        return True
     except Exception as e:
         logging.warning(f"Error checking session validity: {e}")
         return False
@@ -747,9 +756,9 @@ def perform_login(driver: webdriver.Chrome) -> bool:
             # --- Use an extended wait for post-login redirection ---
             EXTENDED_WAIT_TIMEOUT = 45
 
-            # 4. Wait for redirection to the dashboard (or timeout)
+            # 4. Wait for the dashboard indicator to confirm successful navigation
             WebDriverWait(driver, EXTENDED_WAIT_TIMEOUT).until(
-                EC.url_contains(config.COURSES_URL)
+                EC.presence_of_element_located((By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS))
             )
 
             logging.info(f"Login successful after {attempt} attempt(s).")
