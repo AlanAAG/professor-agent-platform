@@ -1382,21 +1382,6 @@ def find_and_click_course_link(
 
 
 def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
-    normalized_resources_xpath = (
-        "translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='resources'"
-    )
-
-    primary_selectors: List[Tuple[str, str]] = list(getattr(config, "RESOURCES_TAB_SELECTORS", []))
-    if not primary_selectors:
-        primary_selectors.append((By.XPATH, config.RESOURCES_TAB_XPATH))
-
-    locator_candidates: List[Tuple[str, str]] = primary_selectors + [
-        (By.CSS_SELECTOR, "[data-testid='resources-tab']"),
-        (By.CSS_SELECTOR, "[data-section='resources']"),
-        (By.XPATH, f"//button[{normalized_resources_xpath}]"),
-        (By.XPATH, f"//*[(@role='tab' or @role='button') and {normalized_resources_xpath}]")
-    ]
-
     last_error: Optional[Exception] = None
 
     def _tab_supplier(by: str, value: str) -> Callable[[webdriver.Chrome], Optional[WebElement]]:
@@ -1440,7 +1425,7 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
         # Fallback: check for resource containers appearing in DOM
         return bool(drv.find_elements(By.CSS_SELECTOR, css_probe))
 
-    for by, value in locator_candidates:
+    for by, value in config.RESOURCES_TAB_SELECTORS:
         tab_getter = _tab_supplier(by, value)
         try:
             wait = WebDriverWait(

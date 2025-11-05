@@ -47,12 +47,19 @@ GROUP_HEADER_XPATH_TEMPLATE = "//p[normalize-space(.)='{group_name}']/ancestor::
 COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::div[contains(@class, 'dQvmsI')][1]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
-# Resources tab header: parent div containing the Resources label
-RESOURCES_TAB_XPATH = "//h4[normalize-space(.)='Resources']/ancestor::div[1]"
-
 RESOURCES_TAB_SELECTORS = [
-    (By.XPATH, "//h4[normalize-space(.)='Resources']/ancestor::div[1]"),
-    (By.XPATH, "//*[normalize-space(.)='Resources' and (@role='tab' or @role='button')]")
+    (
+        By.XPATH,
+        "//div[.//img[contains(@src, 'resources.svg')] and .//h4[normalize-space(.)='Resources']]",
+    ),
+    (
+        By.XPATH,
+        "//h4[normalize-space(.)='Resources']/ancestor::div[1]",
+    ),
+    (
+        By.XPATH,
+        "//*[@role='tab' or @role='button'][normalize-space(.)='Resources']",
+    ),
 ]
 
 # Section headers inside resources
