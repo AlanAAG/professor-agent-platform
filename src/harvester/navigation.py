@@ -1268,23 +1268,54 @@ def _find_and_click_course_link_impl(
     except Exception:
         is_default_visible = False
 
-    course_locator = (By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code))
+    def _resolve_course_click_target() -> Tuple[WebElement, str]:
+        locator_attempts: List[Tuple[Tuple[str, str], bool, str]] = [
+            ((By.XPATH, config.COURSE_LINK_XPATH_TEMPLATE.format(course_code=course_code)), True, "primary-anchor"),
+            ((By.XPATH, config.COURSE_CARD_FALLBACK_XPATH_TEMPLATE.format(course_code=course_code)), False, "fallback-container"),
+        ]
+
+        last_exc: Optional[Exception] = None
+        for locator, require_clickable, label in locator_attempts:
+            try:
+                element = safe_find(
+                    driver,
+                    locator,
+                    timeout=config.SETTINGS.wait_timeout,
+                    clickable=require_clickable,
+                )
+                if not require_clickable:
+                    try:
+                        ancestor_anchor = driver.execute_script("return arguments[0].closest('a');", element)
+                    except Exception:
+                        ancestor_anchor = None
+                    if ancestor_anchor:
+                        logging.debug("Course %s fallback resolved via anchor ancestor", course_code)
+                        return ancestor_anchor, f"{label}-anchor"
+                return element, label
+            except TimeoutException as exc:
+                last_exc = exc
+            except Exception as exc:
+                last_exc = exc
+                logging.debug("Course locator '%s' failed for %s: %s", label, course_code, exc)
+
+        if last_exc:
+            raise last_exc
+        raise TimeoutException(f"Unable to locate course {course_code} using configured locators")
+
+    def _click_course_element(element: WebElement, strategy_label: str) -> None:
+        try:
+            _scroll_into_view_center(driver, element)
+        except Exception:
+            pass
+        driver.execute_script("arguments[0].click();", element)
+        logging.info("Clicked course %s using strategy '%s'", course_code, strategy_label)
 
     try:
         if is_default_visible:
             # PATH 1: Directly click the course link
             logging.info("Course %s is default-visible. Clicking link directly...", course_code)
-            course_link = safe_find(
-                driver,
-                course_locator,
-                timeout=config.SETTINGS.wait_timeout,
-                clickable=True,
-            )
-            _scroll_into_view_center(driver, course_link)
-            course_link = WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
-                EC.element_to_be_clickable(course_locator)
-            )
-            driver.execute_script("arguments[0].click();", course_link)
+            course_element, strategy_used = _resolve_course_click_target()
+            _click_course_element(course_element, strategy_used)
         else:
             # PATH 2: Expand the group first, then click the course link
             resolved_group = group_name
@@ -1322,17 +1353,8 @@ def _find_and_click_course_link_impl(
                     )
 
             # Now find and click the course link
-            course_link = safe_find(
-                driver,
-                course_locator,
-                timeout=config.SETTINGS.wait_timeout,
-                clickable=True,
-            )
-            _scroll_into_view_center(driver, course_link)
-            course_link = WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
-                EC.element_to_be_clickable(course_locator)
-            )
-            driver.execute_script("arguments[0].click();", course_link)
+            course_element, strategy_used = _resolve_course_click_target()
+            _click_course_element(course_element, strategy_used)
 
         # 4) Confirm navigation reached the course page
         WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
@@ -1446,6 +1468,61 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
             last_error = exc
             logging.debug("Resources tab activation failed for locator (%s, %s): %s", by, value, exc)
             continue
+
+    def _js_locate_resources(drv: webdriver.Chrome) -> Optional[WebElement]:
+        try:
+            return drv.execute_script(
+                """
+const normalize = (value) => (value || "").trim().toLowerCase();
+const headings = Array.from(document.querySelectorAll("h4"));
+const candidateHeading = headings.find((el) => normalize(el.textContent) === "resources");
+if (!candidateHeading) {
+  return null;
+}
+
+let el = candidateHeading;
+while (el && el !== document.body) {
+  if (el.matches('[role="tab"], [role="button"], div.center-head-cont, div.flex_tabWrapper, div.sc-dmZihf')) {
+    if (el.matches('div.flex_tabWrapper')) {
+      const nested = Array.from(el.querySelectorAll('div'))
+        .find((child) => {
+          const heading = child.querySelector('h4');
+          return heading && normalize(heading.textContent) === "resources";
+        });
+      if (nested && nested.getBoundingClientRect().width > 0 && nested.getBoundingClientRect().height > 0) {
+        return nested;
+      }
+    }
+    if (el.getBoundingClientRect && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0) {
+      return el;
+    }
+  }
+  el = el.parentElement;
+}
+
+return candidateHeading;
+                """
+            )
+        except Exception:
+            return None
+
+    try:
+        js_target = _js_locate_resources(driver)
+        if js_target is not None:
+            try:
+                _scroll_into_view_center(driver, js_target)
+            except Exception:
+                pass
+            driver.execute_script("arguments[0].click();", js_target)
+            time.sleep(1.0)
+            WebDriverWait(driver, config.SETTINGS.wait_timeout).until(
+                lambda drv: _resources_loaded(drv, _js_locate_resources)
+            )
+            logging.info("Navigated to Resources section via JS fallback locator")
+            return True
+    except Exception as exc:
+        last_error = exc
+        logging.debug("Resources tab activation failed via JS fallback: %s", exc)
 
     if last_error:
         _take_error_screenshot(driver, "resources_tab_final_fail")

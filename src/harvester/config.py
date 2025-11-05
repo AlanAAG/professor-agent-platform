@@ -46,6 +46,12 @@ GROUP_HEADER_XPATH_TEMPLATE = "//p[normalize-space(.)='{group_name}']/ancestor::
 # Course link: anchor whose visible identifier matches the course code within a stable container
 COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::a[1]"
 
+# Fallback course card container (handles layouts where program code sits inside divs under anchor wrappers)
+COURSE_CARD_FALLBACK_XPATH_TEMPLATE = (
+    "//span[contains(concat(' ', normalize-space(@class), ' '), ' pIdName ') and normalize-space(.)='{course_code}']"
+    "/ancestor::div[contains(@class, 'sc-eDWCr') or contains(@class, 'domainCourses')][1]"
+)
+
 # --- Course Details Page (Resources Tab Navigation) ---
 RESOURCES_TAB_SELECTORS = [
     (
@@ -63,6 +69,10 @@ RESOURCES_TAB_SELECTORS = [
     (
         By.XPATH,
         "//*[@role='tab' or @role='button'][normalize-space(.)='Resources']",
+    ),
+    (
+        By.XPATH,
+        "//div[contains(concat(' ', normalize-space(@class), ' '), ' flex_tabWrapper ')]//div[.//h4[normalize-space(.)='Resources']][1]",
     ),
 ]
 
@@ -186,7 +196,7 @@ for code in sorted(all_codes):
     COURSE_MAP[code] = merged
 
 # Default visible courses (from partner script)
-DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301", "PRTC201"}
+DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline
