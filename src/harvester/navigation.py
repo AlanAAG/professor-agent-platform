@@ -291,8 +291,35 @@ def _wait_for_links_in_container(
     container_supplier: Callable[[webdriver.Chrome], Optional[WebElement]] | None,
     initial_container: Optional[WebElement],
     timeout: int,
+    section_title: str,
+    header_xpath_hint: Optional[str],
 ) -> List[WebElement]:
     last_container = initial_container
+    normalized_title = section_title.strip()
+
+    header_relative_xpaths: List[str] = []
+    if normalized_title:
+        # Primary signal: traverse from the rendered header text down into the body that appears post-expansion.
+        header_relative_xpaths.extend([
+            (
+                "//p[normalize-space(text())='" + normalized_title + "']"
+                "/ancestor::div[1]/following-sibling::*[self::div or self::section]"
+                "[.//a[@href]]//a[@href]"
+            ),
+            (
+                "//p[normalize-space(text())='" + normalized_title + "']"
+                "/ancestor::div[2]//a[@href]"
+            ),
+            (
+                "//p[normalize-space(text())='" + normalized_title + "']"
+                "/ancestor::div[4]//a[@href]"
+            ),
+        ])
+
+    if header_xpath_hint:
+        header_relative_xpaths.append(
+            "(" + header_xpath_hint + ")/following-sibling::*[self::div or self::section]//a[@href]"
+        )
 
     def _locate_container(drv: webdriver.Chrome) -> Optional[WebElement]:
         nonlocal last_container
@@ -310,11 +337,36 @@ def _wait_for_links_in_container(
         if not container or _is_stale(container):
             return False
         try:
-            anchors = container.find_elements(By.CSS_SELECTOR, _RESOURCE_LINK_SELECTOR_UNION)
+            # Definitive existence check: once the section body renders, there must be at least one anchor.
+            anchors = container.find_elements(By.XPATH, ".//a[@href]")
         except StaleElementReferenceException:
             return False
+        except Exception:
+            anchors = []
+
+        if not anchors:
+            # If the container is slow to populate, probe using header-relative XPaths that follow
+            # the known "header wrapper -> content" structure observed in the SPA.
+            for candidate_xpath in header_relative_xpaths:
+                try:
+                    anchors = drv.find_elements(By.XPATH, candidate_xpath)
+                except Exception:
+                    anchors = []
+                if anchors:
+                    break
+
         if not anchors:
             return False
+
+        def _belongs_to_container(anchor: WebElement) -> bool:
+            if not container or _is_stale(container):
+                return True
+            try:
+                # Guard against false positives from broader document searches.
+                return bool(drv.execute_script("return arguments[0].contains(arguments[1]);", container, anchor))
+            except Exception:
+                return True
+
         filtered: List[WebElement] = []
         seen_ids: set[str] = set()
         for anchor in anchors:
@@ -323,6 +375,8 @@ def _wait_for_links_in_container(
             except StaleElementReferenceException:
                 continue
             if not href:
+                continue
+            if not _belongs_to_container(anchor):
                 continue
             lower_href = href.lower()
             if lower_href.startswith("javascript:") or lower_href == "#":
@@ -1428,6 +1482,14 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
                 raise
             else:
                 logging.info("Clicked section header '%s' via strategy '%s'", section_title, strategy)
+                post_click_delay = getattr(config.SETTINGS, "section_expand_post_click_delay", 1.0)
+                if post_click_delay > 0:
+                    logging.debug(
+                        "Post-click stabilization sleep for section '%s' (%.2fs)",
+                        section_title,
+                        post_click_delay,
+                    )
+                    time.sleep(post_click_delay)
 
         _wait_for_aria_expansion(driver, _header_supplier, timeout=6)
 
@@ -1452,6 +1514,8 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
             container_resolver,
             container_el,
             timeout=wait_timeout,
+            section_title=section_title,
+            header_xpath_hint=header_xpath_used,
         )
 
         if not anchors:
