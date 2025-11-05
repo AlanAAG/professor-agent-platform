@@ -439,17 +439,6 @@ def main_pipeline(mode="daily"):
                 else:
                     course_items = list(config.COURSE_MAP.items())
 
-                # Auto-detect available courses on the page and filter out missing ones
-                try:
-                    available_codes = navigation.get_available_course_codes(driver)
-                    if available_codes:
-                        course_items = [(c, d) for (c, d) in course_items if c in available_codes]
-                    else:
-                        logging.warning("Could not detect available courses; proceeding with full COURSE_MAP.")
-                except Exception as detect_err:
-                    logging.warning(f"Failed to detect available courses: {detect_err}")
-
-
                 # Update course attempts after filtering
                 stats["courses_attempted"] = len(course_items)
 

@@ -44,17 +44,21 @@ DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 GROUP_HEADER_XPATH_TEMPLATE = "//p[normalize-space(.)='{group_name}']/ancestor::div[contains(@class, 'domainHeader')][1]"
 
 # Course link: anchor whose visible identifier matches the course code within a stable container
-COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::div[contains(@class, 'dQvmsI')][1]"
+COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::a[1]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
 RESOURCES_TAB_SELECTORS = [
+    (
+        By.XPATH,
+        "//div[contains(@class, 'center-head-cont') and .//h4[normalize-space(.)='Resources']]",
+    ),
     (
         By.XPATH,
         "//div[.//img[contains(@src, 'resources.svg')] and .//h4[normalize-space(.)='Resources']]",
     ),
     (
         By.XPATH,
-        "//h4[normalize-space(.)='Resources']/ancestor::div[1]",
+        "//h4[normalize-space(.)='Resources']/ancestor::div[contains(@class, 'center-head-cont')][1]",
     ),
     (
         By.XPATH,
