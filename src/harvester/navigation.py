@@ -298,28 +298,37 @@ def _wait_for_links_in_container(
     normalized_title = section_title.strip()
 
     header_relative_xpaths: List[str] = []
+
+    def _paths_from_header(base_xpath: str) -> List[str]:
+        return [
+            f"{base_xpath}/ancestor::*[self::div or self::section][1]/following-sibling::*[self::div or self::section][.//a[@href]][1]//a[@href]",
+            f"{base_xpath}/ancestor::*[self::div or self::section][1]//a[@href]",
+            f"{base_xpath}/following::*[self::div or self::section][.//a[@href]][1]//a[@href]",
+            f"{base_xpath}/ancestor::div[1]//a[@href]",
+            f"{base_xpath}/ancestor::div[2]//a[@href]",
+            f"{base_xpath}/ancestor::div[3]//a[@href]",
+            f"{base_xpath}/ancestor::div[4]//a[@href]",
+            f"{base_xpath}/ancestor::section[1]//a[@href]",
+        ]
+
     if normalized_title:
-        # Primary signal: traverse from the rendered header text down into the body that appears post-expansion.
-        header_relative_xpaths.extend([
-            (
-                "//p[normalize-space(text())='" + normalized_title + "']"
-                "/ancestor::div[1]/following-sibling::*[self::div or self::section]"
-                "[.//a[@href]]//a[@href]"
-            ),
-            (
-                "//p[normalize-space(text())='" + normalized_title + "']"
-                "/ancestor::div[2]//a[@href]"
-            ),
-            (
-                "//p[normalize-space(text())='" + normalized_title + "']"
-                "/ancestor::div[4]//a[@href]"
-            ),
-        ])
+        primary_header_xpath = "//p[normalize-space(text())='" + normalized_title + "']"
+        header_relative_xpaths.extend(_paths_from_header(primary_header_xpath))
+
+        alternate_header_xpaths = [
+            "//h3[normalize-space(text())='" + normalized_title + "']",
+            "//h4[normalize-space(text())='" + normalized_title + "']",
+            "//span[normalize-space(text())='" + normalized_title + "']",
+        ]
+        for alt_xpath in alternate_header_xpaths:
+            header_relative_xpaths.extend(_paths_from_header(alt_xpath))
 
     if header_xpath_hint:
         header_relative_xpaths.append(
             "(" + header_xpath_hint + ")/following-sibling::*[self::div or self::section]//a[@href]"
         )
+
+    header_relative_xpaths = [xpath for xpath in dict.fromkeys(header_relative_xpaths) if xpath]
 
     def _locate_container(drv: webdriver.Chrome) -> Optional[WebElement]:
         nonlocal last_container
@@ -334,26 +343,30 @@ def _wait_for_links_in_container(
 
     def _collect(drv: webdriver.Chrome):
         container = _locate_container(drv)
-        if not container or _is_stale(container):
-            return False
-        try:
-            # Definitive existence check: once the section body renders, there must be at least one anchor.
-            anchors = container.find_elements(By.XPATH, ".//a[@href]")
-        except StaleElementReferenceException:
-            return False
-        except Exception:
-            anchors = []
+        anchors: List[WebElement] = []
+        header_xpath_selected: Optional[str] = None
 
-        if not anchors:
-            # If the container is slow to populate, probe using header-relative XPaths that follow
-            # the known "header wrapper -> content" structure observed in the SPA.
-            for candidate_xpath in header_relative_xpaths:
-                try:
-                    anchors = drv.find_elements(By.XPATH, candidate_xpath)
-                except Exception:
-                    anchors = []
-                if anchors:
-                    break
+        for candidate_xpath in header_relative_xpaths:
+            try:
+                anchors = drv.find_elements(By.XPATH, candidate_xpath)
+            except StaleElementReferenceException:
+                anchors = []
+            except Exception:
+                anchors = []
+            if anchors:
+                header_xpath_selected = candidate_xpath
+                break
+
+        if header_xpath_selected and (not container or _is_stale(container)):
+            container = _locate_container(drv)
+
+        if not anchors and container and not _is_stale(container):
+            try:
+                anchors = container.find_elements(By.XPATH, ".//a[@href]")
+            except StaleElementReferenceException:
+                return False
+            except Exception:
+                anchors = []
 
         if not anchors:
             return False
@@ -369,6 +382,7 @@ def _wait_for_links_in_container(
 
         filtered: List[WebElement] = []
         seen_ids: set[str] = set()
+        seen_hrefs: set[str] = set()
         for anchor in anchors:
             try:
                 href = (anchor.get_attribute("href") or "").strip()
@@ -386,11 +400,21 @@ def _wait_for_links_in_container(
                 continue
             if anchor_id:
                 seen_ids.add(anchor_id)
+            if href in seen_hrefs:
+                continue
+            seen_hrefs.add(href)
             filtered.append(anchor)
+        if filtered and header_xpath_selected:
+            logging.debug(
+                "Header-relative anchor detection succeeded for section '%s' using XPath: %s",
+                section_title,
+                header_xpath_selected,
+            )
         return filtered if filtered else False
 
+    effective_timeout = max(timeout, 45)
     try:
-        return WebDriverWait(driver, timeout).until(_collect)
+        return WebDriverWait(driver, effective_timeout, poll_frequency=0.3).until(_collect)
     except TimeoutException:
         return []
 
@@ -1491,7 +1515,8 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
                 raise
             else:
                 logging.info("Clicked section header '%s' via strategy '%s'", section_title, strategy)
-                post_click_delay = getattr(config.SETTINGS, "section_expand_post_click_delay", 1.0)
+                configured_delay = getattr(config.SETTINGS, "section_expand_post_click_delay", 0.0)
+                post_click_delay = max(2.0, configured_delay)
                 if post_click_delay > 0:
                     logging.debug(
                         "Post-click stabilization sleep for section '%s' (%.2fs)",
@@ -1499,6 +1524,49 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
                         post_click_delay,
                     )
                     time.sleep(post_click_delay)
+
+                def _visual_expanded(drv: webdriver.Chrome) -> bool:
+                    header_current = _header_supplier(drv)
+                    if not header_current or _is_stale(header_current):
+                        return False
+                    try:
+                        aria_state = (header_current.get_attribute("aria-expanded") or "").strip().lower()
+                        if aria_state in {"true", "1"}:
+                            return True
+                    except StaleElementReferenceException:
+                        return False
+
+                    try:
+                        class_attr = (header_current.get_attribute("class") or "").lower()
+                        if any(flag in class_attr for flag in ("open", "expanded", "active")):
+                            return True
+                    except StaleElementReferenceException:
+                        return False
+
+                    try:
+                        container_candidate = drv.execute_script(
+                            _JS_LOCATE_SECTION_CONTAINER,
+                            header_current,
+                            section_title,
+                        )
+                    except Exception:
+                        container_candidate = None
+
+                    if not container_candidate:
+                        return False
+
+                    try:
+                        return bool(container_candidate) and container_candidate.is_displayed()
+                    except StaleElementReferenceException:
+                        return False
+
+                try:
+                    WebDriverWait(driver, 6, poll_frequency=0.2).until(_visual_expanded)
+                except TimeoutException:
+                    logging.debug(
+                        "Visual expansion confirmation timed out for section '%s'",
+                        section_title,
+                    )
 
         _wait_for_aria_expansion(driver, _header_supplier, timeout=6)
 
