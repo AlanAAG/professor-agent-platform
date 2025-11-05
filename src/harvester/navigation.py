@@ -58,6 +58,8 @@ _RESOURCE_LINK_SELECTORS: List[str] = [
 
 _RESOURCE_LINK_SELECTOR_UNION = ", ".join(dict.fromkeys(_RESOURCE_LINK_SELECTORS))
 
+_FILE_BOX_SELECTOR = "div.fileBox"
+
 
 _JS_LOCATE_SECTION_CONTAINER = """
 const header = arguments[0];
@@ -295,40 +297,9 @@ def _wait_for_links_in_container(
     header_xpath_hint: Optional[str],
 ) -> List[WebElement]:
     last_container = initial_container
-    normalized_title = section_title.strip()
-
-    header_relative_xpaths: List[str] = []
-
-    def _paths_from_header(base_xpath: str) -> List[str]:
-        return [
-            f"{base_xpath}/ancestor::*[self::div or self::section][1]/following-sibling::*[self::div or self::section][.//a[@href]][1]//a[@href]",
-            f"{base_xpath}/ancestor::*[self::div or self::section][1]//a[@href]",
-            f"{base_xpath}/following::*[self::div or self::section][.//a[@href]][1]//a[@href]",
-            f"{base_xpath}/ancestor::div[1]//a[@href]",
-            f"{base_xpath}/ancestor::div[2]//a[@href]",
-            f"{base_xpath}/ancestor::div[3]//a[@href]",
-            f"{base_xpath}/ancestor::div[4]//a[@href]",
-            f"{base_xpath}/ancestor::section[1]//a[@href]",
-        ]
-
-    if normalized_title:
-        primary_header_xpath = "//p[normalize-space(text())='" + normalized_title + "']"
-        header_relative_xpaths.extend(_paths_from_header(primary_header_xpath))
-
-        alternate_header_xpaths = [
-            "//h3[normalize-space(text())='" + normalized_title + "']",
-            "//h4[normalize-space(text())='" + normalized_title + "']",
-            "//span[normalize-space(text())='" + normalized_title + "']",
-        ]
-        for alt_xpath in alternate_header_xpaths:
-            header_relative_xpaths.extend(_paths_from_header(alt_xpath))
-
     if header_xpath_hint:
-        header_relative_xpaths.append(
-            "(" + header_xpath_hint + ")/following-sibling::*[self::div or self::section]//a[@href]"
-        )
-
-    header_relative_xpaths = [xpath for xpath in dict.fromkeys(header_relative_xpaths) if xpath]
+        # header_xpath_hint preserved for API compatibility; ignored by class-driven detection path.
+        pass
 
     def _locate_container(drv: webdriver.Chrome) -> Optional[WebElement]:
         nonlocal last_container
@@ -341,44 +312,35 @@ def _wait_for_links_in_container(
                 return refreshed
         return last_container
 
-    def _collect(drv: webdriver.Chrome):
-        container = _locate_container(drv)
-        anchors: List[WebElement] = []
-        header_xpath_selected: Optional[str] = None
+    def _find_resource_links(scope: Optional[Any]) -> List[WebElement]:
+        if scope is None:
+            return []
+        try:
+            return scope.find_elements(By.CSS_SELECTOR, _RESOURCE_LINK_SELECTOR_UNION)
+        except StaleElementReferenceException:
+            return []
+        except Exception as exc:
+            logging.debug("Resource link lookup failed: %s", exc)
+            return []
 
-        for candidate_xpath in header_relative_xpaths:
-            try:
-                anchors = drv.find_elements(By.XPATH, candidate_xpath)
-            except StaleElementReferenceException:
-                anchors = []
-            except Exception:
-                anchors = []
-            if anchors:
-                header_xpath_selected = candidate_xpath
-                break
-
-        if header_xpath_selected and (not container or _is_stale(container)):
-            container = _locate_container(drv)
-
-        if not anchors and container and not _is_stale(container):
-            try:
-                anchors = container.find_elements(By.XPATH, ".//a[@href]")
-            except StaleElementReferenceException:
-                return False
-            except Exception:
-                anchors = []
-
-        if not anchors:
+    def _has_file_box(scope: Optional[Any]) -> bool:
+        if scope is None:
+            return False
+        try:
+            return bool(scope.find_elements(By.CSS_SELECTOR, _FILE_BOX_SELECTOR))
+        except StaleElementReferenceException:
+            return False
+        except Exception:
             return False
 
-        def _belongs_to_container(anchor: WebElement) -> bool:
-            if not container or _is_stale(container):
-                return True
-            try:
-                # Guard against false positives from broader document searches.
-                return bool(drv.execute_script("return arguments[0].contains(arguments[1]);", container, anchor))
-            except Exception:
-                return True
+    def _collect(drv: webdriver.Chrome):
+        container = _locate_container(drv)
+        anchors: List[WebElement] = _find_resource_links(container)
+        search_scope = "container"
+
+        if not anchors:
+            anchors = _find_resource_links(drv)
+            search_scope = "document"
 
         filtered: List[WebElement] = []
         seen_ids: set[str] = set()
@@ -388,35 +350,59 @@ def _wait_for_links_in_container(
                 href = (anchor.get_attribute("href") or "").strip()
             except StaleElementReferenceException:
                 continue
-            if not href:
+            except Exception:
                 continue
-            if not _belongs_to_container(anchor):
+            if not href:
                 continue
             lower_href = href.lower()
             if lower_href.startswith("javascript:") or lower_href == "#":
                 continue
             anchor_id = getattr(anchor, "id", None)
-            if anchor_id and anchor_id in seen_ids:
-                continue
             if anchor_id:
+                if anchor_id in seen_ids:
+                    continue
                 seen_ids.add(anchor_id)
             if href in seen_hrefs:
                 continue
             seen_hrefs.add(href)
             filtered.append(anchor)
-        if filtered and header_xpath_selected:
+
+        if filtered:
             logging.debug(
-                "Header-relative anchor detection succeeded for section '%s' using XPath: %s",
+                "Resource link detection succeeded for section '%s' using %s scope (count=%d)",
                 section_title,
-                header_xpath_selected,
+                search_scope,
+                len(filtered),
             )
-        return filtered if filtered else False
+            return {
+                "anchors": filtered,
+            }
+
+        file_box_present = _has_file_box(container)
+        if not file_box_present:
+            file_box_present = _has_file_box(drv)
+
+        if file_box_present:
+            logging.debug(
+                "Resource content marker detected (fileBox) for section '%s' with no anchors.",
+                section_title,
+            )
+            return {
+                "anchors": [],
+            }
+
+        return False
 
     effective_timeout = max(timeout, 45)
     try:
-        return WebDriverWait(driver, effective_timeout, poll_frequency=0.3).until(_collect)
+        result = WebDriverWait(driver, effective_timeout, poll_frequency=0.3).until(_collect)
     except TimeoutException:
         return []
+    if isinstance(result, dict):
+        return result.get("anchors", [])
+    if isinstance(result, list):
+        return result
+    return []
 
 
 # --- Driver Management and Session Persistence ---
