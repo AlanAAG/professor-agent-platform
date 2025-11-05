@@ -48,17 +48,65 @@ def reset_course_tracking():
     _COURSE_LINKS_SEEN_CACHE.clear()
 
 
-_RESOURCE_LINK_SELECTORS: List[str] = [
-    "[data-testid*='resource'] a[href]",
-    "[data-section*='resource'] a[href]",
-    "div.fileBox a[href]",
-    "div.fileContentCol a[href]",
-    "a[href]",
-]
+def _xpath_literal(value: str) -> str:
+    """Safely embed string literals inside XPath expressions."""
 
-_RESOURCE_LINK_SELECTOR_UNION = ", ".join(dict.fromkeys(_RESOURCE_LINK_SELECTORS))
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
 
-_FILE_BOX_SELECTOR = "div.fileBox"
+    parts = value.split("'")
+    concat_parts: List[str] = []
+    for idx, part in enumerate(parts):
+        if part:
+            concat_parts.append(f"'{part}'")
+        if idx != len(parts) - 1:
+            concat_parts.append("\"'\"")
+    return "concat(" + ", ".join(concat_parts) + ")"
+
+
+def _build_section_content_xpath(section_title: str) -> str:
+    normalized = section_title.strip()
+    if not normalized:
+        return "/*[false()]"
+
+    literal = _xpath_literal(normalized)
+    return (
+        "//p[normalize-space(text())="
+        + literal
+        + "]"
+        "/ancestor::div[contains(@class, 'leftHeader')][1]"
+        "/ancestor::div[contains(@class, 'uOjJq')][1]"
+        "/following-sibling::div[1]"
+        "[.//div[contains(@class, 'fileBox')]]"
+    )
+
+
+_FILE_BOX_RELATIVE_XPATH = ".//div[contains(@class, 'fileBox')]"
+_FILE_BOX_LINK_RELATIVE_XPATH = _FILE_BOX_RELATIVE_XPATH + "//a[@href]"
+
+
+def _find_section_content_container(driver: webdriver.Chrome, section_title: str) -> Optional[WebElement]:
+    xpath = _build_section_content_xpath(section_title)
+    try:
+        candidates = driver.find_elements(By.XPATH, xpath)
+    except StaleElementReferenceException:
+        return None
+    except Exception as exc:
+        logging.debug("Section container lookup failed for '%s': %s", section_title, exc)
+        return None
+
+    for candidate in candidates:
+        try:
+            if candidate.is_displayed():
+                return candidate
+        except StaleElementReferenceException:
+            continue
+        except Exception:
+            continue
+
+    return candidates[0] if candidates else None
 
 
 _JS_LOCATE_SECTION_CONTAINER = """
@@ -296,51 +344,24 @@ def _wait_for_links_in_container(
     section_title: str,
     header_xpath_hint: Optional[str],
 ) -> List[WebElement]:
-    last_container = initial_container
-    if header_xpath_hint:
-        # header_xpath_hint preserved for API compatibility; ignored by class-driven detection path.
-        pass
+    _ = (container_supplier, initial_container, header_xpath_hint)
 
-    def _locate_container(drv: webdriver.Chrome) -> Optional[WebElement]:
-        nonlocal last_container
-        if last_container and not _is_stale(last_container) and last_container.is_displayed():
-            return last_container
-        if container_supplier:
-            refreshed = container_supplier(drv)
-            if refreshed is not None:
-                last_container = refreshed
-                return refreshed
-        return last_container
-
-    def _find_resource_links(scope: Optional[Any]) -> List[WebElement]:
-        if scope is None:
+    def _collect(drv: webdriver.Chrome):
+        container = _find_section_content_container(drv, section_title)
+        if container is None:
             return []
+
         try:
-            return scope.find_elements(By.CSS_SELECTOR, _RESOURCE_LINK_SELECTOR_UNION)
+            anchors = container.find_elements(By.XPATH, _FILE_BOX_LINK_RELATIVE_XPATH)
         except StaleElementReferenceException:
             return []
         except Exception as exc:
-            logging.debug("Resource link lookup failed: %s", exc)
+            logging.debug(
+                "Scoped resource link lookup failed for section '%s': %s",
+                section_title,
+                exc,
+            )
             return []
-
-    def _has_file_box(scope: Optional[Any]) -> bool:
-        if scope is None:
-            return False
-        try:
-            return bool(scope.find_elements(By.CSS_SELECTOR, _FILE_BOX_SELECTOR))
-        except StaleElementReferenceException:
-            return False
-        except Exception:
-            return False
-
-    def _collect(drv: webdriver.Chrome):
-        container = _locate_container(drv)
-        anchors: List[WebElement] = _find_resource_links(container)
-        search_scope = "container"
-
-        if not anchors:
-            anchors = _find_resource_links(drv)
-            search_scope = "document"
 
         filtered: List[WebElement] = []
         seen_ids: set[str] = set()
@@ -369,22 +390,22 @@ def _wait_for_links_in_container(
 
         if filtered:
             logging.debug(
-                "Resource link detection succeeded for section '%s' using %s scope (count=%d)",
+                "Scoped resource link detection succeeded for section '%s' (count=%d)",
                 section_title,
-                search_scope,
                 len(filtered),
             )
             return {
                 "anchors": filtered,
             }
 
-        file_box_present = _has_file_box(container)
-        if not file_box_present:
-            file_box_present = _has_file_box(drv)
+        try:
+            file_boxes = container.find_elements(By.XPATH, _FILE_BOX_RELATIVE_XPATH)
+        except (StaleElementReferenceException, Exception):
+            file_boxes = []
 
-        if file_box_present:
+        if file_boxes:
             logging.debug(
-                "Resource content marker detected (fileBox) for section '%s' with no anchors.",
+                "Scoped resource content marker detected (fileBox) for section '%s' with no anchors.",
                 section_title,
             )
             return {
