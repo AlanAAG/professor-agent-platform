@@ -21,22 +21,19 @@ AUTH_STATE_FILE = "data/auth_state.json"
 # --- Login Page Selectors (Selenium) ---
 # Prioritized selector lists to support resilient fallbacks.
 USERNAME_SELECTORS = [
-    (By.CSS_SELECTOR, 'input[name="officialEmail"]'),
-    (By.ID, "officialEmail"),
-    (By.NAME, "officialEmail"),
+    (By.XPATH, "//input[@placeholder='Enter Your Email ID']"),
+    (By.XPATH, "//input[@name='officialEmail']"),
 ]
 
 PASSWORD_SELECTORS = [
-    (By.CSS_SELECTOR, 'input[name="password"]'),
-    (By.ID, "password"),
-    (By.NAME, "password"),
+    (By.XPATH, "//input[@placeholder='Enter Your Password']"),
+    (By.XPATH, "//input[@name='password']"),
 ]
 
 LOGIN_BUTTON_SELECTORS = [
-    (By.ID, "gtmLoginStd"),
-    (By.CSS_SELECTOR, "#gtmLoginStd"),
-    (By.CSS_SELECTOR, "button[data-testid='login-button']"),
-    (By.XPATH, "//button[contains(normalize-space(text()), 'Log In') or contains(normalize-space(text()), 'Sign In')]")
+    (By.XPATH, "//button[normalize-space(.)='Login']"),
+    (By.XPATH, "//button[normalize-space(.)='Sign In']"),
+    (By.XPATH, "//button[@type='submit']"),
 ]
 
 # A generic indicator that we are not on the login page anymore
@@ -44,37 +41,22 @@ DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
 # Group header: div.domainHeader containing p.title == {group_name}
-GROUP_HEADER_XPATH_TEMPLATE = (
-    "//div[contains(concat(' ', normalize-space(@class), ' '), ' domainHeader ')]"
-    "[.//p[contains(concat(' ', normalize-space(@class), ' '), ' title ') and normalize-space(text())='{group_name}']]"
-)
+GROUP_HEADER_XPATH_TEMPLATE = "//p[normalize-space(.)='{group_name}']/ancestor::div[contains(@class, 'domainHeader')][1]"
 
-# Course link: anchor whose href contains courseCode={course_code}
-COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}') ]"
+# Course link: anchor whose visible identifier matches the course code within a stable container
+COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::div[contains(@class, 'dQvmsI')][1]"
 
 # --- Course Details Page (Resources Tab Navigation) ---
 # Resources tab header: parent div containing the Resources label
-RESOURCES_TAB_XPATH = "//div[./p[normalize-space(text())='Resources']]"
+RESOURCES_TAB_XPATH = "//h4[normalize-space(.)='Resources']/ancestor::div[1]"
+
+RESOURCES_TAB_SELECTORS = [
+    (By.XPATH, "//h4[normalize-space(.)='Resources']/ancestor::div[1]"),
+    (By.XPATH, "//*[normalize-space(.)='Resources' and (@role='tab' or @role='button')]")
+]
 
 # Section headers inside resources
-SECTION_HEADER_XPATH_TPL = (
-    "//*[self::div or self::section or self::button]"
-    "[("
-    ".//p[contains(concat(' ', normalize-space(@class), ' '), ' name ')"
-    "  and normalize-space(text())='{section_title}']"
-    " or .//span[normalize-space(text())='{section_title}']"
-    " or .//h3[normalize-space(text())='{section_title}']"
-    " or .//h4[normalize-space(text())='{section_title}']"
-    " or normalize-space(text())='{section_title}'"
-    ")]"
-    "[("
-    " contains(@role,'button')"
-    " or @aria-controls"
-    " or .//*[@aria-controls]"
-    " or contains(concat(' ', normalize-space(@class), ' '), ' header ')"
-    " or contains(concat(' ', normalize-space(@class), ' '), ' accordion ')"
-    ")]"
-)
+SECTION_HEADER_XPATH_TPL = "//p[normalize-space(.)='{section_title}']"
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"
 IN_CLASS_SECTION_TITLE = "In Class Materials"

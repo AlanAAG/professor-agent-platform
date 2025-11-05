@@ -1378,8 +1378,11 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
         "translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='resources'"
     )
 
-    locator_candidates: List[Tuple[str, str]] = [
-        (By.XPATH, config.RESOURCES_TAB_XPATH),
+    primary_selectors: List[Tuple[str, str]] = list(getattr(config, "RESOURCES_TAB_SELECTORS", []))
+    if not primary_selectors:
+        primary_selectors.append((By.XPATH, config.RESOURCES_TAB_XPATH))
+
+    locator_candidates: List[Tuple[str, str]] = primary_selectors + [
         (By.CSS_SELECTOR, "[data-testid='resources-tab']"),
         (By.CSS_SELECTOR, "[data-section='resources']"),
         (By.XPATH, f"//button[{normalized_resources_xpath}]"),
