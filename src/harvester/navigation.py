@@ -1773,12 +1773,21 @@ def _locate_section_header_robust(
     primary_xpath = config.SECTION_HEADER_XPATH_TPL.format(section_title=section_title)
     try:
         locator = (By.XPATH, primary_xpath)
-        header = safe_find(driver, locator, timeout=timeout)
-        WebDriverWait(driver, timeout).until(EC.visibility_of(header))
-        # Ensure clickable
-        WebDriverWait(driver, timeout).until(lambda d: header.is_displayed() and header.is_enabled())
-        logging.debug("Section header located via primary XPath: %s", primary_xpath)
-        return header, primary_xpath, "primary"
+        # Use a more lenient wait, just for presence.
+        wait = WebDriverWait(
+            driver,
+            timeout,
+            ignored_exceptions=(StaleElementReferenceException,),
+        )
+        header = wait.until(EC.presence_of_element_located(locator))
+
+        # Ensure it's not stale and is at least displayed
+        if header and header.is_displayed():
+            logging.debug("Section header located via primary XPath: %s", primary_xpath)
+            return header, primary_xpath, "primary"
+        else:
+            # If not displayed, force it to fail to trigger the fallbacks
+            raise TimeoutException("Header found but not displayed.")
     except (TimeoutException, NoSuchElementException) as e:
         logging.info("Primary header locator failed for '%s': %s", section_title, e)
 

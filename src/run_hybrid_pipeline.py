@@ -458,7 +458,10 @@ def main_pipeline(mode="daily"):
                         navigation.find_and_click_course_link(driver, course_code, group_name)
                         
                         if navigation.navigate_to_resources_section(driver):
-                            
+                            navigation._take_progress_screenshot(
+                                driver, f"03b_on_resources_page_{course_code}"
+                            )
+
                             sections = [
                                 ("pre_read", config.PRE_READ_SECTION_TITLE),
                                 ("in_class", config.IN_CLASS_SECTION_TITLE),
