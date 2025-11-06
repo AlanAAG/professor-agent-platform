@@ -177,7 +177,7 @@ def run_navigation_test() -> None:
                 navigation.navigate_to_resources_section(driver)  # Re-click Resources tab
 
                 try:
-                    container_xpath, items = navigation.expand_section_and_get_items(
+                    _container_descriptor, items, header_el = navigation.expand_section_and_get_items(
                         driver,
                         section_title,
                     )

@@ -347,8 +347,18 @@ def _wait_for_links_in_container(
     _ = (container_supplier, initial_container, header_xpath_hint)
 
     def _collect(drv: webdriver.Chrome):
-        container = _find_section_content_container(drv, section_title)
+        container: Optional[WebElement] = None
+
+        if container_supplier is not None:
+            try:
+                container = container_supplier(drv)
+            except Exception:
+                container = None
+
         if container is None:
+            container = initial_container
+
+        if container is None or _is_stale(container):
             return []
 
         try:
@@ -1558,7 +1568,10 @@ def navigate_to_resources_section(driver: webdriver.Chrome) -> bool:
     return resilient_session_action(driver, _navigate_to_resources_section_impl)
 
 
-def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
+def _expand_section_and_get_items_impl(
+    driver: webdriver.Chrome,
+    section_title: str,
+) -> Tuple[str, List[WebElement], Optional[WebElement]]:
 
     wait_timeout = max(10, min(25, config.SETTINGS.wait_timeout))
 
@@ -1589,7 +1602,7 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
         fresh_header = _header_supplier(driver)
         if not fresh_header:
             logging.info("Header supplier returned None while expanding '%s'", section_title)
-            return "", []
+            return "", [], None
 
         _scroll_into_view_center(driver, fresh_header)
 
@@ -1677,13 +1690,15 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
             timeout=wait_timeout // 2,
         )
 
+        header_for_return = _header_supplier(driver)
+
         if not container_el:
             logging.info(
                 "Unable to resolve container for section '%s' (strategy=%s)",
                 section_title,
                 container_strategy,
             )
-            return container_descriptor, []
+            return container_descriptor, [], header_for_return
 
         anchors = _wait_for_links_in_container(
             driver,
@@ -1701,7 +1716,7 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
                 container_strategy,
                 wait_timeout,
             )
-            return container_descriptor, []
+            return container_descriptor, [], header_for_return
 
         logging.info(
             "Extracted %d anchor(s) for section '%s' using container strategy '%s'",
@@ -1710,16 +1725,19 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
             container_strategy,
         )
         _take_progress_screenshot(driver, f"04_expanded_section_{section_title}")
-        return container_descriptor, anchors
+        return container_descriptor, anchors, header_for_return
 
     except TimeoutException:
         logging.info("Section '%s' contains no items or timed out during expansion.", section_title)
-        return "", []
+        return "", [], None
     except Exception as e:
         logging.error("Error expanding section '%s': %s", section_title, e)
         raise
 
-def expand_section_and_get_items(driver: webdriver.Chrome, section_title: str) -> Tuple[str, List[WebElement]]:
+def expand_section_and_get_items(
+    driver: webdriver.Chrome,
+    section_title: str,
+) -> Tuple[str, List[WebElement], Optional[WebElement]]:
     """
     Expand a resource section and return anchor elements discovered within its container.
 
