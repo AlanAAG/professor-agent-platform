@@ -696,6 +696,22 @@ def _take_error_screenshot(driver: webdriver.Chrome, filename_prefix: str):
         logging.error(f"Failed to capture error screenshot: {e}")
 
 
+def _take_progress_screenshot(driver: webdriver.Chrome, filename_prefix: str):
+    """Saves a progress screenshot to the progress logs directory with a timestamp."""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{filename_prefix}_{timestamp}.png"
+        progress_dir = os.path.join("logs", "progress_screenshots")
+        filepath = os.path.join(progress_dir, filename)
+
+        os.makedirs(progress_dir, exist_ok=True)
+
+        driver.save_screenshot(filepath)
+        logging.info(f"Progress screenshot saved to {filepath}")
+    except Exception as e:
+        logging.warning(f"Failed to capture progress screenshot: {e}")
+
+
 def is_session_valid(driver: webdriver.Chrome) -> bool:
     """Checks if the current session state is likely still logged in."""
     try:
@@ -793,6 +809,7 @@ def perform_login(driver: webdriver.Chrome) -> bool:
             )
 
             logging.info(f"Login successful after {attempt} attempt(s).")
+            _take_progress_screenshot(driver, "01_login_success")
             _save_session_state(driver)
             return True
 
@@ -1362,6 +1379,7 @@ def _find_and_click_course_link_impl(
         )
         _COURSE_LINKS_SEEN_CACHE.add(course_code)
         logging.info("Successfully navigated to course: %s", course_code)
+        _take_progress_screenshot(driver, f"02_nav_to_course_{course_code}")
 
     except TimeoutException as e:
         logging.warning(
@@ -1463,6 +1481,7 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
                 lambda drv, supplier=tab_getter: _resources_loaded(drv, supplier)
             )
             logging.info("Navigated to Resources section via locator (%s, %s)", by, value)
+            _take_progress_screenshot(driver, "03_resources_tab_clicked")
             return True
         except Exception as exc:
             html_content = driver.page_source
@@ -1705,6 +1724,7 @@ def _expand_section_and_get_items_impl(driver: webdriver.Chrome, section_title: 
             section_title,
             container_strategy,
         )
+        _take_progress_screenshot(driver, f"04_expanded_section_{section_title}")
         return container_descriptor, anchors
 
     except TimeoutException:
