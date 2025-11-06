@@ -9,6 +9,10 @@ import time
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 import sentry_sdk
 from sentry_sdk.integrations.logging import LoggingIntegration
 
@@ -17,7 +21,6 @@ from src.harvester import navigation, scraping, config
 from src.harvester.scraping import classify_url
 from src.refinery import cleaning, embedding, pdf_processing
 from src.refinery.recording_processor import extract_transcript
-from selenium.webdriver.common.by import By
 from src.shared import utils
 
 
@@ -457,73 +460,97 @@ def main_pipeline(mode="daily"):
                         # Navigation will check internal cache and skip if already navigated in this run.
                         navigation.find_and_click_course_link(driver, course_code, group_name)
                         
-                        if navigation.navigate_to_resources_section(driver):
-                            navigation._take_progress_screenshot(
-                                driver, f"03b_on_resources_page_{course_code}"
+                        if not navigation.navigate_to_resources_section(driver):
+                            logging.warning(
+                                "Could not navigate to resources section for %s. Skipping.",
+                                course_code,
                             )
+                            continue
 
-                            sections = [
-                                ("pre_read", config.PRE_READ_SECTION_TITLE),
-                                ("in_class", config.IN_CLASS_SECTION_TITLE),
-                                ("post_class", config.POST_CLASS_SECTION_TITLE),
-                                ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
-                            ]
-                            
-                            for section_tag, title_text in sections:
-                                logging.info(f"--- Section: {section_tag} ---")
+                        navigation._take_progress_screenshot(
+                            driver, f"03b_on_resources_page_{course_code}"
+                        )
+
+                        try:
+                            logging.info("Waiting for resource sections to load...")
+                            first_section_xpath = config.SECTION_HEADER_XPATH_TPL.format(
+                                section_title="Pre-Read Materials"
+                            )
+                            WebDriverWait(driver, 10).until(
+                                EC.visibility_of_element_located((By.XPATH, first_section_xpath))
+                            )
+                            logging.info("Resource sections loaded successfully.")
+                        except TimeoutException:
+                            logging.warning(
+                                "Resource sections did not load after 10 seconds. Page might be empty."
+                            )
+                            navigation._take_progress_screenshot(
+                                driver, f"03c_fail_to_load_sections_{course_code}"
+                            )
+                            continue
+
+                        sections = [
+                            ("pre_read", config.PRE_READ_SECTION_TITLE),
+                            ("in_class", config.IN_CLASS_SECTION_TITLE),
+                            ("post_class", config.POST_CLASS_SECTION_TITLE),
+                            ("sessions", config.SESSION_RECORDINGS_SECTION_TITLE),
+                        ]
+
+                        for section_tag, title_text in sections:
+                            logging.info(f"--- Section: {section_tag} ---")
+                            try:
+                                container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
+                                # Telemetry: count items found at navigation stage
                                 try:
-                                    container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
-                                    # Telemetry: count items found at navigation stage
+                                    stats["resources_found"] += len(items)
+                                except Exception:
+                                    pass
+                                logging.info(f"   Found {len(items)} items")
+                                
+                                # --- START IMMEDIATE RESOURCE PROCESSING ---
+                                for idx in range(len(items)):
+                                    url, title, date_text = None, None, None
                                     try:
-                                        stats["resources_found"] += len(items)
-                                    except Exception:
-                                        pass
-                                    logging.info(f"   Found {len(items)} items")
-                                    
-                                    # --- START IMMEDIATE RESOURCE PROCESSING ---
-                                    for idx in range(len(items)):
-                                        url, title, date_text = None, None, None
-                                        try:
-                                            # Resource Scraping Logic (Retained from existing code)
-                                            # Re-find current item by index to avoid staleness
-                                            item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                                            
-                                            # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
-                                            # Robustly locate the resource link for all section layouts
-                                            link_el = None
-                                            # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
-                                            link_locators = [
-                                                (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
-                                                (By.CSS_SELECTOR, "a[href]"),
-                                                (By.XPATH, ".//ancestor::a[1]"),
-                                            ]
-                                            for by, selector in link_locators:
-                                                try:
-                                                    link_el = item.find_element(by, selector)
-                                                    if link_el is not None:
-                                                        break
-                                                except Exception:
-                                                    continue
-                                            
-                                            if link_el is not None:
-                                                href = link_el.get_attribute("href")
-                                                if href and not href.startswith("http"):
-                                                    href = config.BASE_URL + href.lstrip('/')
-                                                url = href
-                                                try:
-                                                    title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                                    title = title_el.text
-                                                except Exception:
-                                                    title = url or ""
-                                                try:
-                                                    date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                                    date_text = date_el.text
-                                                except Exception:
-                                                    date_text = None
-                                            
-                                            if not url or not title:
-                                                logging.info("      Skipping item (missing URL or Title)")
+                                        # Resource Scraping Logic (Retained from existing code)
+                                        # Re-find current item by index to avoid staleness
+                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
+                                        
+                                        # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
+                                        # Robustly locate the resource link for all section layouts
+                                        link_el = None
+                                        # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
+                                        link_locators = [
+                                            (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
+                                            (By.CSS_SELECTOR, "a[href]"),
+                                            (By.XPATH, ".//ancestor::a[1]"),
+                                        ]
+                                        for by, selector in link_locators:
+                                            try:
+                                                link_el = item.find_element(by, selector)
+                                                if link_el is not None:
+                                                    break
+                                            except Exception:
                                                 continue
+                                        
+                                        if link_el is not None:
+                                            href = link_el.get_attribute("href")
+                                            if href and not href.startswith("http"):
+                                                href = config.BASE_URL + href.lstrip('/')
+                                            url = href
+                                            try:
+                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                                title = title_el.text
+                                            except Exception:
+                                                title = url or ""
+                                            try:
+                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                                date_text = date_el.text
+                                            except Exception:
+                                                date_text = None
+                                        
+                                        if not url or not title:
+                                            logging.info("      Skipping item (missing URL or Title)")
+                                            continue
                                                 
                                             if "youtube.com" in url or "youtu.be" in url:
                                                 logging.info(f"      Skipping YouTube video: {title}")
