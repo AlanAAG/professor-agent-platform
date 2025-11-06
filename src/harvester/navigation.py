@@ -1465,6 +1465,21 @@ def _navigate_to_resources_section_impl(driver: webdriver.Chrome) -> bool:
             logging.info("Navigated to Resources section via locator (%s, %s)", by, value)
             return True
         except Exception as exc:
+            html_content = driver.page_source
+            debug_filepath = "logs/debug_resource_page.html"
+            try:
+                os.makedirs(os.path.dirname(debug_filepath), exist_ok=True)
+            except Exception as mkdir_err:
+                logging.debug("Failed to create directory for debug page source: %s", mkdir_err)
+            try:
+                with open(debug_filepath, "w", encoding="utf-8") as debug_file:
+                    debug_file.write(html_content)
+                logging.critical(
+                    "DEBUG: Page source at time of failure saved to %s",
+                    debug_filepath,
+                )
+            except Exception as file_err:
+                logging.error("Failed to write debug page source to %s: %s", debug_filepath, file_err)
             last_error = exc
             logging.debug("Resources tab activation failed for locator (%s, %s): %s", by, value, exc)
             continue
