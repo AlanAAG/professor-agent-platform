@@ -471,24 +471,6 @@ def main_pipeline(mode="daily"):
                             driver, f"03b_on_resources_page_{course_code}"
                         )
 
-                        try:
-                            logging.info("Waiting for resource sections to load...")
-                            first_section_xpath = config.SECTION_HEADER_XPATH_TPL.format(
-                                section_title="Pre-Read Materials"
-                            )
-                            WebDriverWait(driver, 10).until(
-                                EC.visibility_of_element_located((By.XPATH, first_section_xpath))
-                            )
-                            logging.info("Resource sections loaded successfully.")
-                        except TimeoutException:
-                            logging.warning(
-                                "Resource sections did not load after 10 seconds. Page might be empty."
-                            )
-                            navigation._take_progress_screenshot(
-                                driver, f"03c_fail_to_load_sections_{course_code}"
-                            )
-                            continue
-
                         sections = [
                             ("pre_read", config.PRE_READ_SECTION_TITLE),
                             ("in_class", config.IN_CLASS_SECTION_TITLE),
@@ -499,142 +481,209 @@ def main_pipeline(mode="daily"):
                         for section_tag, title_text in sections:
                             logging.info(f"--- Section: {section_tag} ---")
                             try:
-                                container_xpath, items = navigation.expand_section_and_get_items(driver, title_text)
-                                # Telemetry: count items found at navigation stage
-                                try:
-                                    stats["resources_found"] += len(items)
-                                except Exception:
-                                    pass
-                                logging.info(f"   Found {len(items)} items")
-                                
-                                # --- START IMMEDIATE RESOURCE PROCESSING ---
-                                for idx in range(len(items)):
-                                    url, title, date_text = None, None, None
-                                    try:
-                                        # Resource Scraping Logic (Retained from existing code)
-                                        # Re-find current item by index to avoid staleness
-                                        item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
+                                container_descriptor, anchor_elements, header_el = navigation.expand_section_and_get_items(
+                                    driver,
+                                    title_text,
+                                )
 
-                                        # Robustly locate the resource link for all section layouts
-                                        link_el = None
-                                        link_locators = [
-                                            (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
-                                            (By.CSS_SELECTOR, "a[href]"),
-                                            (By.XPATH, ".//ancestor::a[1]"),
-                                        ]
-                                        for by, selector in link_locators:
-                                            try:
-                                                link_el = item.find_element(by, selector)
-                                                if link_el is not None:
-                                                    break
-                                            except Exception:
+                                if header_el is None:
+                                    logging.info(
+                                        "   Skipping section '%s' (header not found or not expanded).",
+                                        section_tag,
+                                    )
+                                    continue
+
+                                try:
+                                    # Telemetry: count items found at navigation stage
+                                    try:
+                                        stats["resources_found"] += len(anchor_elements)
+                                    except Exception:
+                                        pass
+                                    logging.info(f"   Found {len(anchor_elements)} items")
+
+                                    container_xpath_for_items = container_descriptor or ""
+                                    if "::" in container_xpath_for_items:
+                                        locator_type, locator_value = container_xpath_for_items.split("::", 1)
+                                        if locator_type.strip().lower() == "xpath":
+                                            container_xpath_for_items = locator_value
+                                        else:
+                                            container_xpath_for_items = ""
+
+                                    file_box_elements: List[Any] = []
+                                    if container_xpath_for_items:
+                                        try:
+                                            file_box_elements = driver.find_elements(
+                                                By.XPATH,
+                                                f"{container_xpath_for_items}//div[contains(@class,'fileBox')]",
+                                            )
+                                        except Exception:
+                                            file_box_elements = []
+
+                                    # --- START IMMEDIATE RESOURCE PROCESSING ---
+                                    for idx, anchor in enumerate(anchor_elements):
+                                        url, title, date_text = None, None, None
+                                        try:
+                                            item = None
+                                            if idx < len(file_box_elements):
+                                                item = file_box_elements[idx]
+
+                                            if item is None:
+                                                try:
+                                                    item = anchor.find_element(
+                                                        By.XPATH,
+                                                        ".//ancestor::div[contains(@class,'fileBox')][1]",
+                                                    )
+                                                except Exception:
+                                                    item = None
+
+                                            if item is None:
+                                                logging.info(
+                                                    "      Skipping item (unable to resolve container element)"
+                                                )
                                                 continue
 
-                                        if link_el is None:
-                                            logging.info("      Skipping item (no link element found)")
-                                            continue
+                                            href = ""
+                                            try:
+                                                href = (anchor.get_attribute("href") or "").strip()
+                                            except Exception:
+                                                href = ""
 
-                                        href = link_el.get_attribute("href")
-                                        if href and not href.startswith("http"):
-                                            href = config.BASE_URL + href.lstrip('/')
-                                        url = href
+                                            link_el = anchor if href else None
+                                            if not href:
+                                                link_locators = [
+                                                    (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
+                                                    (By.CSS_SELECTOR, "a[href]"),
+                                                    (By.XPATH, ".//ancestor::a[1]"),
+                                                ]
+                                                for by, selector in link_locators:
+                                                    try:
+                                                        link_el = item.find_element(by, selector)
+                                                        href = (link_el.get_attribute("href") or "").strip()
+                                                        if href:
+                                                            break
+                                                    except Exception:
+                                                        continue
 
-                                        try:
-                                            title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                            title = title_el.text
-                                        except Exception:
-                                            title = url or ""
+                                            if not href:
+                                                logging.info("      Skipping item (no link element found)")
+                                                continue
 
-                                        try:
-                                            date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                            date_text = date_el.text
-                                        except Exception:
-                                            date_text = None
+                                            if href and not href.startswith("http"):
+                                                href = config.BASE_URL + href.lstrip('/')
+                                            url = href
 
-                                        if not url or not title:
-                                            logging.info("      Skipping item (missing URL or Title)")
-                                            continue
+                                            try:
+                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                                title = title_el.text
+                                            except Exception:
+                                                title = url or ""
 
-                                        if "youtube.com" in url or "youtu.be" in url:
-                                            logging.info(f"      Skipping YouTube video: {title}")
-                                            continue
+                                            try:
+                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                                date_text = date_el.text
+                                            except Exception:
+                                                date_text = None
 
-                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                        should_process = False
+                                            if not url or not title:
+                                                logging.info("      Skipping item (missing URL or Title)")
+                                                continue
 
-                                        # Filtering Logic (Date / Recent Check)
-                                        if parsed_date:
-                                            if parsed_date >= cutoff_date:
-                                                should_process = True
+                                            if "youtube.com" in url or "youtu.be" in url:
+                                                logging.info(f"      Skipping YouTube video: {title}")
+                                                continue
+
+                                            parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                            should_process = False
+
+                                            # Filtering Logic (Date / Recent Check)
+                                            if parsed_date:
+                                                if parsed_date >= cutoff_date:
+                                                    should_process = True
+                                                else:
+                                                    logging.info(
+                                                        f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})"
+                                                    )
                                             else:
-                                                logging.info(
-                                                    f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})"
-                                                )
-                                        else:
-                                            exists_recently = recent_check_cache.get(url)
-                                            if exists_recently is None:
-                                                exists_recently = embedding.check_if_embedded_recently_sync(
-                                                    {"source_url": url}, days=2
-                                                )
-                                            recent_check_cache[url] = exists_recently
-                                            should_process = not exists_recently
+                                                exists_recently = recent_check_cache.get(url)
+                                                if exists_recently is None:
+                                                    exists_recently = embedding.check_if_embedded_recently_sync(
+                                                        {"source_url": url}, days=2
+                                                    )
+                                                recent_check_cache[url] = exists_recently
+                                                should_process = not exists_recently
+                                                if not should_process:
+                                                    logging.info(
+                                                        f"      Skipping undated resource (found in recent DB): {url}"
+                                                    )
+
                                             if not should_process:
-                                                logging.info(
-                                                    f"      Skipping undated resource (found in recent DB): {url}"
+                                                continue
+
+                                            if url in attempted_resource_urls:
+                                                logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                                continue
+
+                                            stats["resources_discovered"] += 1
+
+                                            # Mark URL as attempted to prevent duplicate processing attempts
+                                            attempted_resource_urls.add(url)
+
+                                            # --- PROCESS RESOURCE IMMEDIATELY ---
+                                            logging.info(
+                                                f"      ADDING resource to process queue: {title} (Section: {section_tag})"
+                                            )
+
+                                            try:
+                                                success = process_single_resource(
+                                                    driver,
+                                                    url,
+                                                    title,
+                                                    parsed_date,
+                                                    class_name,
+                                                    section_tag,
+                                                    stats,
+                                                )
+                                                if success:
+                                                    stats["resources_processed"] += 1
+                                                    # Track URL as successfully processed for reporting
+                                                    successfully_processed_urls.add(url)
+                                            except Exception as e:
+                                                logging.error(f"❌ Failed to process {title}: {e}")
+                                                stats["resources_failed"] += 1
+                                                errors.append(
+                                                    {
+                                                        "resource_title": title,
+                                                        "resource_url": url,
+                                                        "class_name": class_name,
+                                                        "error_type": type(e).__name__,
+                                                        "error_message": str(e),
+                                                        "timestamp": datetime.datetime.now().isoformat(),
+                                                    }
                                                 )
 
-                                        if not should_process:
+                                        except Exception as item_err:
+                                            logging.warning(
+                                                f"      Could not process one item in {section_tag}: {item_err}"
+                                            )
                                             continue
 
-                                        if url in attempted_resource_urls:
-                                            logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                            continue
+                                    # --- END IMMEDIATE RESOURCE PROCESSING ---
 
-                                        stats["resources_discovered"] += 1
-
-                                        # Mark URL as attempted to prevent duplicate processing attempts
-                                        attempted_resource_urls.add(url)
-
-                                        # --- PROCESS RESOURCE IMMEDIATELY ---
-                                        logging.info(
-                                            f"      ADDING resource to process queue: {title} (Section: {section_tag})"
+                                finally:
+                                    try:
+                                        logging.info("   Closing section '%s' to restore collapsed state.", section_tag)
+                                        driver.execute_script("arguments[0].click();", header_el)
+                                        time.sleep(1.0)
+                                        navigation._take_progress_screenshot(
+                                            driver,
+                                            f"05_closed_section_{section_tag}_{course_code}",
                                         )
-
-                                        try:
-                                            success = process_single_resource(
-                                                driver,
-                                                url,
-                                                title,
-                                                parsed_date,
-                                                class_name,
-                                                section_tag,
-                                                stats,
-                                            )
-                                            if success:
-                                                stats["resources_processed"] += 1
-                                                # Track URL as successfully processed for reporting
-                                                successfully_processed_urls.add(url)
-                                        except Exception as e:
-                                            logging.error(f"❌ Failed to process {title}: {e}")
-                                            stats["resources_failed"] += 1
-                                            errors.append(
-                                                {
-                                                    "resource_title": title,
-                                                    "resource_url": url,
-                                                    "class_name": class_name,
-                                                    "error_type": type(e).__name__,
-                                                    "error_message": str(e),
-                                                    "timestamp": datetime.datetime.now().isoformat(),
-                                                }
-                                            )
-
-                                    except Exception as item_err:
-                                        logging.warning(
-                                            f"      Could not process one item in {section_tag}: {item_err}"
+                                    except Exception as close_err:
+                                        logging.debug(
+                                            "   Failed to close section '%s' cleanly: %s",
+                                            section_tag,
+                                            close_err,
                                         )
-                                        continue
-
-                                # --- END IMMEDIATE RESOURCE PROCESSING ---
 
                             except Exception as section_err:
                                 logging.warning(f"   Section '{section_tag}' failed: {section_err}")
