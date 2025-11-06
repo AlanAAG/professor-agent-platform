@@ -56,23 +56,15 @@ COURSE_CARD_FALLBACK_XPATH_TEMPLATE = (
 RESOURCES_TAB_SELECTORS = [
     (
         By.XPATH,
-        "//div[contains(@class, 'center-head-cont') and .//h4[normalize-space(.)='Resources']]",
+        "//div[.//img[contains(@src, 'resources.svg')] and .//p[normalize-space(.)='Resources']]",
     ),
     (
         By.XPATH,
-        "//div[.//img[contains(@src, 'resources.svg')] and .//h4[normalize-space(.)='Resources']]",
+        "//p[normalize-space(.)='Resources']/ancestor::div[contains(@class, 'sc-kMjNwy')][1]",
     ),
     (
         By.XPATH,
-        "//h4[normalize-space(.)='Resources']/ancestor::div[contains(@class, 'center-head-cont')][1]",
-    ),
-    (
-        By.XPATH,
-        "//*[@role='tab' or @role='button'][normalize-space(.)='Resources']",
-    ),
-    (
-        By.XPATH,
-        "//div[contains(concat(' ', normalize-space(@class), ' '), ' flex_tabWrapper ')]//div[.//h4[normalize-space(.)='Resources']][1]",
+        "//p[normalize-space(.)='Resources']/ancestor::li[1]",
     ),
 ]
 
