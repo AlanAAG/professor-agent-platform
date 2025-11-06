@@ -42,13 +42,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
-          # CRITICAL: Install Linux runtime dependencies for Chrome to launch in CI/CD.
-          # These packages are essential for the Chrome binary (installed in Step 4)
-          # to function in a headless Linux container (ubuntu-latest).
-          sudo apt-get update
-          sudo apt-get install -y \
-            xvfb \
-            libnss3 libgbm-dev libasound2 libx11-dev libxext-dev libxrandr-dev libxrender-dev libxi-dev
+            # CRITICAL: Install Linux runtime dependencies for Chrome to launch in CI/CD.
+            # These packages are essential for the Chrome binary (installed in Step 4)
+            # to function in a headless Linux container (ubuntu-latest).
+            sudo apt-get update
+            sudo apt-get install -y \
+              xvfb \
+              libnss3 libgbm-dev libasound2t64 libx11-dev libxext-dev libxrandr-dev libxrender-dev libxi-dev
       
       # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
       - name: Install Google Chrome
