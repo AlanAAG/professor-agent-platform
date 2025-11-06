@@ -1297,7 +1297,7 @@ def _find_and_click_course_link_impl(
                 element = safe_find(
                     driver,
                     locator,
-                    timeout=config.SETTINGS.wait_timeout,
+                    timeout=15,
                     clickable=require_clickable,
                 )
                 if not require_clickable:
