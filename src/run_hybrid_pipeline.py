@@ -514,11 +514,9 @@ def main_pipeline(mode="daily"):
                                         # Resource Scraping Logic (Retained from existing code)
                                         # Re-find current item by index to avoid staleness
                                         item = driver.find_element(By.XPATH, f"{container_xpath}//div[contains(@class,'fileBox')][{idx+1}]")
-                                        
-                                        # Logic to extract url, title, date_text, parsed_date (simplified for brevity, kept as is)
+
                                         # Robustly locate the resource link for all section layouts
                                         link_el = None
-                                        # Try, in order: link inside fileContentCol, any descendant link, then (rare) ancestor link
                                         link_locators = [
                                             (By.CSS_SELECTOR, "div.fileContentCol a[href]"),
                                             (By.CSS_SELECTOR, "a[href]"),
@@ -531,101 +529,116 @@ def main_pipeline(mode="daily"):
                                                     break
                                             except Exception:
                                                 continue
-                                        
-                                        if link_el is not None:
-                                            href = link_el.get_attribute("href")
-                                            if href and not href.startswith("http"):
-                                                href = config.BASE_URL + href.lstrip('/')
-                                            url = href
-                                            try:
-                                                title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
-                                                title = title_el.text
-                                            except Exception:
-                                                title = url or ""
-                                            try:
-                                                date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
-                                                date_text = date_el.text
-                                            except Exception:
-                                                date_text = None
-                                        
+
+                                        if link_el is None:
+                                            logging.info("      Skipping item (no link element found)")
+                                            continue
+
+                                        href = link_el.get_attribute("href")
+                                        if href and not href.startswith("http"):
+                                            href = config.BASE_URL + href.lstrip('/')
+                                        url = href
+
+                                        try:
+                                            title_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_TITLE_CSS)
+                                            title = title_el.text
+                                        except Exception:
+                                            title = url or ""
+
+                                        try:
+                                            date_el = item.find_element(By.CSS_SELECTOR, config.RESOURCE_DATE_CSS)
+                                            date_text = date_el.text
+                                        except Exception:
+                                            date_text = None
+
                                         if not url or not title:
                                             logging.info("      Skipping item (missing URL or Title)")
                                             continue
-                                                
-                                            if "youtube.com" in url or "youtu.be" in url:
-                                                logging.info(f"      Skipping YouTube video: {title}")
-                                                continue
 
-                                            parsed_date = utils.parse_general_date(date_text) if date_text else None
-                                            should_process = False
-                                            
-                                            # Filtering Logic (Date / Recent Check)
-                                            if parsed_date:
-                                                if parsed_date >= cutoff_date:
-                                                    should_process = True
-                                                else:
-                                                    logging.info(f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})")
-                                            else:
-                                                exists_recently = recent_check_cache.get(url)
-                                                if exists_recently is None:
-                                                    exists_recently = embedding.check_if_embedded_recently_sync({"source_url": url}, days=2)
-                                                recent_check_cache[url] = exists_recently
-                                                should_process = not exists_recently
-                                                if not should_process:
-                                                    logging.info(f"      Skipping undated resource (found in recent DB): {url}")
-
-                                            # Deduplication Check (DB and Current Run)
-                                            if should_process:
-                                                # Check against attempted URLs to prevent duplicate processing attempts
-                                                if url in attempted_resource_urls:
-                                                    logging.info(f"      Duplicate URL (this run), skipping: {url}")
-                                                    continue
-                                                
-                                                stats["resources_discovered"] += 1
-                                                
-                                                # Mark URL as attempted to prevent duplicate processing attempts
-                                                attempted_resource_urls.add(url)
-                                                
-                                                # --- PROCESS RESOURCE IMMEDIATELY ---
-                                                logging.info(f"      ADDING resource to process queue: {title} (Section: {section_tag})")
-                                                
-                                                try:
-                                                    success = process_single_resource(
-                                                        driver,
-                                                        url,
-                                                        title,
-                                                        parsed_date,
-                                                        class_name,
-                                                        section_tag,
-                                                        stats,
-                                                    )
-                                                    if success:
-                                                        stats["resources_processed"] += 1
-                                                        # Track URL as successfully processed for reporting
-                                                        successfully_processed_urls.add(url) 
-                                                except Exception as e:
-                                                    logging.error(f"❌ Failed to process {title}: {e}")
-                                                    stats["resources_failed"] += 1
-                                                    errors.append(
-                                                        {
-                                                            "resource_title": title,
-                                                            "resource_url": url,
-                                                            "class_name": class_name,
-                                                            "error_type": type(e).__name__,
-                                                            "error_message": str(e),
-                                                            "timestamp": datetime.datetime.now().isoformat(),
-                                                        }
-                                                    )
-                                        
-                                        except Exception as item_err:
-                                            logging.warning(f"      Could not process one item in {section_tag}: {item_err}")
+                                        if "youtube.com" in url or "youtu.be" in url:
+                                            logging.info(f"      Skipping YouTube video: {title}")
                                             continue
-                                        
-                                    # --- END IMMEDIATE RESOURCE PROCESSING ---
-                                        
-                                except Exception as section_err:
-                                    logging.warning(f"   Section '{section_tag}' failed: {section_err}")
-                                    continue
+
+                                        parsed_date = utils.parse_general_date(date_text) if date_text else None
+                                        should_process = False
+
+                                        # Filtering Logic (Date / Recent Check)
+                                        if parsed_date:
+                                            if parsed_date >= cutoff_date:
+                                                should_process = True
+                                            else:
+                                                logging.info(
+                                                    f"      Skipping old resource (date: {parsed_date.strftime('%Y-%m-%d')})"
+                                                )
+                                        else:
+                                            exists_recently = recent_check_cache.get(url)
+                                            if exists_recently is None:
+                                                exists_recently = embedding.check_if_embedded_recently_sync(
+                                                    {"source_url": url}, days=2
+                                                )
+                                            recent_check_cache[url] = exists_recently
+                                            should_process = not exists_recently
+                                            if not should_process:
+                                                logging.info(
+                                                    f"      Skipping undated resource (found in recent DB): {url}"
+                                                )
+
+                                        if not should_process:
+                                            continue
+
+                                        if url in attempted_resource_urls:
+                                            logging.info(f"      Duplicate URL (this run), skipping: {url}")
+                                            continue
+
+                                        stats["resources_discovered"] += 1
+
+                                        # Mark URL as attempted to prevent duplicate processing attempts
+                                        attempted_resource_urls.add(url)
+
+                                        # --- PROCESS RESOURCE IMMEDIATELY ---
+                                        logging.info(
+                                            f"      ADDING resource to process queue: {title} (Section: {section_tag})"
+                                        )
+
+                                        try:
+                                            success = process_single_resource(
+                                                driver,
+                                                url,
+                                                title,
+                                                parsed_date,
+                                                class_name,
+                                                section_tag,
+                                                stats,
+                                            )
+                                            if success:
+                                                stats["resources_processed"] += 1
+                                                # Track URL as successfully processed for reporting
+                                                successfully_processed_urls.add(url)
+                                        except Exception as e:
+                                            logging.error(f"❌ Failed to process {title}: {e}")
+                                            stats["resources_failed"] += 1
+                                            errors.append(
+                                                {
+                                                    "resource_title": title,
+                                                    "resource_url": url,
+                                                    "class_name": class_name,
+                                                    "error_type": type(e).__name__,
+                                                    "error_message": str(e),
+                                                    "timestamp": datetime.datetime.now().isoformat(),
+                                                }
+                                            )
+
+                                    except Exception as item_err:
+                                        logging.warning(
+                                            f"      Could not process one item in {section_tag}: {item_err}"
+                                        )
+                                        continue
+
+                                # --- END IMMEDIATE RESOURCE PROCESSING ---
+
+                            except Exception as section_err:
+                                logging.warning(f"   Section '{section_tag}' failed: {section_err}")
+                                continue
                             
                             stats["courses_successful"] += 1
                             
