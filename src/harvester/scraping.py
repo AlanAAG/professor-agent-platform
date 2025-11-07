@@ -130,6 +130,11 @@ def _requires_authenticated_session(url: str) -> bool:
 def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> Optional[str]:
     """Scrapes and extracts the main readable text from a general webpage."""
     logging.info(f"   Attempting to scrape HTML content from: {url}")
+    logging.debug(
+        "   scrape_html_content entry driver status: %s (id=%s)",
+        "present" if driver is not None else "missing",
+        getattr(driver, "session_id", "n/a") if driver is not None else "n/a",
+    )
     requires_authenticated_session = _requires_authenticated_session(url)
 
     if requires_authenticated_session and driver is None:
