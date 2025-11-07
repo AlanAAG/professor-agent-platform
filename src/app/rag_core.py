@@ -14,6 +14,12 @@ from langchain_core.messages import HumanMessage, AIMessage # Added message type
 import logging
 from src.shared.utils import cohere_rerank, EMBEDDING_MODEL_NAME, retrieve_rag_documents, _to_langchain_documents
 
+try:  # pragma: no cover - defensive import
+    from src.harvester.config import COURSE_MAP, LEGACY_COURSE_MAP
+except Exception:  # pragma: no cover - fallback when config import fails
+    COURSE_MAP = {}
+    LEGACY_COURSE_MAP = {}
+
 # --- Setup Logging ---
 # Configure logging for better tracking and debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
@@ -122,6 +128,34 @@ SUBJECT_KEYWORDS: Dict[str, List[str]] = {
     ],
     "HowToDecodeGlobalTrendsAndNavigateEconomicTransformations": ["global trend", "economic transformation", "monetary", "blockchain", "cryptocurrency", "systemic risk", "policy", "regulation", "macro"],
 }
+
+
+def _build_display_name_map() -> Dict[str, str]:
+    """Create a mapping from nickname subjects to their full course names."""
+    mapping: Dict[str, str] = {}
+    for code, legacy_meta in LEGACY_COURSE_MAP.items():
+        nickname = (legacy_meta or {}).get("name")
+        if not nickname:
+            continue
+        course_meta = COURSE_MAP.get(code, {})
+        full_name = (
+            course_meta.get("full_name")
+            or course_meta.get("name")
+            or nickname
+        )
+        # Preserve the first encountered mapping to avoid accidental overwrites.
+        mapping.setdefault(nickname, full_name)
+    return mapping
+
+
+COURSE_DISPLAY_NAME_MAP: Dict[str, str] = _build_display_name_map()
+
+
+def get_course_display_name(subject: Optional[str]) -> str:
+    """Return a human-readable course name for a given subject nickname."""
+    if not subject:
+        return ""
+    return COURSE_DISPLAY_NAME_MAP.get(subject, subject)
 
 
 def classify_subject(
@@ -533,9 +567,11 @@ def get_rag_response(
     )
     if redirect_to_other_professor:
         referred_professor = PROFESSOR_PERSONAS[classified_subject].get("professor_name", "the relevant professor")
-        message = (
-            f"That question belongs to the {classified_subject} course. You should ask {referred_professor} for that."
+        course_display_name = get_course_display_name(classified_subject) or classified_subject
+        course_reference = (
+            f"\"{course_display_name}\"" if course_display_name != classified_subject else course_display_name
         )
+        message = f"That question belongs to the {course_reference} course. You should ask {referred_professor} for that."
         if class_hint == "MarketGaps":
             message = _enforce_market_gaps_voice(message)
         return message

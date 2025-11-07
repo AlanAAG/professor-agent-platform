@@ -952,13 +952,17 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 "professor_name",
                 "the relevant professor",
             )
+            course_display_name = rag_core.get_course_display_name(classified_subject) or classified_subject
+            course_reference = (
+                f"\"{course_display_name}\"" if course_display_name != classified_subject else course_display_name
+            )
             logger.info(
                 "CHAT redirect | selected_class=%s target_subject=%s",
                 payload.selectedClass,
                 classified_subject,
             )
             redirect_message = (
-                f"That question belongs to the {classified_subject} course. "
+                f"That question belongs to the {course_reference} course. "
                 f"You should ask {referred_professor} for that."
             )
             if payload.selectedClass == "MarketGaps":
