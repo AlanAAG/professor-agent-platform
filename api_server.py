@@ -935,16 +935,25 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             return_scores=True,
         )
         if isinstance(classification_result, tuple):
-            classified_subject, subject_scores = classification_result
+            if len(classification_result) == 3:
+                classified_subject, subject_scores, raw_subject_scores = classification_result
+            else:
+                classified_subject, subject_scores = classification_result
+                raw_subject_scores = subject_scores
         else:
-            classified_subject, subject_scores = classification_result, {}
+            classified_subject = classification_result
+            subject_scores, raw_subject_scores = {}, {}
+
+        selected_class_keyword_score = raw_subject_scores.get(payload.selectedClass, 0)
+        classified_subject_keyword_score = raw_subject_scores.get(classified_subject, 0)
 
         redirect_to_other_professor = (
             payload.selectedClass
             and payload.selectedClass in rag_core.PROFESSOR_PERSONAS
             and classified_subject in rag_core.PROFESSOR_PERSONAS
             and classified_subject != payload.selectedClass
-            and subject_scores.get(classified_subject, 0) > 0
+            and selected_class_keyword_score <= 0
+            and classified_subject_keyword_score >= rag_core.REDIRECT_MIN_SCORE
         )
 
         if redirect_to_other_professor:
