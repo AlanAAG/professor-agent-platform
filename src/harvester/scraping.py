@@ -659,11 +659,13 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
                 content = f"Zoom transcription failure: {e}"
 
         elif resource_type == "DRIVE_RECORDING":
-            # Hard skip the expensive Drive operation as requested
-            logging.warning(
-                f"DRIVE_RECORDING: Skipping complex scraping logic as requested."
-            )
-            content = "Transcription skipped (Drive Recording)."
+            try:
+                content = extract_transcript(driver, url, resource_type)
+                if not content:
+                    content = "(Drive transcript extraction failed or returned no text)"
+            except Exception as e:
+                logging.error(f"Drive transcription failed: {e}")
+                content = f"Drive transcription failure: {e}"
 
         elif resource_type == "RECORDING_LINK":
             # Intentionally skip transcription to reduce costs

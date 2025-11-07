@@ -241,7 +241,7 @@ def process_single_resource(
             elif content_type_header and "text/html" in content_type_header:
                 content_type_tag = "webpage"
                 logging.info("   Content type: HTML. Scraping text...")
-                html_text = scraping.scrape_html_content(url)
+                html_text = scraping.scrape_html_content(url, driver=driver)
                 if html_text:
                     raw_content_data = html_text
                 else:

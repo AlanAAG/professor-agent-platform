@@ -238,15 +238,8 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
     """Public entry point to selectively extract transcript content from a recording URL.
 
     - For ZOOM_RECORDING: open in a new tab and scrape transcript content.
-    - For DRIVE_RECORDING: skip heavy scraping and return a skip message.
+    - For DRIVE_RECORDING: open in a new tab and scrape the Google Drive transcript.
     """
-    # Hard skip for Drive recordings as requested
-    if resource_type == "DRIVE_RECORDING":
-        logging.warning(
-            "DRIVE_RECORDING: Skipping complex scraping logic as requested."
-        )
-        return "Transcription skipped (Drive Recording)."
-
     original = driver.current_window_handle
     new_handle = None
 
@@ -279,6 +272,8 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
         # Selective execution
         if resource_type == "ZOOM_RECORDING":
             return scrape_zoom_transcript_content(driver)
+        if resource_type == "DRIVE_RECORDING":
+            return scrape_drive_transcript_content(driver)
 
         # Unknown/unsupported types: do nothing
         logging.warning(f"   Unknown recording type: {resource_type}. Skipping.")
