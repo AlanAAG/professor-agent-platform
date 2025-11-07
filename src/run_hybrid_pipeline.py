@@ -9,7 +9,7 @@ import time
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -458,7 +458,20 @@ def main_pipeline(mode="daily"):
                     
                     try:
                         # Navigation will check internal cache and skip if already navigated in this run.
-                        navigation.find_and_click_course_link(driver, course_code, group_name)
+                        try:
+                            navigation.find_and_click_course_link(driver, course_code, group_name)
+                        except (TimeoutException, NoSuchElementException) as nav_err:
+                            logging.warning(
+                                "Skipping course %s (%s): navigation failed (%s).",
+                                course_code,
+                                class_name,
+                                nav_err,
+                            )
+                            try:
+                                driver.get(config.COURSES_URL)
+                            except Exception:
+                                pass
+                            continue
                         
                         if not navigation.navigate_to_resources_section(driver):
                             logging.warning(
