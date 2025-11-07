@@ -73,9 +73,14 @@ else:
                     chat_history=st.session_state.messages[:-1],  # Pass history *before* current question
                     class_hint=selected_class,
                 )
-                active_subject = rag_core.classify_subject(user_question, selected_class)
-                subject_key = active_subject if active_subject in PERSONAS else (
-                    rag_core.DEFAULT_PERSONA_KEY if rag_core.DEFAULT_PERSONA_KEY in PERSONAS else active_subject
+                subject_key = (
+                    selected_class
+                    if selected_class in PERSONAS
+                    else (
+                        rag_core.DEFAULT_PERSONA_KEY
+                        if rag_core.DEFAULT_PERSONA_KEY in PERSONAS
+                        else selected_class
+                    )
                 )
                 persona_display = PERSONAS.get(subject_key, {})
                 persona_name = persona_display.get("professor_name", "Professor")
