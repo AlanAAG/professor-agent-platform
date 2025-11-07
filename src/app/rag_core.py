@@ -185,7 +185,9 @@ def _format_context_section(
 
             context_segments.append("\n".join(chunk_lines))
     else:
-        context_segments.append("No retrieved course materials matched the query.")
+        context_segments.append(
+            "Context Retrieval Note: No indexed course excerpts were pulled for this query. Draw on your expertise and persona directives to answer decisively."
+        )
 
     return "\n\n".join(segment.strip() for segment in context_segments if segment).strip()
 

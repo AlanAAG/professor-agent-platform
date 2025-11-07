@@ -12,6 +12,7 @@ from src.shared.utils import (
     retrieve_rag_documents,
     retrieve_rag_documents_keyword_fallback,
 )
+from src.app import rag_core
 _genai_import_errors = []
 genai = None
 _GENAI_SDK_FLAVOR = "unknown"
@@ -57,6 +58,68 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+MODE_STYLE_PROMPTS: Dict[str, str] = {
+    "study": (
+        "Mode: Study Partner.\n"
+        "You collaborate shoulder-to-shoulder with the student, layering encouragement over clear explanations. "
+        "Summarize key ideas, check for understanding with short follow-up nudges, and keep the pace warm and supportive."
+    ),
+    "professor": (
+        "Mode: Professor.\n"
+        "You deliver in the first person (I/me/my) with an authoritative classroom tone. "
+        "Be decisive, concise, and structured, as if leading a live lecture or executive workshop."
+    ),
+    "socratic": (
+        "Mode: Socratic Coach.\n"
+        "Guide the learner by asking sequenced, purposeful questions before revealing conclusions. "
+        "Only provide direct answers when the student insists or becomes stuck; otherwise keep them thinking."
+    ),
+    "balanced": (
+        "Mode: Balanced Advisor.\n"
+        "Open with a direct, high-confidence answer, then immediately invite reflection or next steps with a targeted question. "
+        "Blend clarity with light guidance."
+    ),
+}
+
+BASE_PERSONA_RULES = (
+    "You teach at TETR College of Business and support founders and operators building real ventures. "
+    "Respond with full confidence and ownership—never mention missing materials or that you are relying on general knowledge. "
+    "Tie concepts to pragmatic execution, metrics, risks, and next steps for both coursework and live business scenarios. "
+    "If the query is clearly outside business, economics, technology, or the selected subject, redirect the student and suggest a relevant angle instead of guessing. "
+    "Write in plain paragraphs; use short lists only when they materially improve clarity."
+)
+
+
+def _resolve_course_persona(selected_class: Optional[str], query: str) -> tuple[str, Dict[str, str]]:
+    """Choose the most appropriate persona profile based on the query and class hint."""
+    classified = rag_core.classify_subject(query or "", selected_class)
+    if classified in rag_core.PROFESSOR_PERSONAS:
+        persona_key = classified
+    elif selected_class in rag_core.PROFESSOR_PERSONAS:
+        persona_key = selected_class  # type: ignore[assignment]
+    elif rag_core.DEFAULT_PERSONA_KEY in rag_core.PROFESSOR_PERSONAS:
+        persona_key = rag_core.DEFAULT_PERSONA_KEY
+    else:
+        persona_key = next(iter(rag_core.PROFESSOR_PERSONAS), rag_core.DEFAULT_PERSONA_KEY)
+
+    persona_profile = rag_core.PROFESSOR_PERSONAS.get(persona_key) or rag_core._get_fallback_persona()
+    return persona_key, persona_profile
+
+
+def _build_persona_instruction(persona_key: str, persona_profile: Dict[str, str]) -> tuple[str, str]:
+    """Compose the persona-specific instruction block."""
+    persona_name = persona_profile.get("professor_name", "Professor")
+    style_prompt = persona_profile.get(
+        "style_prompt",
+        "Maintain an authoritative, actionable, and business-focused teaching style that prioritizes real-world implementation.",
+    )
+    instruction = (
+        f"You are {persona_name}, leading the {persona_key} subject at TETR College of Business.\n"
+        f"{BASE_PERSONA_RULES}\n"
+        f"Persona style directives:\n{style_prompt}"
+    )
+    return persona_name, instruction
 
 # --- Sentry Integration (Optional) ---
 try:
@@ -896,43 +959,40 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             avg_sim,
             int((time.time() - _t0) * 1000),
         )
-        
-        context = "\n\n".join([
-            f"Source {i+1}:\nClass: {doc.get('class_name', 'N/A')}\n{doc.get('content', '')}"
-            for i, doc in enumerate(documents)
-        ]) if documents else "No relevant course materials found."
+        persona_key, persona_profile = _resolve_course_persona(payload.selectedClass, last_query)
+        persona_name, persona_instruction = _build_persona_instruction(persona_key, persona_profile)
+        mode_instruction = MODE_STYLE_PROMPTS.get(payload.persona, MODE_STYLE_PROMPTS["balanced"])
 
-        personas = {
-            "study": "You are an encouraging and approachable study buddy who is also a professor. Help the student review material by offering clear summaries, explaining concepts, and providing practical examples. Use a supportive, friendly, and collaborative tone, like you are studying with them.",
-            "professor": "You are an experienced, authoritative, and highly knowledgeable professor and the primary speaker for the course. Always answer in the first person (I/me/my), adopting the conversational, expert tone of a dedicated teacher. Crucially, be brief and highly concise.",
-            "socratic": "You are a professor who employs the Socratic method. Your goal is to guide the student to the answer by asking probing, sequential questions rather than giving direct answers. Use a thoughtful, questioning, and patient tone. Only provide a direct answer if the student asks for confirmation or is significantly struggling.",
-            "balanced": "You are a balanced and adaptable tutor and professor. Start by providing a concise, direct answer or explanation, and then immediately follow up with a related question to check for understanding or encourage further thought. Maintain a professional, helpful, and measured tone, combining direct instruction with light questioning."
-        }
-        
         if documents:
+            context_segments = [
+                f"Source {i+1}:\nClass: {doc.get('class_name', persona_key)}\n{doc.get('content', '')}"
+                for i, doc in enumerate(documents)
+            ]
+            context = "\n\n".join(context_segments)
             rules = (
-                "Course Material Restriction: ONLY use information derived from the provided course materials/documents. Treat these documents as the sole source of truth.\n"
-                "Integration and Citation (Professor Tone): Seamlessly integrate information into your first-person response. You are the speaker and the authority, using the materials to support your teaching.\n"
-                "Tone & Accuracy: Maintain a conversational yet highly accurate and professional tone appropriate to your selected persona."
-                "Format your answer using only plain paragraphs. DO NOT use markdown headings (#) or lists (*) unless absolutely necessary for clarity, and keep any such lists very short"
-                "Be conversational, accurate, and most importantly, brief."
-)
+                "Primary Sources: Treat the provided context chunks as canonical. Reference them naturally in first person, "
+                "adding your own expert synthesis to translate insights into actions, frameworks, and metrics.\n"
+                "Execution Focus: Deliver implementation-ready guidance for the student's coursework and current venture—spell out steps, "
+                "KPIs, risks, and strategic trade-offs.\n"
+                "Closure: End by recommending a concrete next move or checkpoint tailored to the student's situation."
+            )
         else:
-           rules = (
-                "Context Note: No course materials were found for this query, so the answer will be based on my general knowledge and expertise.\n"
-                "Answering Approach: Answer based on your extensive general knowledge and academic reasoning, maintaining the selected professor persona.\n"
-                "Answer Format: Preface the answer with a brief, clear note that course materials were unavailable (e.g., 'Since I don't have the course materials for this topic, I'll answer based on my general knowledge...').\n"
-                "Quality: Be concise, accurate, and highly helpful, treating the answer as a general academic explanation."
-                "Format your answer using only plain paragraphs. DO NOT use markdown headings (#) or lists (*) unless absolutely necessary for clarity, and keep any such lists very short"
-                "Be conversational, accurate, and most importantly, brief."
-)
-        system_prompt = f"""{personas.get(payload.persona, personas['balanced'])}
+            context = (
+                "No specific course excerpts were retrieved for this query. Rely on your expertise and persona directives to answer decisively."
+            )
+            rules = (
+                "You still answer with full confidence as the domain expert. Do NOT mention missing materials or general-knowledge disclaimers.\n"
+                "Ground your guidance in realistic business practice—share frameworks, calculations, market levers, or playbooks that fit the query.\n"
+                "If the question is off-topic (outside business, entrepreneurship, economics, technology, or the selected subject), "
+                "briefly explain the mismatch and steer the student back toward a productive angle."
+            )
 
-COURSE MATERIALS:
-{context}
-
-RULES:
-{rules}"""
+        system_prompt = (
+            f"{persona_instruction}\n\n"
+            f"Mode overlay:\n{mode_instruction}\n\n"
+            f"Retrieved context:\n{context}\n\n"
+            f"Response rules:\n{rules}"
+        )
         
         def _to_genai_contents(chat_messages: List[Dict[str, str]]):
             contents: List[Dict[str, object]] = []
