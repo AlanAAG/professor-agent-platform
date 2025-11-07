@@ -45,17 +45,47 @@ SENSITIVE_DOMAINS: Tuple[str, ...] = (
     "khanacademy.org",
 )
 
+# Domains that block unauthenticated HEAD probes; skip pre-flight content type checks.
+HEAD_PROBE_BYPASS_DOMAINS: Tuple[str, ...] = (
+    "gamma.app",
+    "canva.com",
+    "docs.google.com",
+)
+
 # Transcription scraping implementations moved to src/refinery/recording_processor.py
 
 
 # --- Static Resource Helpers (Uses requests) ---
 
+def _matches_domain(netloc: str, domain: str) -> bool:
+    return netloc == domain or netloc.endswith(f".{domain}")
+
+
+def _should_skip_head_probe(url: str) -> bool:
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+
+    return any(_matches_domain(netloc, domain) for domain in HEAD_PROBE_BYPASS_DOMAINS)
+
+
 def check_url_content_type(url: str) -> str:
-    """Checks the Content-Type header of a URL using a HEAD request."""
+    """Checks the Content-Type header of a URL using a HEAD request.
+
+    For known sensitive domains that reject unauthenticated HEAD probes, we short-circuit to a
+    scrapeable default to allow downstream Selenium-based handlers to proceed without failure.
+    """
     logging.debug(f"Checking content type for URL: {url}")
     if not url or not url.startswith(("http://", "https://")):
         logging.warning(f"Invalid URL for content type check: {url}")
         return "unknown"
+    if _should_skip_head_probe(url):
+        logging.info(
+            "   Skipping unauthenticated HEAD probe for sensitive domain; assuming HTML content."
+        )
+        # Return a string that downstream logic interprets as HTML-safe content.
+        return "text/html; safe-probe-bypass"
     try:
         # Use HEAD request to check headers without downloading content
         resp = requests.head(url, timeout=15, allow_redirects=True, headers=BROWSER_HEADER)
@@ -91,10 +121,7 @@ def _requires_authenticated_session(url: str) -> bool:
     except Exception:
         return False
 
-    return any(
-        netloc == domain or netloc.endswith(f".{domain}")
-        for domain in SENSITIVE_DOMAINS
-    )
+    return any(_matches_domain(netloc, domain) for domain in SENSITIVE_DOMAINS)
 
 
 def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> Optional[str]:
