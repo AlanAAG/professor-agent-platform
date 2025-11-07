@@ -25,7 +25,7 @@ from selenium import webdriver
 from selenium.webdriver.remote.webelement import WebElement
 from . import config
 from .navigation import safe_find, safe_find_all, safe_click
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {
@@ -35,6 +35,15 @@ BROWSER_HEADER = {
         "Chrome/91.0.4472.124 Safari/537.36"
     )
 }
+
+# Domains that require authenticated scraping through Selenium to avoid 401/403 errors
+SENSITIVE_DOMAINS: Tuple[str, ...] = (
+    "docs.google.com",
+    "drive.google.com",
+    "gamma.app",
+    "canva.com",
+    "khanacademy.org",
+)
 
 # Transcription scraping implementations moved to src/refinery/recording_processor.py
 
@@ -75,9 +84,61 @@ def download_file(url: str, save_dir: str, filename: str) -> Optional[str]:
         logging.error(f"   Error downloading {url}: {e}")
         return None
 
-def scrape_html_content(url: str) -> Optional[str]:
+def _requires_authenticated_session(url: str) -> bool:
+    """Determine if the URL belongs to a sensitive domain requiring an authenticated session."""
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+
+    return any(
+        netloc == domain or netloc.endswith(f".{domain}")
+        for domain in SENSITIVE_DOMAINS
+    )
+
+
+def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> Optional[str]:
     """Scrapes and extracts the main readable text from a general webpage."""
     logging.info(f"   Attempting to scrape HTML content from: {url}")
+    use_authenticated_driver = driver is not None and _requires_authenticated_session(url)
+
+    if use_authenticated_driver:
+        try:
+            logging.debug("   Using authenticated Selenium session for scraping.")
+            driver.get(url)
+            # Allow dynamic content to load briefly if needed
+            time.sleep(random.uniform(1.0, 2.5))
+            html_content = driver.page_source
+        except WebDriverException as e:
+            logging.warning(
+                f"   Selenium scraping failed for {url} (falling back to requests): {e}"
+            )
+            html_content = None
+        else:
+            try:
+                doc = ReadabilityDocument(html_content)
+                main_content_html = doc.summary()
+                soup = BeautifulSoup(main_content_html, "lxml")
+                main_text = soup.get_text(separator="\n", strip=True)
+                logging.info(f"   Successfully scraped HTML content via Selenium ({len(main_text)} chars).")
+                return main_text
+            except Exception as e:
+                logging.warning(
+                    f"   Failed to parse Selenium-captured HTML for {url} (falling back to requests): {e}"
+                )
+                try:
+                    soup = BeautifulSoup(html_content, "lxml")
+                    fallback_text = soup.get_text(separator="\n", strip=True)
+                    if fallback_text:
+                        logging.info(
+                            f"   Returning raw Selenium page text ({len(fallback_text)} chars) after readability failure."
+                        )
+                        return fallback_text
+                except Exception as raw_exc:
+                    logging.warning(
+                        f"   Failed to extract raw text from Selenium page source for {url}: {raw_exc}"
+                    )
+
     try:
         # Use GET request for full content
         resp = requests.get(url, timeout=30, allow_redirects=True, headers=BROWSER_HEADER)
@@ -459,13 +520,17 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
 
     try:
         if resource_type == "YOUTUBE_VIDEO":
-            # Lightweight: rely on previously extracted title
-            title = resource_metadata.get("title") or "Untitled Video"
-            content = f"Video Title: {title}"
+            # Attempt to load the page (ensures driver session handles gated content)
+            scraped = scrape_html_content(url, driver=driver)
+            if scraped:
+                content = scraped
+            else:
+                title = resource_metadata.get("title") or "Untitled Video"
+                content = f"Video Title: {title}"
 
         elif resource_type == "WEB_ARTICLE":
-            # Use lightweight HTTP-based scraper
-            scraped = scrape_html_content(url)
+            # Use HTTP-based scraper with authenticated fallback for sensitive domains
+            scraped = scrape_html_content(url, driver=driver)
             content = scraped or (resource_metadata.get("title") or "")
 
         elif resource_type == "PDF_DOCUMENT":
