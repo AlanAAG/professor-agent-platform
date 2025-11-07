@@ -91,9 +91,14 @@ BASE_PERSONA_RULES = (
 )
 
 
-def _resolve_course_persona(selected_class: Optional[str], query: str) -> tuple[str, Dict[str, str]]:
+def _resolve_course_persona(
+    selected_class: Optional[str],
+    query: str,
+    *,
+    classified_subject: Optional[str] = None,
+) -> tuple[str, Dict[str, str]]:
     """Choose the most appropriate persona profile based on the query and class hint."""
-    classified = rag_core.classify_subject(query or "", selected_class)
+    classified = classified_subject or rag_core.classify_subject(query or "", selected_class)
     if classified in rag_core.PROFESSOR_PERSONAS:
         persona_key = classified
     elif selected_class in rag_core.PROFESSOR_PERSONAS:
@@ -924,9 +929,65 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         last_query = user_messages[-1].content if user_messages else ""
 
         params = _get_rag_params()
+        classification_result = rag_core.classify_subject(
+            last_query or "",
+            payload.selectedClass,
+            return_scores=True,
+        )
+        if isinstance(classification_result, tuple):
+            classified_subject, subject_scores = classification_result
+        else:
+            classified_subject, subject_scores = classification_result, {}
+
+        redirect_to_other_professor = (
+            payload.selectedClass
+            and payload.selectedClass in rag_core.PROFESSOR_PERSONAS
+            and classified_subject in rag_core.PROFESSOR_PERSONAS
+            and classified_subject != payload.selectedClass
+            and subject_scores.get(classified_subject, 0) > 0
+        )
+
+        if redirect_to_other_professor:
+            referred_professor = rag_core.PROFESSOR_PERSONAS[classified_subject].get(
+                "professor_name",
+                "the relevant professor",
+            )
+            logger.info(
+                "CHAT redirect | selected_class=%s target_subject=%s",
+                payload.selectedClass,
+                classified_subject,
+            )
+            redirect_message = (
+                f"That question belongs to the {classified_subject} course. "
+                f"You should ask {referred_professor} for that."
+            )
+            if payload.selectedClass == "MarketGaps":
+                redirect_message = rag_core._enforce_market_gaps_voice(redirect_message)
+
+            async def generate_redirect():
+                yield f"data: {json.dumps({'sources': []})}\n\n"
+                data = {"choices": [{"delta": {"content": redirect_message}}]}
+                yield f"data: {json.dumps(data)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                generate_redirect(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        persona_key, persona_profile = _resolve_course_persona(
+            payload.selectedClass,
+            last_query,
+            classified_subject=classified_subject,
+        )
         documents = retrieve_rag_documents(
             query=last_query,
-            selected_class=payload.selectedClass,
+            selected_class=persona_key,
             match_count=params["match_count"],
             match_threshold=params["match_threshold"],
         )
@@ -935,7 +996,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         if not documents:
             documents = retrieve_rag_documents(
                 query=last_query,
-                selected_class=payload.selectedClass,
+                selected_class=persona_key,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
             )
@@ -944,7 +1005,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         if not documents:
             documents = retrieve_rag_documents_keyword_fallback(
                 query=last_query,
-                selected_class=payload.selectedClass,
+                selected_class=persona_key,
                 limit=params["relaxed_count"],
             )
         
@@ -959,7 +1020,6 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             avg_sim,
             int((time.time() - _t0) * 1000),
         )
-        persona_key, persona_profile = _resolve_course_persona(payload.selectedClass, last_query)
         persona_name, persona_instruction = _build_persona_instruction(persona_key, persona_profile)
         mode_instruction = MODE_STYLE_PROMPTS.get(payload.persona, MODE_STYLE_PROMPTS["balanced"])
 
@@ -970,8 +1030,9 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             ]
             context = "\n\n".join(context_segments)
             rules = (
-                "Primary Sources: Treat the provided context chunks as canonical. Reference them naturally in first person, "
-                "adding your own expert synthesis to translate insights into actions, frameworks, and metrics.\n"
+                "Length: Cap the answer at three tight sentences (under roughly 70 words) unless the student explicitly asks for a longer breakdown.\n"
+                "Sources: Do not mention source numbers, citations, or phrases like 'Source 3' inside the answer. The interface already shows sources separately.\n"
+                "Primary Sources: Treat the provided context chunks as canonical. Weave in your own expert synthesis to translate insights into actions, frameworks, and metrics.\n"
                 "Execution Focus: Deliver implementation-ready guidance for the student's coursework and current venture—spell out steps, "
                 "KPIs, risks, and strategic trade-offs.\n"
                 "Closure: End by recommending a concrete next move or checkpoint tailored to the student's situation."
@@ -981,6 +1042,8 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 "No specific course excerpts were retrieved for this query. Rely on your expertise and persona directives to answer decisively."
             )
             rules = (
+                "Length: Cap the answer at three tight sentences (under roughly 70 words) unless the student explicitly asks for a longer breakdown.\n"
+                "Sources: There are no excerpts to cite; do not invent citations and do not mention 'source' inside the answer body.\n"
                 "You still answer with full confidence as the domain expert. Do NOT mention missing materials or general-knowledge disclaimers.\n"
                 "Ground your guidance in realistic business practice—share frameworks, calculations, market levers, or playbooks that fit the query.\n"
                 "If the question is off-topic (outside business, entrepreneurship, economics, technology, or the selected subject), "
