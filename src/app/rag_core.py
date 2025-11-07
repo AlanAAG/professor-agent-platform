@@ -201,6 +201,66 @@ def classify_subject(
     logging.info("No keyword match found; defaulting to '%s'.", DEFAULT_PERSONA_KEY)
     return _finalize(DEFAULT_PERSONA_KEY)
 
+
+def _select_active_subject(class_hint: Optional[str], classified_subject: Optional[str]) -> str:
+    """
+    Choose the subject whose materials must be used to answer the current question.
+    Preference order:
+    1. Explicit class hint (current course) when valid.
+    2. Classified subject when it has a persona.
+    3. Default persona key.
+    4. First available persona key (if default missing).
+    """
+    if class_hint and class_hint in PROFESSOR_PERSONAS:
+        return class_hint
+
+    if classified_subject and classified_subject in PROFESSOR_PERSONAS:
+        return classified_subject
+
+    if DEFAULT_PERSONA_KEY in PROFESSOR_PERSONAS:
+        return DEFAULT_PERSONA_KEY
+
+    return next(iter(PROFESSOR_PERSONAS), DEFAULT_PERSONA_KEY)
+
+
+def _build_redirection_message(
+    *,
+    active_subject: str,
+    target_subject: Optional[str],
+) -> Optional[str]:
+    """Format the polite redirection message when no context is available."""
+    if not target_subject or target_subject not in PROFESSOR_PERSONAS:
+        return None
+
+    referred_professor = PROFESSOR_PERSONAS[target_subject].get("professor_name", "the relevant professor")
+    course_display_name = get_course_display_name(target_subject) or target_subject
+    course_reference = f"\"{course_display_name}\"" if course_display_name != target_subject else course_display_name
+    message = f"That question belongs to the {course_reference} course. You should ask {referred_professor} for that."
+
+    if active_subject == "MarketGaps":
+        return _enforce_market_gaps_voice(message)
+
+    return message
+
+
+def _maybe_redirect_for_irrelevant_query(
+    *,
+    active_subject: str,
+    classified_subject: Optional[str],
+    subject_scores: Dict[str, int],
+) -> Optional[str]:
+    """
+    Decide whether a query should redirect to another course because no context was found
+    for the active subject and another subject has a strong signal.
+    """
+    if not classified_subject or classified_subject == active_subject:
+        return None
+
+    if subject_scores.get(classified_subject, 0) <= 0:
+        return None
+
+    return _build_redirection_message(active_subject=active_subject, target_subject=classified_subject)
+
 # --- Helper Functions: Build Prompts (for standard RAG) ---
 def _build_system_prompt(persona: Dict[str, str]) -> str:
     """Compose the canonical system prompt section for the active persona."""
@@ -277,10 +337,14 @@ def _build_rag_prompt(
 
     prompt = (
         f"{system_prompt}\n\n"
+        f"Strict course adherence rules:\n"
+        f"- Use only the materials, terminology, formulas, and methodologies from the '{subject}' course when answering.\n"
+        "- If the student's question overlaps with other courses, still answer from the perspective of the current course and do not mention other courses in your response.\n"
+        "- Redirect to another course only if no relevant information exists within the current course context and you are explicitly instructed to do so.\n\n"
         f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
         f"User question:\n{question}\n\n"
         f"Respond as {persona_name}, delivering decisive, implementation-ready guidance grounded in the context. "
-        "If the context does not contain the answer, rely on your expertise to give practical business direction without hesitation. "
+        "If the context does not contain the answer, rely on your expertise to give practical business direction without hesitation, while staying within the scope of the current course. "
         "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
         "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
     )
@@ -558,32 +622,7 @@ def get_rag_response(
         classified_subject, subject_scores = classification_result, {}
     logging.info("   Classified subject candidate: %s", classified_subject)
 
-    redirect_to_other_professor = (
-        class_hint
-        and class_hint in PROFESSOR_PERSONAS
-        and classified_subject in PROFESSOR_PERSONAS
-        and classified_subject != class_hint
-        and subject_scores.get(classified_subject, 0) > 0
-    )
-    if redirect_to_other_professor:
-        referred_professor = PROFESSOR_PERSONAS[classified_subject].get("professor_name", "the relevant professor")
-        course_display_name = get_course_display_name(classified_subject) or classified_subject
-        course_reference = (
-            f"\"{course_display_name}\"" if course_display_name != classified_subject else course_display_name
-        )
-        message = f"That question belongs to the {course_reference} course. You should ask {referred_professor} for that."
-        if class_hint == "MarketGaps":
-            message = _enforce_market_gaps_voice(message)
-        return message
-
-    if classified_subject in PROFESSOR_PERSONAS:
-        active_subject = classified_subject
-    elif class_hint and class_hint in PROFESSOR_PERSONAS:
-        active_subject = class_hint
-    elif DEFAULT_PERSONA_KEY in PROFESSOR_PERSONAS:
-        active_subject = DEFAULT_PERSONA_KEY
-    else:
-        active_subject = next(iter(PROFESSOR_PERSONAS), DEFAULT_PERSONA_KEY)
+    active_subject = _select_active_subject(class_hint, classified_subject)
 
     persona = persona_override or PROFESSOR_PERSONAS.get(active_subject)
     if persona is None:
@@ -624,7 +663,17 @@ def get_rag_response(
             )
             logging.info("   Initial retrieval returned %s raw chunks.", len(initial_docs_raw))
             if not initial_docs_raw:
-                return "I couldn't find any documents related to your question in the course materials."
+                redirect_message = _maybe_redirect_for_irrelevant_query(
+                    active_subject=active_subject,
+                    classified_subject=classified_subject,
+                    subject_scores=subject_scores,
+                )
+                if redirect_message:
+                    return redirect_message
+                return (
+                    "I couldn't find any documents related to your question in the current course materials. "
+                    "Please try rephrasing or asking about a different concept within this course."
+                )
 
             reranked_docs_raw = _rerank_documents(condensed_question, initial_docs_raw)
             final_context_docs = _to_langchain_documents(reranked_docs_raw[:FINAL_CONTEXT_K])
@@ -633,9 +682,16 @@ def get_rag_response(
                 logging.info("   Selected %s chunks for final context after re-ranking.", len(final_context_docs))
             else:
                 logging.warning("   No relevant documents remained after re-ranking.")
+                redirect_message = _maybe_redirect_for_irrelevant_query(
+                    active_subject=active_subject,
+                    classified_subject=classified_subject,
+                    subject_scores=subject_scores,
+                )
+                if redirect_message:
+                    return redirect_message
                 return (
-                    "I found some potential matches, but none were strong enough to answer that question. "
-                    "Could you try a different angle or rephrase the request?"
+                    "I found some potential matches, but none were strong enough to answer that question from this course's perspective. "
+                    "Could you try a different angle or rephrase the request using this course's terminology?"
                 )
 
         except Exception as retrieval_error:
