@@ -185,8 +185,11 @@ def _build_system_prompt(persona: Dict[str, str]) -> str:
         "Formatting rules: Respond in plain text sentences without markdown headings, bullet points, or emphasis. "
         "Only use special formatting when it is strictly required for equations."
     )
+    brevity_rules = (
+        "Brevity rules: Default to a single short paragraph of no more than five sentences unless the student explicitly asks for detailed steps, lists, or a study guide."
+    )
     system_prompt = (
-        f"{base_rules}\nYour name is {name}. Follow this style guide: {style_prompt}\n{formatting_rules}"
+        f"{base_rules}\nYour name is {name}. Follow this style guide: {style_prompt}\n{formatting_rules}\n{brevity_rules}"
     )
     return system_prompt
 
@@ -244,7 +247,8 @@ def _build_rag_prompt(
         f"User question:\n{question}\n\n"
         f"Respond as {persona_name}, delivering decisive, implementation-ready guidance grounded in the context. "
         "If the context does not contain the answer, rely on your expertise to give practical business direction without hesitation. "
-        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting."
+        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+        "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
     )
     return prompt.strip()
 
@@ -269,6 +273,11 @@ def _enforce_market_gaps_voice(answer: str) -> str:
 
     if content.lower().count("okay") < 2:
         content = f"Okay, {content}"
+
+    max_words = 60
+    words = content.split()
+    if len(words) > max_words:
+        content = " ".join(words[:max_words]).rstrip(", ")
 
     # Guarantee the closing question
     normalized = content.rstrip("?.! \n")
@@ -371,7 +380,8 @@ def _handle_map_reduce_query(
                 f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
                 f"User question:\n{question}\n\n"
                 f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance. "
-                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting."
+                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+                "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
             )
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
@@ -402,7 +412,8 @@ def _handle_map_reduce_query(
                 f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
                 f"User question:\n{question}\n\n"
                 f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance. "
-                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting."
+                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+                "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
             )
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
@@ -470,7 +481,8 @@ def _handle_map_reduce_query(
         f"User question:\n{question}\n\n"
         f"Respond as {persona_name}, merging the summaries into a cohesive, implementation-ready study guide. "
         "Base your answer strictly on the summaries, ensure a logical flow, and include an opening context sentence plus a decisive closing recommendation. "
-        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting."
+        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+        "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
     )
     try:
         # Generate the final study guide
