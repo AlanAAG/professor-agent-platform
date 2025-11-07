@@ -37,7 +37,7 @@ BROWSER_HEADER = {
 }
 
 # Domains that require authenticated scraping through Selenium to avoid 401/403 errors
-SENSITIVE_DOMAINS: Tuple[str, ...] = (
+SELENIUM_REQUIRED_DOMAINS: Tuple[str, ...] = (
     "docs.google.com",
     "drive.google.com",
     "gamma.app",
@@ -121,15 +121,25 @@ def _requires_authenticated_session(url: str) -> bool:
     except Exception:
         return False
 
-    return any(_matches_domain(netloc, domain) for domain in SENSITIVE_DOMAINS)
+    return any(_matches_domain(netloc, domain) for domain in SELENIUM_REQUIRED_DOMAINS)
 
 
+# CRITICAL CONSTRAINT: For resources matching `SELENIUM_REQUIRED_DOMAINS`, the caller MUST ensure
+# the authenticated `driver` object is passed, as the fallback to the `requests` library has been
+# permanently disabled for these URLs.
 def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> Optional[str]:
     """Scrapes and extracts the main readable text from a general webpage."""
     logging.info(f"   Attempting to scrape HTML content from: {url}")
-    use_authenticated_driver = driver is not None and _requires_authenticated_session(url)
+    requires_authenticated_session = _requires_authenticated_session(url)
 
-    if use_authenticated_driver:
+    if requires_authenticated_session and driver is None:
+        logging.critical(
+            "   Authenticated Selenium driver required but not provided for sensitive URL: %s",
+            url,
+        )
+        return None
+
+    if requires_authenticated_session and driver is not None:
         try:
             logging.debug("   Using authenticated Selenium session for scraping.")
             driver.get(url)
@@ -137,34 +147,42 @@ def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> 
             time.sleep(random.uniform(1.0, 2.5))
             html_content = driver.page_source
         except WebDriverException as e:
-            logging.warning(
-                f"   Selenium scraping failed for {url} (falling back to requests): {e}"
+            logging.error(
+                "   Selenium scraping failed for sensitive URL %s: %s",
+                url,
+                e,
             )
-            html_content = None
-        else:
+            return None
+
+        try:
+            doc = ReadabilityDocument(html_content)
+            main_content_html = doc.summary()
+            soup = BeautifulSoup(main_content_html, "lxml")
+            main_text = soup.get_text(separator="\n", strip=True)
+            logging.info(f"   Successfully scraped HTML content via Selenium ({len(main_text)} chars).")
+            return main_text
+        except Exception as e:
+            logging.warning(
+                "   Failed to parse Selenium-captured HTML for %s: %s",
+                url,
+                e,
+            )
             try:
-                doc = ReadabilityDocument(html_content)
-                main_content_html = doc.summary()
-                soup = BeautifulSoup(main_content_html, "lxml")
-                main_text = soup.get_text(separator="\n", strip=True)
-                logging.info(f"   Successfully scraped HTML content via Selenium ({len(main_text)} chars).")
-                return main_text
-            except Exception as e:
-                logging.warning(
-                    f"   Failed to parse Selenium-captured HTML for {url} (falling back to requests): {e}"
-                )
-                try:
-                    soup = BeautifulSoup(html_content, "lxml")
-                    fallback_text = soup.get_text(separator="\n", strip=True)
-                    if fallback_text:
-                        logging.info(
-                            f"   Returning raw Selenium page text ({len(fallback_text)} chars) after readability failure."
-                        )
-                        return fallback_text
-                except Exception as raw_exc:
-                    logging.warning(
-                        f"   Failed to extract raw text from Selenium page source for {url}: {raw_exc}"
+                soup = BeautifulSoup(html_content, "lxml")
+                fallback_text = soup.get_text(separator="\n", strip=True)
+                if fallback_text:
+                    logging.info(
+                        "   Returning raw Selenium page text (%s chars) after readability failure.",
+                        len(fallback_text),
                     )
+                    return fallback_text
+            except Exception as raw_exc:
+                logging.warning(
+                    "   Failed to extract raw text from Selenium page source for %s: %s",
+                    url,
+                    raw_exc,
+                )
+            return None
 
     try:
         # Use GET request for full content
@@ -534,6 +552,9 @@ def process_resource_links(
     return resources
 
 
+# CRITICAL CONSTRAINT: For resources matching `SELENIUM_REQUIRED_DOMAINS`, the caller MUST ensure
+# the authenticated `driver` object is passed, as the fallback to the `requests` library has been
+# permanently disabled for these URLs.
 def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Routes resource scraping based on type and returns refined data.
 
