@@ -256,7 +256,11 @@ def _maybe_redirect_for_irrelevant_query(
     if not classified_subject or classified_subject == active_subject:
         return None
 
+    active_score = subject_scores.get(active_subject, 0)
     if subject_scores.get(classified_subject, 0) <= 0:
+        return None
+
+    if active_score > 0:
         return None
 
     return _build_redirection_message(active_subject=active_subject, target_subject=classified_subject)
