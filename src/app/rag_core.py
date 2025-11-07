@@ -4,7 +4,7 @@ import os
 import json
 import re # Needed for parsing topic list
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -100,12 +100,36 @@ SUBJECT_KEYWORDS: Dict[str, List[str]] = {
     "MarketGaps": ["market gap", "market gaps", "unmet need", "white space", "positioning", "differentiation", "competitive gap"],
     "MetaMarketing": ["meta marketing", "personalization", "pricing strategy", "promotions", "ai-driven pricing", "consumer brand", "voucher", "loyalty"],
     "CRO": ["cro", "conversion rate", "optimization", "landing page", "a/b test", "funnel", "checkout"],
-    "FinanceBasics": ["finance", "valuation", "npv", "cash flow", "investment", "capital markets", "fundraising", "financial model", "discounted cash"],
+    "FinanceBasics": [
+        "finance",
+        "valuation",
+        "npv",
+        "cash flow",
+        "cashflow",
+        "investment",
+        "capital markets",
+        "fundraising",
+        "financial model",
+        "discounted cash",
+        "income statement",
+        "profit and loss",
+        "p&l",
+        "balance sheet",
+        "cash flow statement",
+        "financial statement",
+        "financial reporting",
+        "general ledger",
+    ],
     "HowToDecodeGlobalTrendsAndNavigateEconomicTransformations": ["global trend", "economic transformation", "monetary", "blockchain", "cryptocurrency", "systemic risk", "policy", "regulation", "macro"],
 }
 
 
-def classify_subject(query: str, class_hint: Optional[str] = None) -> str:
+def classify_subject(
+    query: str,
+    class_hint: Optional[str] = None,
+    *,
+    return_scores: bool = False,
+) -> Union[str, Tuple[str, Dict[str, int]]]:
     """
     Analyze the user's query and return the most relevant professor persona key.
     Performs keyword scoring across predefined subject keywords and persona names.
@@ -128,17 +152,20 @@ def classify_subject(query: str, class_hint: Optional[str] = None) -> str:
         if normalized_subject and normalized_subject in lowered_query:
             scores[subject] = scores.get(subject, 0) + len(normalized_subject)
 
+    def _finalize(subject: str) -> Union[str, Tuple[str, Dict[str, int]]]:
+        return (subject, scores) if return_scores else subject
+
     if scores:
         selected_subject = max(scores, key=scores.get)
         logging.info("Classified query into subject '%s' with score %s", selected_subject, scores[selected_subject])
-        return selected_subject
+        return _finalize(selected_subject)
 
     if class_hint and class_hint in PROFESSOR_PERSONAS:
         logging.info("No keyword match found; using provided class hint '%s'.", class_hint)
-        return class_hint
+        return _finalize(class_hint)
 
     logging.info("No keyword match found; defaulting to '%s'.", DEFAULT_PERSONA_KEY)
-    return DEFAULT_PERSONA_KEY
+    return _finalize(DEFAULT_PERSONA_KEY)
 
 # --- Helper Functions: Build Prompts (for standard RAG) ---
 def _build_system_prompt(persona: Dict[str, str]) -> str:
@@ -154,7 +181,16 @@ def _build_system_prompt(persona: Dict[str, str]) -> str:
         "Your primary goal is to provide actionable, strategic advice for students building real businesses, focusing on practical implementation, "
         "value-creation, and real-world impact relevant to their chosen field of study."
     )
-    system_prompt = f"{base_rules}\nYour name is {name}. Follow this style guide: {style_prompt}"
+    formatting_rules = (
+        "Formatting rules: Respond in plain text sentences without markdown headings, bullet points, or emphasis. "
+        "Only use special formatting when it is strictly required for equations."
+    )
+    brevity_rules = (
+        "Brevity rules: Default to a single short paragraph of no more than five sentences unless the student explicitly asks for detailed steps, lists, or a study guide."
+    )
+    system_prompt = (
+        f"{base_rules}\nYour name is {name}. Follow this style guide: {style_prompt}\n{formatting_rules}\n{brevity_rules}"
+    )
     return system_prompt
 
 
@@ -210,7 +246,9 @@ def _build_rag_prompt(
         f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
         f"User question:\n{question}\n\n"
         f"Respond as {persona_name}, delivering decisive, implementation-ready guidance grounded in the context. "
-        "If the context does not contain the answer, rely on your expertise to give practical business direction without hesitation."
+        "If the context does not contain the answer, rely on your expertise to give practical business direction without hesitation. "
+        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+        "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
     )
     return prompt.strip()
 
@@ -235,6 +273,11 @@ def _enforce_market_gaps_voice(answer: str) -> str:
 
     if content.lower().count("okay") < 2:
         content = f"Okay, {content}"
+
+    max_words = 60
+    words = content.split()
+    if len(words) > max_words:
+        content = " ".join(words[:max_words]).rstrip(", ")
 
     # Guarantee the closing question
     normalized = content.rstrip("?.! \n")
@@ -336,7 +379,9 @@ def _handle_map_reduce_query(
                 f"{system_prompt}\n\n"
                 f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
                 f"User question:\n{question}\n\n"
-                f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance."
+                f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance. "
+                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+                "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
             )
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
@@ -366,7 +411,9 @@ def _handle_map_reduce_query(
                 f"{system_prompt}\n\n"
                 f"Retrieved context for subject '{subject}':\n{context_block}\n\n"
                 f"User question:\n{question}\n\n"
-                f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance."
+                f"Respond as {persona_name}, delivering a structured, actionable study guide that synthesizes these materials into strategic, real-world guidance. "
+                "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+                "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
             )
             chain = ChatPromptTemplate.from_template("{fallback_prompt_text}") | llm | StrOutputParser()
             final_summary = chain.invoke({"fallback_prompt_text": fallback_prompt})
@@ -380,8 +427,11 @@ def _handle_map_reduce_query(
     topic_summaries = []
     # Define LangChain chain for summarizing individual topics
     map_chain = ChatPromptTemplate.from_template(
-        "Summarize the key points, concepts, definitions, and important examples related to the specific topic '{topic}' based *only* on the following context retrieved from {subject} course materials. Be concise yet thorough for this topic.\n\nContext:\n{context}\n\nKey Points Summary for {topic}:"
-        ) | llm | StrOutputParser()
+        "Summarize the key points, concepts, definitions, and important examples related to the specific topic '{topic}' based *only* on the following context retrieved from {subject} course materials. "
+        "Be concise yet thorough for this topic and respond using plain sentences without markdown headings, bullet lists, or emphasis.\n\n"
+        "Context:\n{context}\n\n"
+        "Plain summary for {topic}:"
+    ) | llm | StrOutputParser()
 
     logging.info(f"   Starting Map step for {len(topics)} identified topics...")
     for i, topic_name in enumerate(topics):
@@ -408,12 +458,12 @@ def _handle_map_reduce_query(
 
             # Generate summary for the topic
             summary = map_chain.invoke({"topic": topic_name, "context": topic_context, "subject": subject})
-            topic_summaries.append(f"## {topic_name}\n\n{summary.strip()}") # Add topic name as heading
+            topic_summaries.append(f"{topic_name}: {summary.strip()}")
             logging.info(f"      Generated summary for topic {i+1}.")
 
         except Exception as e:
             logging.error(f"      Error summarizing topic '{topic_name}': {e}")
-            topic_summaries.append(f"## {topic_name}\n\n[An error occurred while summarizing this topic.]")
+            topic_summaries.append(f"{topic_name}: [An error occurred while summarizing this topic.]")
 
     # --- 4. Reduce Step: Combine topic summaries ---
     if not topic_summaries:
@@ -430,7 +480,9 @@ def _handle_map_reduce_query(
         f"Topic summaries derived from retrieved context for subject '{subject}':\n{combined_summaries}\n\n"
         f"User question:\n{question}\n\n"
         f"Respond as {persona_name}, merging the summaries into a cohesive, implementation-ready study guide. "
-        "Base your answer strictly on the summaries, ensure a logical flow, and include an opening context sentence plus a decisive closing recommendation."
+        "Base your answer strictly on the summaries, ensure a logical flow, and include an opening context sentence plus a decisive closing recommendation. "
+        "Keep the response in plain text sentences without markdown headings, bullet lists, or emphasis unless an equation requires special formatting. "
+        "Aim for no more than five concise sentences unless the student explicitly requests detailed steps, lists, or a study guide."
     )
     try:
         # Generate the final study guide
@@ -465,8 +517,28 @@ def get_rag_response(
     logging.info("RAG Core: Received query: '%s'", question)
     logging.info("   Chat history length: %s", len(chat_history))
 
-    classified_subject = classify_subject(question, class_hint)
+    classification_result = classify_subject(question, class_hint, return_scores=True)
+    if isinstance(classification_result, tuple):
+        classified_subject, subject_scores = classification_result
+    else:
+        classified_subject, subject_scores = classification_result, {}
     logging.info("   Classified subject candidate: %s", classified_subject)
+
+    redirect_to_other_professor = (
+        class_hint
+        and class_hint in PROFESSOR_PERSONAS
+        and classified_subject in PROFESSOR_PERSONAS
+        and classified_subject != class_hint
+        and subject_scores.get(classified_subject, 0) > 0
+    )
+    if redirect_to_other_professor:
+        referred_professor = PROFESSOR_PERSONAS[classified_subject].get("professor_name", "the relevant professor")
+        message = (
+            f"That question belongs to the {classified_subject} course. You should ask {referred_professor} for that."
+        )
+        if class_hint == "MarketGaps":
+            message = _enforce_market_gaps_voice(message)
+        return message
 
     if classified_subject in PROFESSOR_PERSONAS:
         active_subject = classified_subject
