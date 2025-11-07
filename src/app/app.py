@@ -1,8 +1,6 @@
 # src/app/app.py
 
 import streamlit as st
-import json
-import os
 # Use absolute import so running as a module works consistently
 from src.app import rag_core
 
@@ -10,22 +8,7 @@ from src.app import rag_core
 st.set_page_config(layout="wide")
 
 # --- Configuration & Setup ---
-PERSONA_FILE_PATH = os.path.join(os.path.dirname(__file__), "persona.json") # More robust path
-
-@st.cache_data(show_spinner=False)
-def load_personas() -> dict:
-    """Loads professor persona data from the JSON file."""
-    if not os.path.exists(PERSONA_FILE_PATH):
-        st.error(f"Persona file not found at {PERSONA_FILE_PATH}")
-        return {}
-    try:
-        with open(PERSONA_FILE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        st.error(f"Error loading persona file: {e}")
-        return {}
-
-PERSONAS = load_personas()
+PERSONAS = rag_core.PROFESSOR_PERSONAS
 AVAILABLE_CLASSES = list(PERSONAS.keys())
 
 # --- Streamlit App UI ---
@@ -36,15 +19,15 @@ if not AVAILABLE_CLASSES:
 else:
     # --- Sidebar for Class Selection ---
     with st.sidebar:
-        st.header("Select Course")
+        st.header("Preferred Focus")
         selected_class = st.selectbox(
-            "Which course agent would you like to chat with?",
+            "Optionally bias the assistant toward a subject area:",
             options=AVAILABLE_CLASSES,
             index=0,
             key="class_selector" # Add key for potential state management
         )
         selected_persona = PERSONAS.get(selected_class, {})
-        st.subheader(f"Professor: {selected_persona.get('professor_name', 'N/A')}")
+        st.caption(f"Suggested professor: {selected_persona.get('professor_name', 'N/A')}")
         # Clear chat history button
         if st.button("Clear Chat History"):
             st.session_state.messages = []
@@ -63,7 +46,8 @@ else:
         st.rerun()
 
     # --- Display Previous Chat Messages ---
-    st.header(f"Chat with the {selected_class} Agent")
+    st.header("Chat with Professor AI")
+    st.caption(f"Current focus hint: {selected_class}")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -86,11 +70,18 @@ else:
                 # Note: This is now a simple wrapper for your RAG core, which handles all retrieval and LLM calls.
                 answer = rag_core.get_rag_response(
                     question=user_question,
-                    class_name=selected_class,
-                    persona=selected_persona,
-                    chat_history=st.session_state.messages[:-1] # Pass history *before* current question
+                    chat_history=st.session_state.messages[:-1],  # Pass history *before* current question
+                    class_hint=selected_class,
                 )
+                active_subject = rag_core.classify_subject(user_question, selected_class)
+                subject_key = active_subject if active_subject in PERSONAS else (
+                    rag_core.DEFAULT_PERSONA_KEY if rag_core.DEFAULT_PERSONA_KEY in PERSONAS else active_subject
+                )
+                persona_display = PERSONAS.get(subject_key, {})
+                persona_name = persona_display.get("professor_name", "Professor")
+
                 message_placeholder.markdown(answer)
+                message_placeholder.caption(f"Persona: {persona_name} ({subject_key})")
 
                 # Add AI response to session state
                 st.session_state.messages.append({"role": "assistant", "content": answer})
