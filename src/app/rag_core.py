@@ -91,6 +91,8 @@ except Exception as e:
 INITIAL_RETRIEVAL_K = 20 # Number of chunks to fetch initially from vector store
 FINAL_CONTEXT_K = 7    # Number of chunks to send to LLM after re-ranking (for specific questions)
 MAP_REDUCE_RETRIEVAL_K = 10 # Number of chunks to retrieve per topic in Map step
+CLASS_HINT_SCORE_BONUS = 8  # Additional score applied when a class hint is present
+REDIRECT_MIN_SCORE = 9  # Minimum raw keyword score to trigger a redirect to another course
 
 SUBJECT_KEYWORDS: Dict[str, List[str]] = {
     "AIML": ["ai", "artificial intelligence", "machine learning", "ml", "copilot", "azure", "power bi", "dynamics 365"],
@@ -102,7 +104,7 @@ SUBJECT_KEYWORDS: Dict[str, List[str]] = {
     "Startup": ["startup", "entrepreneur", "entrepreneurship", "innovation", "family business", "incubator", "venture", "business model", "design thinking"],
     "Networking": ["networking", "referral", "relationship marketing", "word of mouth", "leads", "connections", "business networking"],
     "OOP": ["object oriented", "o.o.p", "encapsulation", "inheritance", "polymorphism", "software design", "class diagram"],
-    "MarketAnalysis": ["market analysis", "economic", "international trade", "manufacturing", "policy", "valuation of services", "export", "competitiveness", "economics", "trade policy", "service absorption", "international competitiveness"],
+    "MarketAnalysis": ["market analysis", "economic", "international trade", "manufacturing", "policy", "valuation of services", "export", "competitiveness", "economics", "trade policy", "service absorption", "international competitiveness", "elasticity", "price elasticity", "elasticity of demand"],
     "MarketGaps": ["market gap", "market gaps", "unmet need", "white space", "positioning", "differentiation", "competitive gap"],
     "MetaMarketing": ["meta marketing", "personalization", "pricing strategy", "promotions", "ai-driven pricing", "consumer brand", "voucher", "loyalty"],
     "CRO": ["cro", "conversion rate", "optimization", "landing page", "a/b test", "funnel", "checkout"],
@@ -119,6 +121,13 @@ SUBJECT_KEYWORDS: Dict[str, List[str]] = {
         "discounted cash",
         "income statement",
         "profit and loss",
+        "profit",
+        "profitability",
+        "profit margin",
+        "profit formula",
+        "formula for profit",
+        "financial terminology",
+        "basic financial terminology",
         "p&l",
         "balance sheet",
         "cash flow statement",
@@ -163,7 +172,7 @@ def classify_subject(
     class_hint: Optional[str] = None,
     *,
     return_scores: bool = False,
-) -> Union[str, Tuple[str, Dict[str, int]]]:
+) -> Union[str, Tuple[str, Dict[str, int], Dict[str, int]]]:
     """
     Analyze the user's query and return the most relevant professor persona key.
     Performs keyword scoring across predefined subject keywords and persona names.
@@ -174,28 +183,42 @@ def classify_subject(
         return DEFAULT_PERSONA_KEY
 
     lowered_query = query.lower()
-    scores: Dict[str, int] = {}
+    keyword_scores: Dict[str, int] = {}
 
     for subject, keywords in SUBJECT_KEYWORDS.items():
         for keyword in keywords:
             if keyword and keyword in lowered_query:
-                scores[subject] = scores.get(subject, 0) + len(keyword)
+                keyword_scores[subject] = keyword_scores.get(subject, 0) + len(keyword)
+
+    boosted_scores: Dict[str, int] = dict(keyword_scores)
 
     for subject in PROFESSOR_PERSONAS.keys():
         normalized_subject = subject.lower()
         if normalized_subject and normalized_subject in lowered_query:
-            scores[subject] = scores.get(subject, 0) + len(normalized_subject)
+            keyword_scores[subject] = keyword_scores.get(subject, 0) + len(normalized_subject)
+            boosted_scores[subject] = boosted_scores.get(subject, 0) + len(normalized_subject)
 
-    def _finalize(subject: str) -> Union[str, Tuple[str, Dict[str, int]]]:
-        return (subject, scores) if return_scores else subject
+    if class_hint and class_hint in PROFESSOR_PERSONAS:
+        boosted_scores[class_hint] = boosted_scores.get(class_hint, 0) + CLASS_HINT_SCORE_BONUS
 
-    if scores:
-        selected_subject = max(scores, key=scores.get)
-        logging.info("Classified query into subject '%s' with score %s", selected_subject, scores[selected_subject])
+    def _finalize(subject: str) -> Union[str, Tuple[str, Dict[str, int], Dict[str, int]]]:
+        if return_scores:
+            return subject, boosted_scores, keyword_scores
+        return subject
+
+    if boosted_scores:
+        selected_subject = max(boosted_scores, key=boosted_scores.get)
+        logging.info(
+            "Classified query into subject '%s' with boosted score %s (keyword score %s)",
+            selected_subject,
+            boosted_scores[selected_subject],
+            keyword_scores.get(selected_subject, 0),
+        )
         return _finalize(selected_subject)
 
     if class_hint and class_hint in PROFESSOR_PERSONAS:
         logging.info("No keyword match found; using provided class hint '%s'.", class_hint)
+        boosted_scores[class_hint] = boosted_scores.get(class_hint, 0) + CLASS_HINT_SCORE_BONUS
         return _finalize(class_hint)
 
     logging.info("No keyword match found; defaulting to '%s'.", DEFAULT_PERSONA_KEY)
@@ -248,6 +271,8 @@ def _maybe_redirect_for_irrelevant_query(
     active_subject: str,
     classified_subject: Optional[str],
     subject_scores: Dict[str, int],
+    raw_subject_scores: Dict[str, int],
+    class_hint: Optional[str],
 ) -> Optional[str]:
     """
     Decide whether a query should redirect to another course because no context was found
@@ -256,11 +281,21 @@ def _maybe_redirect_for_irrelevant_query(
     if not classified_subject or classified_subject == active_subject:
         return None
 
-    active_score = subject_scores.get(active_subject, 0)
-    if subject_scores.get(classified_subject, 0) <= 0:
+    if class_hint and class_hint == active_subject:
+        logging.info(
+            "   Retaining student in hinted class '%s' despite classification toward '%s'.",
+            class_hint,
+            classified_subject,
+        )
+        # Continue evaluating using raw scores to determine if a redirect is truly necessary.
+
+    active_keyword_score = raw_subject_scores.get(active_subject, 0)
+    alt_keyword_score = raw_subject_scores.get(classified_subject, 0)
+
+    if alt_keyword_score < REDIRECT_MIN_SCORE:
         return None
 
-    if active_score > 0:
+    if active_keyword_score > 0:
         return None
 
     return _build_redirection_message(active_subject=active_subject, target_subject=classified_subject)
@@ -621,9 +656,14 @@ def get_rag_response(
 
     classification_result = classify_subject(question, class_hint, return_scores=True)
     if isinstance(classification_result, tuple):
-        classified_subject, subject_scores = classification_result
+        if len(classification_result) == 3:
+            classified_subject, subject_scores, raw_subject_scores = classification_result
+        else:
+            classified_subject, subject_scores = classification_result
+            raw_subject_scores = subject_scores
     else:
-        classified_subject, subject_scores = classification_result, {}
+        classified_subject = classification_result
+        subject_scores, raw_subject_scores = {}, {}
     logging.info("   Classified subject candidate: %s", classified_subject)
 
     active_subject = _select_active_subject(class_hint, classified_subject)
@@ -671,6 +711,8 @@ def get_rag_response(
                     active_subject=active_subject,
                     classified_subject=classified_subject,
                     subject_scores=subject_scores,
+                    raw_subject_scores=raw_subject_scores,
+                    class_hint=class_hint,
                 )
                 if redirect_message:
                     return redirect_message
@@ -690,6 +732,8 @@ def get_rag_response(
                     active_subject=active_subject,
                     classified_subject=classified_subject,
                     subject_scores=subject_scores,
+                    raw_subject_scores=raw_subject_scores,
+                    class_hint=class_hint,
                 )
                 if redirect_message:
                     return redirect_message
