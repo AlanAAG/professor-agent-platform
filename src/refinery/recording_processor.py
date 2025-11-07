@@ -238,8 +238,12 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
     """Public entry point to selectively extract transcript content from a recording URL.
 
     - For ZOOM_RECORDING: open in a new tab and scrape transcript content.
-    - For DRIVE_RECORDING: open in a new tab and scrape the Google Drive transcript.
+    - For DRIVE_RECORDING: currently skipped to avoid expensive best-effort automation flow.
     """
+    if resource_type == "DRIVE_RECORDING":
+        logging.info("   Skipping Drive recording transcript extraction to avoid heavy automation flow.")
+        return "Transcription skipped (Drive Recording)."
+
     original = driver.current_window_handle
     new_handle = None
 
