@@ -19,7 +19,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 # --- Import project modules (package-qualified for -m execution) ---
 from src.harvester import navigation, scraping, config
 from src.harvester.scraping import classify_url
-from src.refinery import cleaning, embedding, pdf_processing
+from src.refinery import cleaning, embedding, pdf_processing, document_processing
 from src.refinery.recording_processor import extract_transcript
 from src.shared import utils
 
@@ -99,6 +99,18 @@ TEMP_DIR = os.path.join(tempfile.gettempdir(), "harvester_downloads")
 # Cross-run de-duplication: skip URLs that already exist in DB
 # Set DEDUP_BY_URL=false to allow cross-listed re-embeds per class
 DEDUP_BY_URL = os.environ.get("DEDUP_BY_URL", "true").lower() in ("1", "true", "yes")
+
+OFFICE_VIEWER_CONTENT_TYPES = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.ms-excel",
+    "application/msword",
+    "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+)
 
 # Ensure necessary directories exist
 os.makedirs("logs/error_screenshots", exist_ok=True)
@@ -247,6 +259,21 @@ def process_single_resource(
                 else:
                     raise ValueError("HTML scraping yielded no content.")
 
+            elif content_type_header and any(
+                mime in content_type_header for mime in OFFICE_VIEWER_CONTENT_TYPES
+            ):
+                content_type_tag = "office_document"
+                logging.info("   Content type: Office document. Extracting via viewer...")
+                if not driver:
+                    raise ValueError("Office document extraction requires an authenticated driver.")
+                document_text = document_processing.extract_drive_content(
+                    driver, url, "office_document"
+                )
+                if document_text:
+                    raw_content_data = document_text
+                else:
+                    raise ValueError("Office document extraction yielded no content.")
+
             else:
                 logging.warning(
                     f"   Unsupported or unknown content type '{content_type_header}' for {url}. Skipping."
@@ -331,12 +358,13 @@ def process_single_resource(
                         except OSError as e:
                             logging.warning(f"Could not delete temp PDF {temp_pdf_path}: {e}")
 
-            elif content_type_tag in ["webpage", "recording_transcript"]:
+            elif content_type_tag in ["webpage", "recording_transcript", "office_document"]:
                 # Process extracted text (HTML or Transcript)
                 logging.info(f"   Processing extracted text ({content_type_tag})...")
                 # Clean the text using LLM
-                clean_text = cleaning.clean_transcript_with_llm(raw_content_data) # Use same cleaner for now
-                if not clean_text: raise ValueError("Cleaning returned empty text.")
+                clean_text = cleaning.clean_transcript_with_llm(raw_content_data)  # Use same cleaner for now
+                if not clean_text:
+                    raise ValueError("Cleaning returned empty text.")
 
                 content_hash = utils.calculate_content_hash(clean_text)
 
@@ -360,6 +388,8 @@ def process_single_resource(
 
                 logging.info(f"   Embedding extracted {content_type_tag} content (hash={content_hash[:12]}…)")
                 embedding.chunk_and_embed_text(clean_text, metadata)
+                if content_type_tag == "office_document":
+                    stats["office_documents_processed"] = stats.get("office_documents_processed", 0) + 1
 
             else:
                 logging.warning(f"   No processing logic for content_tag: {content_type_tag}")
