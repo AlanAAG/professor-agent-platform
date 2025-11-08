@@ -489,7 +489,19 @@ def main_pipeline(mode="daily"):
                     try:
                         # Navigation will check internal cache and skip if already navigated in this run.
                         try:
-                            navigation.find_and_click_course_link(driver, course_code, group_name)
+                            navigated = navigation.find_and_click_course_link(driver, course_code, group_name)
+                        except navigation.CourseNavigationError as nav_err:
+                            logging.warning(
+                                "Skipping course %s (%s): %s",
+                                course_code,
+                                class_name,
+                                nav_err,
+                            )
+                            try:
+                                driver.get(config.COURSES_URL)
+                            except Exception:
+                                pass
+                            continue
                         except (TimeoutException, NoSuchElementException) as nav_err:
                             logging.warning(
                                 "Skipping course %s (%s): navigation failed (%s).",
@@ -501,6 +513,14 @@ def main_pipeline(mode="daily"):
                                 driver.get(config.COURSES_URL)
                             except Exception:
                                 pass
+                            continue
+
+                        if not navigated:
+                            logging.info(
+                                "Course %s (%s) was already processed earlier in this run. Skipping resource extraction.",
+                                course_code,
+                                class_name,
+                            )
                             continue
                         
                         if not navigation.navigate_to_resources_section(driver):
