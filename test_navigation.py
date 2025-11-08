@@ -115,7 +115,9 @@ def run_navigation_test() -> None:
             )
             print(f"[2/5] Navigate: opening course {TEST_COURSE_CODE} via {path_hint}...")
             try:
-                navigation.find_and_click_course_link(driver, TEST_COURSE_CODE, TEST_GROUP_NAME)
+                navigated = navigation.find_and_click_course_link(driver, TEST_COURSE_CODE, TEST_GROUP_NAME)
+                if not navigated:
+                    raise RuntimeError(f"Course {TEST_COURSE_CODE} unexpectedly reported as already processed.")
                 print("[2/5] Navigate: PASSED")
                 # Store course URL for robust re-navigation before each section expansion
                 course_page_url = driver.current_url

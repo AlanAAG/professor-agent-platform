@@ -41,6 +41,16 @@ from .utils import resilient_find_element
 # Used to prevent navigating to a course link twice if it appears in multiple groups.
 _COURSE_LINKS_SEEN_CACHE: set[str] = set()
 
+
+class CourseNavigationError(RuntimeError):
+    """Raised when navigation to a requested course cannot be completed."""
+
+    def __init__(self, course_code: str, message: str, original_exception: Exception | None = None):
+        self.course_code = course_code
+        self.original_exception = original_exception
+        error_message = f"Failed to navigate to course '{course_code}': {message}"
+        super().__init__(error_message)
+
 T = TypeVar("T")
 
 def reset_course_tracking():
@@ -1283,7 +1293,7 @@ def _find_and_click_course_link_impl(
             "Course %s already processed in this run. Skipping navigation to avoid duplication.",
             course_code,
         )
-        return
+        return False
 
     # 2) Load the courses page fresh
     driver.get(config.COURSES_URL)
@@ -1398,7 +1408,11 @@ def _find_and_click_course_link_impl(
             e,
         )
         _take_error_screenshot(driver, f"nav_timeout_{course_code}")
-        return
+        raise CourseNavigationError(
+            course_code,
+            "course link not found or navigation timed out",
+            e,
+        ) from e
     except Exception as e:
         logging.warning(
             "Error clicking course link for %s. Skipping. Error: %s",
@@ -1406,7 +1420,13 @@ def _find_and_click_course_link_impl(
             e,
         )
         _take_error_screenshot(driver, f"nav_error_{course_code}")
-        return
+        raise CourseNavigationError(
+            course_code,
+            "unexpected error during course navigation",
+            e,
+        ) from e
+
+    return True
 
 
 def find_and_click_course_link(
@@ -1421,6 +1441,10 @@ def find_and_click_course_link(
       - Otherwise, expand the owning group header first, then click the link.
 
     Uses JS-based clicks and scroll-into-view to maximize reliability.
+
+    Returns True when a navigation click was performed, False when the course was
+    already processed earlier in the run. Raises CourseNavigationError if the course
+    could not be located so that callers can skip downstream resource extraction.
     """
 
     return resilient_session_action(
