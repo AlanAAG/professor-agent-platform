@@ -96,6 +96,22 @@ def _build_section_content_xpath(section_title: str) -> str:
 _FILE_BOX_RELATIVE_XPATH = ".//div[contains(@class, 'fileBox')]"
 _FILE_BOX_LINK_RELATIVE_XPATH = _FILE_BOX_RELATIVE_XPATH + "//a[@href]"
 
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\r\n]+')
+
+
+def _sanitize_filename_component(value: str, max_length: int = 100) -> str:
+    """Sanitize strings for use in filenames across artifact uploads."""
+    sanitized = str(value or "")
+    sanitized = _INVALID_FILENAME_CHARS.sub("_", sanitized)
+    sanitized = re.sub(r"\s+", "_", sanitized)
+    sanitized = re.sub(r"_+", "_", sanitized)
+    sanitized = sanitized.strip("._")
+    if not sanitized:
+        sanitized = "artifact"
+    if max_length and len(sanitized) > max_length:
+        sanitized = sanitized[:max_length]
+    return sanitized
+
 
 def _find_section_content_container(driver: webdriver.Chrome, section_title: str) -> Optional[WebElement]:
     xpath = _build_section_content_xpath(section_title)
@@ -702,7 +718,8 @@ def _take_error_screenshot(driver: webdriver.Chrome, filename_prefix: str):
     try:
         # Create a unique filename with timestamp and prefix
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{filename_prefix}_{timestamp}.png"
+        safe_prefix = _sanitize_filename_component(filename_prefix, max_length=80)
+        filename = f"{safe_prefix}_{timestamp}.png"
         filepath = os.path.join(config.SETTINGS.screenshot_dir, filename)
         
         # Ensure the directory exists
@@ -720,7 +737,8 @@ def _take_progress_screenshot(driver: webdriver.Chrome, filename_prefix: str):
     """Saves a progress screenshot to the progress logs directory with a timestamp."""
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{filename_prefix}_{timestamp}.png"
+        safe_prefix = _sanitize_filename_component(filename_prefix, max_length=80)
+        filename = f"{safe_prefix}_{timestamp}.png"
         progress_dir = os.path.join("logs", "progress_screenshots")
         filepath = os.path.join(progress_dir, filename)
 
@@ -1151,7 +1169,8 @@ def safe_find(
         return wait.until(condition)
     except (TimeoutException, NoSuchElementException) as e:
         # --- START CRITICAL ERROR LOGGING ---
-        locator_string = f"{locator[0]}_{locator[1].replace('//', '').replace('/', '_').replace('[', '_').replace(']', '')[:50]}"
+        raw_locator = f"{locator[0]}_{locator[1]}"
+        locator_string = _sanitize_filename_component(raw_locator, max_length=80)
         _take_error_screenshot(driver, f"find_timeout_{locator_string}")
         # --- END CRITICAL ERROR LOGGING ---
         raise TimeoutException(f"Timed out waiting for element located by {locator}. Original Error: {e}")
