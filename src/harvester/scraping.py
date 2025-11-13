@@ -219,7 +219,7 @@ def classify_url(url: str) -> str:
       - GOOGLE_DOCS, GOOGLE_SHEETS, GOOGLE_SLIDES
       - OFFICE_ONLINE_VIEWER (view.officeapps.live.com)
       - OFFICE_DOCUMENT (direct .docx/.pptx/.xlsx links)
-      - RECORDING_DRIVE (drive.google.com), RECORDING_ZOOM (zoom.us)
+      - DRIVE_RECORDING (drive.google.com), RECORDING_ZOOM (zoom.us)
       - YOUTUBE_VIDEO, PDF_DOCUMENT, WEB_ARTICLE
     """
     if not url:
@@ -249,7 +249,7 @@ def classify_url(url: str) -> str:
 
     # Check for specific Drive file/recording pattern (for recording categorization)
     if "drive.google.com/file" in lower:
-        return "RECORDING_DRIVE"
+        return "DRIVE_RECORDING"
 
     return "WEB_ARTICLE"
 
@@ -658,9 +658,10 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
                 logging.error(f"Zoom transcription failed: {e}")
                 content = f"Zoom transcription failure: {e}"
 
-        elif resource_type == "DRIVE_RECORDING":
+        elif resource_type in {"DRIVE_RECORDING", "RECORDING_DRIVE"}:
+            normalized_type = "DRIVE_RECORDING"
             try:
-                content = extract_transcript(driver, url, resource_type)
+                content = extract_transcript(driver, url, normalized_type)
                 if not content:
                     content = "(Drive transcript extraction failed or returned no text)"
             except Exception as e:

@@ -35,6 +35,8 @@ class _FakeDriver:
         # Navigation
         self._get_calls: int = 0
         self._execute_script_calls: List[str] = []
+        self._execute_async_script_calls: List[str] = []
+        self._async_script_results: List[Any] = []
         self._switch_calls: int = 0
         self._close_calls: int = 0
         # Windows
@@ -61,6 +63,15 @@ class _FakeDriver:
             self.window_handles.append(new_handle)
             return None
         return None
+
+    def execute_async_script(self, script: str, *args: Any) -> Optional[Any]:
+        self._execute_async_script_calls.append(script)
+        if self._async_script_results:
+            return self._async_script_results.pop(0)
+        return None
+
+    def queue_async_script_result(self, result: Any) -> None:
+        self._async_script_results.append(result)
 
     def find_elements(self, by: Any = None, selector: str = "") -> List[_FakeElement]:
         # Allow tests to pre-register elements for a given selector

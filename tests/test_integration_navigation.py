@@ -149,7 +149,7 @@ def test_pattern2_session_recording_primary_is_icon_link():
     # Pass container to allow robust URL search
     out = process_resource_links(None, [root])
     assert out[0]['url'].startswith('https://drive.google.com/file')
-    assert out[0]['type'] in ('RECORDING_DRIVE', 'RECORDING_LINK')
+    assert out[0]['type'] in ('DRIVE_RECORDING', 'RECORDING_LINK')
 
 
 def test_pattern3_in_class_material_relative_urls_resolved(monkeypatch):
@@ -177,7 +177,7 @@ def test_classify_url_variants():
     assert classify_url('https://view.officeapps.live.com/op/view.aspx?src=...') == 'OFFICE_ONLINE_VIEWER'
     assert classify_url('https://host/file.pptx') == 'OFFICE_DOCUMENT'
     assert classify_url('https://zoom.us/rec/abc') == 'RECORDING_ZOOM'
-    assert classify_url('https://drive.google.com/file/d/abc/view') == 'RECORDING_DRIVE'
+    assert classify_url('https://drive.google.com/file/d/abc/view') == 'DRIVE_RECORDING'
     assert classify_url('https://www.youtube.com/watch?v=1') == 'YOUTUBE_VIDEO'
     assert classify_url('https://example.com/file.pdf') == 'PDF_DOCUMENT'
 

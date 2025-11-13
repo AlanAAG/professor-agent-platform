@@ -32,15 +32,39 @@ def test_extract_transcript_zoom_success(monkeypatch, mock_driver):
     assert any(s.startswith("window.open") for s in mock_driver._execute_script_calls)
 
 
-def test_extract_transcript_drive_skip(monkeypatch, mock_driver):
+def test_scrape_drive_transcript_uses_timedtext(monkeypatch, mock_driver):
+    # Arrange: timedtext payload is returned immediately
+    mock_driver.queue_async_script_result({
+        "status": "ok",
+        "data": {
+            "events": [
+                {"segs": [{"utf8": "Hello"}, {"utf8": "world"}]},
+                {"segs": [{"utf8": "from Drive"}]},
+            ]
+        },
+    })
+    monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
+
+    # Act
+    result = rp.scrape_drive_transcript_content(mock_driver)
+
+    # Assert
+    assert result == "Hello world from Drive"
+    # Only one async script call needed
+    assert len(mock_driver._execute_async_script_calls) == 1
+
+
+def test_extract_transcript_drive_success(monkeypatch, mock_driver):
+    # Arrange
+    monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
+    monkeypatch.setattr(rp, "scrape_drive_transcript_content", lambda d: "Drive transcript text", raising=True)
+
     # Act
     result = rp.extract_transcript(mock_driver, "https://drive.google.com/uc?id=abc", "DRIVE_RECORDING")
 
     # Assert
-    assert result == "Transcription skipped (Drive Recording)."
-    # Ensure no navigation was attempted
-    assert mock_driver._get_calls == 0
-    assert not mock_driver._execute_script_calls
+    assert result == "Drive transcript text"
+    assert any(s.startswith("window.open") for s in mock_driver._execute_script_calls)
 
 
 def test_extract_transcript_window_cleanup(monkeypatch, mock_driver):

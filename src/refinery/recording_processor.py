@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -17,18 +18,149 @@ from src.harvester import config
 from src.harvester.navigation import safe_find, safe_find_all, safe_click
 
 
-def scrape_drive_transcript_content(driver: webdriver.Chrome) -> str:
-    """Scrape transcript content from a Google Drive recording preview page.
+def _timedtext_payload_to_text(payload: dict | None) -> str:
+    """Transform a Drive timedtext JSON payload into plain text."""
+    if not payload:
+        return ""
 
-    Retained for future use. Not invoked by extract_transcript when resource_type
-    is DRIVE_RECORDING (we skip that flow by design to save resources).
-    """
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if not events:
+        return ""
+
+    fragments: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        segs = event.get("segs")
+        if not segs:
+            continue
+        combined = ""
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            text = seg.get("utf8")
+            if not isinstance(text, str) or not text:
+                continue
+            if combined:
+                if not combined[-1].isspace() and text and not text[0].isspace():
+                    combined += " "
+            combined += text
+        segment_text = combined.strip()
+        if segment_text:
+            fragments.append(segment_text)
+    return " ".join(fragments)
+
+
+def _attempt_drive_timedtext_fetch(driver: webdriver.Chrome) -> str:
+    """Best-effort attempt to retrieve transcript text via Drive's timedtext API."""
+    js_snippet = """
+const callback = arguments[0];
+(async () => {
+  const decode = (raw) => raw
+    .replace(/\\\\u003d/g, '=')
+    .replace(/\\\\u0026/g, '&')
+    .replace(/&amp;/g, '&');
+
+  const unique = (items) => {
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      if (!item || seen.has(item)) continue;
+      seen.add(item);
+      out.push(item);
+    }
+    return out;
+  };
+
+  const collectCandidateUrls = () => {
+    const html = document.documentElement?.innerHTML || '';
+    const regex = /https:\\/\\/drive\\.google\\.com[^"'<\\s]*timedtext[^"'<\\s]*/g;
+    const rawMatches = html.match(regex) || [];
+    const decoded = rawMatches.map(decode);
+    const perfEntries = (performance.getEntriesByType?.('resource') || [])
+      .map((entry) => entry?.name)
+      .filter((name) => typeof name === 'string' && name.includes('timedtext'));
+    return unique([...decoded, ...perfEntries]);
+  };
+
+  try {
+    const urls = collectCandidateUrls();
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response?.ok) continue;
+        const rawText = await response.text();
+        const trimmed = rawText.startsWith(")]}'")
+          ? rawText.slice(4)
+          : rawText;
+        let data;
+        try {
+          data = JSON.parse(trimmed);
+        } catch (parseErr) {
+          continue;
+        }
+        callback({ status: 'ok', url, data });
+        return;
+      } catch (err) {
+        continue;
+      }
+    }
+    callback({ status: urls.length ? 'fetch_failed' : 'no_url', urls });
+  } catch (error) {
+    callback({ status: 'error', message: error?.message || String(error) });
+  }
+})();
+"""
+
+    try:
+        result = driver.execute_async_script(js_snippet)
+    except WebDriverException as exc:
+        logging.debug("   Timedtext fetch JS execution failed: %s", exc)
+        return ""
+
+    if not isinstance(result, dict):
+        logging.debug("   Timedtext fetch returned unexpected payload: %s", result)
+        return ""
+
+    status = result.get("status")
+    if status != "ok":
+        if status == "no_url":
+            logging.debug("   Timedtext fetch could not locate timedtext URL on page.")
+        elif status == "fetch_failed":
+            logging.debug("   Timedtext fetch located URLs but HTTP requests failed.")
+        elif status == "error":
+            logging.debug("   Timedtext fetch reported error: %s", result.get("message"))
+        return ""
+
+    payload = result.get("data")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            logging.debug("   Timedtext payload was string but not JSON decodable.")
+            return payload.strip()
+
+    transcript_text = _timedtext_payload_to_text(payload)
+    if transcript_text:
+        logging.info("   Retrieved Drive transcript via timedtext API.")
+    else:
+        logging.debug("   Timedtext payload parsed but contained no text segments.")
+    return transcript_text
+
+
+def scrape_drive_transcript_content(driver: webdriver.Chrome) -> str:
+    """Scrape transcript content from a Google Drive recording preview page."""
     logging.info("   Attempting Google Drive transcript scrape...")
     raw_transcription = ""
     try:
         # Use settings for wait timeout
         wait_timeout = getattr(config.SETTINGS, "wait_timeout", 30)
         wait = WebDriverWait(driver, wait_timeout)
+
+        # First attempt: try direct timedtext API fetch before UI interactions
+        timedtext_text = _attempt_drive_timedtext_fetch(driver)
+        if timedtext_text:
+            return timedtext_text
 
         # Try to click play
         try:
@@ -98,6 +230,11 @@ def scrape_drive_transcript_content(driver: webdriver.Chrome) -> str:
             except (OSError, WebDriverException):
                 pass
             raise
+
+        # After the transcript UI is visible, retry timedtext fetch (it may be available now)
+        timedtext_after_ui = _attempt_drive_timedtext_fetch(driver)
+        if timedtext_after_ui:
+            return timedtext_after_ui
 
         # Scroll to bottom repeatedly to load all content
         last_height = driver.execute_script("return arguments[0].scrollHeight", container)
@@ -238,12 +375,7 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
     """Public entry point to selectively extract transcript content from a recording URL.
 
     - For ZOOM_RECORDING: open in a new tab and scrape transcript content.
-    - For DRIVE_RECORDING: currently skipped to avoid expensive best-effort automation flow.
     """
-    if resource_type == "DRIVE_RECORDING":
-        logging.info("   Skipping Drive recording transcript extraction to avoid heavy automation flow.")
-        return "Transcription skipped (Drive Recording)."
-
     original = driver.current_window_handle
     new_handle = None
 
