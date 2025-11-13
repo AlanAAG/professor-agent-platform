@@ -1,6 +1,10 @@
+import html
+import json
 import logging
 import os
+import re
 import time
+from typing import Any, Dict, List, Optional
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -16,152 +20,206 @@ from selenium import webdriver
 from src.harvester import config
 from src.harvester.navigation import safe_find, safe_find_all, safe_click
 
+_TIMEDTEXT_URL_REGEX = re.compile(
+    r"https://drive\.google\.com[^\"'`<>\s]*timedtext[^\"'`<>\s]*",
+    re.IGNORECASE,
+)
+
+
+def _decode_drive_timedtext_url(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url:
+        return None
+    decoded = raw_url
+    for needle, replacement in (
+        ("\\u003d", "="),
+        ("\\u0026", "&"),
+        ("\\u002F", "/"),
+        ("\\u003f", "?"),
+        ("\\x3d", "="),
+        ("\\x26", "&"),
+        ("\\/", "/"),
+    ):
+        decoded = decoded.replace(needle, replacement)
+    decoded = html.unescape(decoded)
+    return decoded
+
+
+def _locate_drive_caption_url(driver: webdriver.Chrome, wait_timeout: int) -> Optional[str]:
+    """Return the first timedtext URL embedded in the Drive preview page."""
+    try:
+        WebDriverWait(driver, wait_timeout).until(
+            lambda d: bool(getattr(d, "current_url", "") or d.find_elements(By.TAG_NAME, "video"))
+        )
+    except Exception:
+        pass
+
+    script = """
+        return (function () {
+          const pattern = /https:\\/\\/drive\\.google\\.com[^"'`\\s]*timedtext[^"'`\\s]*/i;
+
+          const inspect = (text) => {
+            if (!text) return null;
+            const match = text.match(pattern);
+            if (match && match[0]) {
+              return match[0];
+            }
+            return null;
+          };
+
+          const probeTracks = (obj, depth = 0) => {
+            if (!obj || typeof obj !== "object" || depth > 3) return null;
+            const directKeys = ["captionsUrl", "timedtextUrl", "url", "baseUrl"];
+            for (const key of directKeys) {
+              if (typeof obj[key] === "string") {
+                const found = inspect(obj[key]);
+                if (found) return found;
+              }
+            }
+            const collections = obj.captionTracks || obj.captionsTracks || obj.captions || obj.tracks;
+            if (Array.isArray(collections)) {
+              for (const entry of collections) {
+                const candidate = probeTracks(entry, depth + 1);
+                if (candidate) return candidate;
+              }
+            }
+            return null;
+          };
+
+          const globalCandidates = [
+            window._DRIVE_ivd,
+            window._DRIVE_video_data,
+            window._DRIVE_translations,
+            window.WIZ_global_data,
+            window.APP_INITIALIZATION_STATE,
+            window.OZ_initData,
+          ];
+          for (const candidate of globalCandidates) {
+            const found = probeTracks(candidate);
+            if (found) return found;
+          }
+
+          const scripts = Array.from(document.scripts || []);
+          for (const node of scripts) {
+            const text = node.text || node.innerHTML || "";
+            const found = inspect(text);
+            if (found) return found;
+          }
+
+          const serialized = document.documentElement ? document.documentElement.innerHTML : "";
+          return inspect(serialized) || null;
+        })();
+    """
+    try:
+        captured: Optional[str] = driver.execute_script(script)
+    except WebDriverException as exc:
+        logging.debug("      Failed to execute caption URL probe: %s", exc)
+        captured = None
+
+    if not captured and getattr(driver, "page_source", None):
+        match = _TIMEDTEXT_URL_REGEX.search(driver.page_source or "")
+        if match:
+            captured = match.group(0)
+
+    return _decode_drive_timedtext_url(captured)
+
+
+def _fetch_drive_timedtext_payload(
+    driver: webdriver.Chrome,
+    captions_url: str,
+) -> Optional[Dict[str, Any]]:
+    script = """
+        var url = arguments[0];
+        var callback = arguments[1];
+        if (!url) {
+          callback({ ok: false, status: 0, error: "missing url" });
+          return;
+        }
+        fetch(url, { credentials: "include" })
+          .then((resp) => resp.text().then((text) => ({
+              ok: resp.ok,
+              status: resp.status,
+              text
+          })))
+          .then((result) => {
+            callback(result);
+          })
+          .catch((err) => {
+            callback({ ok: false, status: 0, error: String(err && err.message ? err.message : err) });
+          });
+    """
+    try:
+        response = driver.execute_async_script(script, captions_url)
+    except WebDriverException as exc:
+        logging.error("      Timedtext fetch via browser failed: %s", exc)
+        return None
+
+    if not isinstance(response, dict):
+        logging.warning("      Timedtext fetch returned unexpected payload type: %s", type(response))
+        return None
+
+    if not response.get("ok"):
+        logging.warning(
+            "      Timedtext request failed (status=%s, error=%s)",
+            response.get("status"),
+            response.get("error"),
+        )
+        return None
+
+    text = response.get("text") or ""
+    if not text.strip():
+        logging.warning("      Timedtext response empty.")
+        return None
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        logging.error("      Failed to decode timedtext JSON: %s", exc)
+        return None
+
+
+def _parse_drive_timedtext(payload: Dict[str, Any]) -> str:
+    events: List[Dict[str, Any]] = payload.get("events") or []
+    lines: List[str] = []
+    for event in events:
+        segs = event.get("segs") or []
+        if not isinstance(segs, list):
+            continue
+        words: List[str] = []
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            text = (seg.get("utf8") or "").strip()
+            if not text:
+                continue
+            words.append(text)
+        if words:
+            assembled = " ".join(words).strip()
+            if assembled:
+                lines.append(assembled)
+    transcript = "\n".join(lines).strip()
+    return transcript
+
 
 def scrape_drive_transcript_content(driver: webdriver.Chrome) -> str:
-    """Scrape transcript content from a Google Drive recording preview page.
+    """Scrape transcript content from a Google Drive recording preview page via timedtext API."""
+    logging.info("   Attempting Google Drive transcript scrape (timedtext)...")
+    wait_timeout = getattr(config.SETTINGS, "wait_timeout", 30)
+    captions_url = _locate_drive_caption_url(driver, wait_timeout)
+    if not captions_url:
+        logging.warning("      Unable to locate timedtext URL on Drive page.")
+        return ""
 
-    Retained for future use. Not invoked by extract_transcript when resource_type
-    is DRIVE_RECORDING (we skip that flow by design to save resources).
-    """
-    logging.info("   Attempting Google Drive transcript scrape...")
-    raw_transcription = ""
-    try:
-        # Use settings for wait timeout
-        wait_timeout = getattr(config.SETTINGS, "wait_timeout", 30)
-        wait = WebDriverWait(driver, wait_timeout)
+    payload = _fetch_drive_timedtext_payload(driver, captions_url)
+    if not payload:
+        return ""
 
-        # Try to click play
-        try:
-            play_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_PLAY_BUTTON_CSS)))
-        except TimeoutException:
-            logging.info(
-                f"      Play button not found within timeout (selector: {config.DRIVE_PLAY_BUTTON_CSS}); proceeding..."
-            )
-            play_btn = None
-        except (NoSuchElementException, StaleElementReferenceException):
-            logging.info("      Play button lookup failed; proceeding anyway.")
-            play_btn = None
-        if play_btn is not None:
-            try:
-                driver.execute_script("arguments[0].click();", play_btn)
-                try:
-                    # Wait for settings gear to indicate player controls are up
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS)))
-                except TimeoutException:
-                    pass
-            except WebDriverException as e:
-                logging.debug(f"      Ignoring error clicking play: {e}")
+    transcript = _parse_drive_timedtext(payload)
+    if transcript:
+        logging.info("   Successfully scraped Google Drive transcript (%s chars).", len(transcript))
+        return transcript
 
-        # Open settings gear
-        try:
-            safe_click(driver, (By.CSS_SELECTOR, config.DRIVE_SETTINGS_BUTTON_CSS), timeout=wait_timeout)
-        except TimeoutException:
-            logging.error(
-                f"      Settings button not clickable (selector: {config.DRIVE_SETTINGS_BUTTON_CSS})."
-            )
-            raise
-        except NoSuchElementException:
-            logging.error(
-                f"      Settings button not present (selector: {config.DRIVE_SETTINGS_BUTTON_CSS})."
-            )
-            raise
-
-        # Wait for transcript UI to appear
-        try:
-            wait.until(
-                EC.any_of(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_HEADING_CSS)),
-                    EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS)),
-                )
-            )
-        except TimeoutException:
-            pass
-
-        # Container and segments
-        try:
-            container = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_CONTAINER_CSS))
-            )
-        except TimeoutException:
-            logging.error(
-                f"      Transcript container not found (selector: {config.DRIVE_TRANSCRIPT_CONTAINER_CSS})."
-            )
-            # Capture a screenshot right where it fails
-            try:
-                os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
-                driver.save_screenshot(
-                    os.path.join(
-                        config.SETTINGS.screenshot_dir,
-                        f"drive_no_container_{int(time.time())}.png",
-                    )
-                )
-            except (OSError, WebDriverException):
-                pass
-            raise
-
-        # Scroll to bottom repeatedly to load all content
-        last_height = driver.execute_script("return arguments[0].scrollHeight", container)
-        scroll_attempts = 0
-        while scroll_attempts < 60:  # Max 60 attempts (3 minutes)
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", container)
-            time.sleep(0.5)  # Wait half a second for content to appear
-            new_height = driver.execute_script("return arguments[0].scrollHeight", container)
-            if new_height == last_height:
-                break  # Scrolled to bottom, no more content loading
-            last_height = new_height
-            scroll_attempts += 1
-
-        segments = driver.find_elements(By.CSS_SELECTOR, config.DRIVE_TRANSCRIPT_SEGMENT_CSS)
-        texts = [seg.text.strip() for seg in segments if getattr(seg, "text", "").strip()]
-
-        # Join segments with a space to preserve continuity
-        raw_transcription = " ".join(texts)
-
-        if raw_transcription:
-            logging.info(
-                f"   Successfully scraped Google Drive transcript ({len(raw_transcription)} chars)."
-            )
-        else:
-            logging.warning("   Google Drive transcript segments found but were empty.")
-
-    except TimeoutException as e:
-        logging.error(f"   Timed out during Google Drive transcript scraping: {e}")
-        try:
-            os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
-            driver.save_screenshot(
-                os.path.join(
-                    config.SETTINGS.screenshot_dir,
-                    f"drive_scrape_timeout_{int(time.time())}.png",
-                )
-            )
-        except (OSError, WebDriverException):
-            pass
-    except NoSuchElementException as e:
-        logging.error(f"   Missing expected element on Google Drive page: {e}")
-        try:
-            os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
-            driver.save_screenshot(
-                os.path.join(
-                    config.SETTINGS.screenshot_dir,
-                    f"drive_scrape_no_such_{int(time.time())}.png",
-                )
-            )
-        except (OSError, WebDriverException):
-            pass
-    except WebDriverException as e:
-        logging.error(f"   Failed during Google Drive transcript scraping: {e}")
-        try:
-            os.makedirs(config.SETTINGS.screenshot_dir, exist_ok=True)
-            driver.save_screenshot(
-                os.path.join(
-                    config.SETTINGS.screenshot_dir,
-                    f"drive_scrape_error_{int(time.time())}.png",
-                )
-            )
-        except (OSError, WebDriverException):
-            pass
-
-    return raw_transcription
+    logging.warning("      Timedtext payload parsed but produced no transcript.")
+    return ""
 
 
 def scrape_zoom_transcript_content(driver: webdriver.Chrome) -> str:
@@ -238,12 +296,8 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
     """Public entry point to selectively extract transcript content from a recording URL.
 
     - For ZOOM_RECORDING: open in a new tab and scrape transcript content.
-    - For DRIVE_RECORDING: currently skipped to avoid expensive best-effort automation flow.
+    - For DRIVE_RECORDING: open in a new tab and retrieve transcript via timedtext endpoint.
     """
-    if resource_type == "DRIVE_RECORDING":
-        logging.info("   Skipping Drive recording transcript extraction to avoid heavy automation flow.")
-        return "Transcription skipped (Drive Recording)."
-
     original = driver.current_window_handle
     new_handle = None
 
