@@ -647,7 +647,7 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
                 if not content:
                     content = "(No readable content found in document viewer)"
 
-        elif resource_type == "ZOOM_RECORDING":
+        elif resource_type in {"ZOOM_RECORDING", "RECORDING_ZOOM"}:
             # EXECUTE the remote Zoom transcription logic
             try:
                 from src.refinery.recording_processor import extract_transcript  # type: ignore
@@ -658,7 +658,7 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
                 logging.error(f"Zoom transcription failed: {e}")
                 content = f"Zoom transcription failure: {e}"
 
-        elif resource_type == "DRIVE_RECORDING":
+        elif resource_type in {"DRIVE_RECORDING", "RECORDING_DRIVE"}:
             try:
                 content = extract_transcript(driver, url, resource_type)
                 if not content:

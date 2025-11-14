@@ -57,6 +57,16 @@ Date: YYYY-MM-DD | Time: HH:MM AM/PM
 - **Error Recovery:** Continues processing other files if one fails
 - **Comprehensive Logging:** Detailed logs for debugging and monitoring
 
+### Whisper Fallback for Recordings
+
+Some Zoom and Drive recordings never expose the transcript panel. When that happens, the harvester now falls back to downloading the recording (using the authenticated Selenium session) and sending the audio to OpenAI Whisper. To enable this path:
+
+- Set `OPENAI_API_KEY` with a funded OpenAI account.
+- (Optional) Tune `ENABLE_WHISPER_FALLBACK`, `WHISPER_MODEL_NAME` (defaults to `whisper-1`), or `WHISPER_MAX_DOWNLOAD_MB` in `.env`.
+- Ensure the harvester host has enough disk space for temporary audio downloads (`HARVESTER_DOWNLOADS_DIR`).
+
+The pipeline automatically triggers Whisper only when the primary transcript-scraping strategy yields no content, so existing transcripts are still preferred whenever available.
+
 ## ⚙️ Local Setup and Installation
 
 ### Prerequisites
