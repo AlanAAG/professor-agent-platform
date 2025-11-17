@@ -45,6 +45,7 @@ import os
 import json
 import re
 from datetime import datetime
+import asyncio
 from typing import List, Dict, Optional, Any, Tuple
 from urllib.parse import urlparse
 import logging
@@ -549,6 +550,67 @@ NO_DOCUMENTS_ANSWER = (
     "- Try rephrasing your question\n"
     "- Contact alanayalag@gmail.com if this persists"
 )
+
+GENAI_STREAM_MAX_ATTEMPTS = int(os.getenv("GENAI_STREAM_MAX_ATTEMPTS", "3"))
+GENAI_STREAM_RETRY_BASE_SECONDS = float(os.getenv("GENAI_STREAM_RETRY_BASE_SECONDS", "0.5"))
+GENAI_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _extract_http_status(error: Exception | None) -> Optional[int]:
+    """Best-effort extraction of HTTP status code from Gemini SDK errors."""
+    if not error:
+        return None
+    for attr in ("status_code", "code", "http_status", "status"):
+        value = getattr(error, attr, None)
+        try:
+            status = int(value)
+        except (TypeError, ValueError):
+            continue
+        else:
+            if 100 <= status <= 599:
+                return status
+    message = str(error)
+    match = re.search(r"\b(?P<status>[4-5][0-9]{2})\b", message)
+    if match:
+        try:
+            return int(match.group("status"))
+        except ValueError:
+            return None
+    return None
+
+
+def _is_retryable_genai_error(error: Exception | None) -> bool:
+    """Determine whether a Gemini failure should be retried."""
+    status = _extract_http_status(error)
+    if status in GENAI_RETRYABLE_STATUS_CODES:
+        return True
+    if not error:
+        return False
+    message = str(error).lower()
+    retry_indicators = [
+        "temporarily unavailable",
+        "service unavailable",
+        "upstream connect error",
+        "connection reset",
+        "timeout",
+    ]
+    return any(token in message for token in retry_indicators)
+
+
+def _format_genai_service_error(error: Exception | None) -> str:
+    """Generate a user-facing message when Gemini cannot fulfill the request."""
+    status = _extract_http_status(error)
+    if status == 503:
+        prefix = "Gemini is temporarily overloaded (HTTP 503 - Service Unavailable)."
+    elif status == 429:
+        prefix = "Gemini is rate limiting us right now (HTTP 429)."
+    elif status:
+        prefix = f"Gemini could not process the request (HTTP {status})."
+    else:
+        prefix = "Gemini could not process the request right now."
+
+    suggestion = "Please wait a moment and try again, or review the course PDFs/manual notes locally as a backup."
+    return f"{prefix} {suggestion}"
 
 def _check_db_status() -> Dict[str, Optional[bool]]:
     """Perform a trivial Supabase query to confirm connectivity."""
@@ -1115,12 +1177,40 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             if _GENAI_CLIENT is None and not _GENAI_HAS_GENERATIVE_MODEL:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
-            try:
-                response = _stream_genai_response(
-                    contents=genai_contents,
-                    system_instruction=system_prompt,
-                )
+            response = None
+            stream_error: Exception | None = None
+            backoff = GENAI_STREAM_RETRY_BASE_SECONDS
 
+            for attempt in range(1, GENAI_STREAM_MAX_ATTEMPTS + 1):
+                try:
+                    response = _stream_genai_response(
+                        contents=genai_contents,
+                        system_instruction=system_prompt,
+                    )
+                    break
+                except Exception as err:
+                    stream_error = err
+                    retryable = _is_retryable_genai_error(err)
+                    logger.warning(
+                        "CHAT LLM error | attempt=%s/%s retryable=%s | %s",
+                        attempt,
+                        GENAI_STREAM_MAX_ATTEMPTS,
+                        retryable,
+                        err,
+                    )
+                    if not retryable or attempt == GENAI_STREAM_MAX_ATTEMPTS:
+                        break
+                    await asyncio.sleep(min(2.5, backoff))
+                    backoff *= 2
+
+            if response is None:
+                fallback_text = _format_genai_service_error(stream_error)
+                data = {"choices": [{"delta": {"content": fallback_text}}]}
+                yield f"data: {json.dumps(data)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            try:
                 for chunk in response:
                     chunk_text = getattr(chunk, "text", None)
 
