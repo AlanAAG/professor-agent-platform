@@ -50,56 +50,56 @@ jobs:
               xvfb \
               libnss3 libgbm-dev libasound2t64 libx11-dev libxext-dev libxrandr-dev libxrender-dev libxi-dev
       
-      # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
-      - name: Install Google Chrome
-        uses: browser-actions/setup-chrome@v1
-      
-      # Step 5: Create necessary directories
-      - name: Create data directories
-        run: |
-          mkdir -p logs/error_screenshots
-          mkdir -p data/raw_transcripts
-          mkdir -p data/raw_static
-          mkdir -p data/raw_pdfs
-          mkdir -p /tmp/harvester_downloads
+        # Step 4: Install Google Chrome for Selenium (driver handled by Selenium Manager)
+        - name: Install Google Chrome
+          uses: browser-actions/setup-chrome@v1
+        
+        # Step 5: Create necessary directories
+        - name: Create data directories
+          run: |
+            mkdir -p logs/error_screenshots
+            mkdir -p data/raw_transcripts
+            mkdir -p data/raw_static
+            mkdir -p data/raw_pdfs
+            mkdir -p /tmp/harvester_downloads
 
-      # Step 6: Create a .env file for Pydantic Settings (kept local to runner)
-      - name: Write .env from GitHub Secrets
-        run: |
-          cat > .env << 'EOF'
-          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-          COACH_USERNAME=${{ secrets.COACH_USERNAME }}
-          COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
-          HARVESTER_SELENIUM_HEADLESS=true
-          HARVESTER_PAGE_LOAD_TIMEOUT=60
-          HARVESTER_WAIT_TIMEOUT=30
-          HARVESTER_SCREENSHOT_DIR=logs/error_screenshots
-          HARVESTER_DOWNLOADS_DIR=/tmp/harvester_downloads
-          EOF
-      
-      # Step 7: Run Pytest Unit/Integration Tests
-      - name: Run Pytest Unit/Integration Tests
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
-          PYTHONPATH=. xvfb-run -a pytest -q -x tests/
+        # Step 6: Create a .env file for Pydantic Settings (kept local to runner)
+        - name: Write .env from GitHub Secrets
+          run: |
+            cat > .env << 'EOF'
+            MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}
+            SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+            SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+            COACH_USERNAME=${{ secrets.COACH_USERNAME }}
+            COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
+            HARVESTER_SELENIUM_HEADLESS=true
+            HARVESTER_PAGE_LOAD_TIMEOUT=60
+            HARVESTER_WAIT_TIMEOUT=30
+            HARVESTER_SCREENSHOT_DIR=logs/error_screenshots
+            HARVESTER_DOWNLOADS_DIR=/tmp/harvester_downloads
+            EOF
 
-      # Step 8: Run Harvester Job
-      - id: run_harvester_job
-        name: Run Harvester Job
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
-          COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
-          PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
-          HARVESTER_SELENIUM_HEADLESS: 'true'
-        run: |
-          bash ./run_daily_job.sh "$PIPELINE_MODE"
+        # Step 7: Run Pytest Unit/Integration Tests
+        - name: Run Pytest Unit/Integration Tests
+          run: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install pytest
+            PYTHONPATH=. xvfb-run -a pytest -q -x tests/
+
+        # Step 8: Run Harvester Job
+        - id: run_harvester_job
+          name: Run Harvester Job
+          env:
+            MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+            SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+            SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+            COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
+            COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
+            PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
+            HARVESTER_SELENIUM_HEADLESS: 'true'
+          run: |
+            bash ./run_daily_job.sh "$PIPELINE_MODE"
       
       # Step 9: Upload logs and screenshots (on failure)
       - name: Upload logs and screenshots (on failure)

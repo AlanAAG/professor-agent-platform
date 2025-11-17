@@ -9,13 +9,13 @@ It features a robust, automated pipeline (Harvester + Refinery) to ingest lectur
 The system is split into three main components:
 
 1.  **Harvester (`src/harvester/`):** A fully automated **Selenium** web scraper managed by GitHub Actions. It logs into the platform, navigates to courses, and downloads/scrapes all new resources.
-2.  **Refinery (`src/refinery/`):** Processes raw data. It uses the Gemini LLM for cleaning transcripts (removing timestamps, fixing punctuation) and vision analysis for describing images in PDFs. It then chunks and embeds the data into a **Supabase** vector store.
-3.  **Application (FastAPI):** A secure **FastAPI** server (`api_server.py`) that handles RAG queries. It uses zero-cost **RRF/MMR re-ranking** to retrieve the most relevant and diverse context before generating an answer using the Gemini API.
+2.  **Refinery (`src/refinery/`):** Processes raw data. It uses the Mistral LLM for cleaning transcripts (removing timestamps, fixing punctuation) and vision analysis for describing images in PDFs. It then chunks and embeds the data into a **Supabase** vector store.
+3.  **Application (FastAPI):** A secure **FastAPI** server (`api_server.py`) that handles RAG queries. It uses zero-cost **RRF/MMR re-ranking** to retrieve the most relevant and diverse context before generating an answer using the Mistral API.
 
 ## ✨ Key Features
 
 * **Zero-Cost RAG:** Uses a custom RRF (Reciprocal Rank Fusion) and MMR (Maximal Marginal Relevance) algorithm in place of expensive third-party re-ranking APIs (like Cohere).
-* **Multi-Modal Content:** Processes text, links, and uses Gemini Vision to describe images within PDF pages.
+* **Multi-Modal Content:** Processes text, links, and uses Mistral Vision models to describe images within PDF pages.
 * **Automated Pipeline:** The entire data ingestion process is managed by a daily GitHub Actions workflow.
 * **Security:** API endpoints are secured with a mandatory API Key (`SECRET_API_KEY`) and rate limiting (`slowapi`).
 
@@ -53,7 +53,7 @@ Date: YYYY-MM-DD | Time: HH:MM AM/PM
 **Key Features:**
 - **De-duplication:** Automatically skips files already processed
 - **Flexible Date Parsing:** Handles various date formats (YYYY-MM-DD, DD/MM/YYYY, "January 15, 2025")
-- **LLM Cleaning:** Uses Gemini to remove timestamps and improve readability
+- **LLM Cleaning:** Uses Mistral to remove timestamps and improve readability
 - **Error Recovery:** Continues processing other files if one fails
 - **Comprehensive Logging:** Detailed logs for debugging and monitoring
 
@@ -73,7 +73,7 @@ The pipeline automatically triggers Whisper only when the primary transcript-scr
 
 * Python 3.11+
 * **Supabase Project:** With the `vector` extension enabled and the `documents` table created.
-* **Google AI Studio Key:** For Gemini LLM and Embeddings.
+* **Mistral Platform API Key:** For chat generation and embeddings.
 
 ### 1. Clone and Install
 

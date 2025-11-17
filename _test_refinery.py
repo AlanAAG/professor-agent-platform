@@ -39,7 +39,7 @@ def run_test():
     try:
         clean_text = cleaning.clean_transcript_with_llm(raw_text)
     except Exception as e:
-        print(f"❌ Cleaning failed: {e}. Check GEMINI_API_KEY.")
+        print(f"❌ Cleaning failed: {e}. Check MISTRAL_API_KEY.")
         return
     
     if not clean_text:
@@ -51,7 +51,7 @@ def run_test():
     # --- STEP 2: EMBED ---
     print("\n--- Starting Embedding ---")
     try:
-        # Note: This will call the Gemini Embeddings API and write to Supabase.
+        # Note: This will call the Mistral Embeddings API and write to Supabase.
         embedding.chunk_and_embed_text(clean_text, TEST_METADATA)
         
         print("\n🎉 ----- REFINERY TEST COMPLETE ----- 🎉")

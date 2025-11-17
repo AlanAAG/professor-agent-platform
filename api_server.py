@@ -13,34 +13,10 @@ from src.shared.utils import (
     retrieve_rag_documents_keyword_fallback,
 )
 from src.app import rag_core
-_genai_import_errors = []
-genai = None
-_GENAI_SDK_FLAVOR = "unknown"
-
 try:
-    from google import genai as _modern_genai  # type: ignore[import]
-except ImportError as _modern_err:  # pragma: no cover - SDK not installed this way
-    _genai_import_errors.append(_modern_err)
-else:
-    genai = _modern_genai
-    _GENAI_SDK_FLAVOR = "google-genai"
-
-if genai is None:
-    try:
-        import google.generativeai as _legacy_genai
-    except ImportError as _legacy_err:  # pragma: no cover - SDK missing entirely
-        _genai_import_errors.append(_legacy_err)
-    else:
-        genai = _legacy_genai
-        _GENAI_SDK_FLAVOR = "google-generativeai"
-
-if genai is None:  # pragma: no cover - fail fast if SDK unavailable
-    raise ImportError(
-        "Unable to import the Google Gemini SDK. Install either 'google-genai' or 'google-generativeai'."
-    )
-
-_GENAI_HAS_GENERATIVE_MODEL = hasattr(genai, "GenerativeModel")
-_GENAI_HAS_CLIENT = hasattr(genai, "Client")
+    from mistralai import Mistral
+except ImportError as mistral_import_err:  # pragma: no cover
+    raise ImportError("Unable to import the Mistral SDK. Install the 'mistralai' package.") from mistral_import_err
 import os
 import json
 import re
@@ -142,7 +118,7 @@ def sanitize_sentry_event(event, hint):
     """Remove sensitive data before sending to Sentry."""
     if "request" in event and "env" in event["request"]:
         sensitive_keys = [
-            "GEMINI_API_KEY",
+            "MISTRAL_API_KEY",
             "SUPABASE_KEY",
             "SECRET_API_KEY",
             "OPENAI_API_KEY",
@@ -488,30 +464,23 @@ app.add_middleware(
 )
 
 # --- Initialize clients ---
-_GENAI_CLIENT = None
-_GENAI_MODEL_NAME = "gemini-2.5-flash"
-_api_key = os.getenv("GEMINI_API_KEY")
-if _api_key:
-    client_ctor = getattr(genai, "Client", None)
-    if callable(client_ctor):
-        try:
-            _GENAI_CLIENT = client_ctor(api_key=_api_key)
-        except Exception as client_err:  # pragma: no cover - SDK differences
-            logger.warning("Gemini Client initialization failed via Client(): %s", client_err)
-            _GENAI_CLIENT = None
-    if _GENAI_CLIENT is None and hasattr(genai, "configure"):
-        try:
-            genai.configure(api_key=_api_key)
-            logger.debug("Configured Gemini SDK via configure().")
-        except Exception as cfg_err:  # pragma: no cover - configuration failure
-            logger.warning("Gemini SDK configure() failed: %s", cfg_err)
+_MISTRAL_CLIENT: Mistral | None = None
+_MISTRAL_MODEL_NAME = os.getenv("MISTRAL_MODEL_NAME", "mistral-large-latest")
+try:
+    _MISTRAL_TEMPERATURE = float(os.getenv("MISTRAL_TEMPERATURE", "0.5"))
+except ValueError:
+    _MISTRAL_TEMPERATURE = 0.5
 
-logger.info(
-    "Gemini SDK flavor=%s | has_generative_model=%s | has_client=%s",
-    _GENAI_SDK_FLAVOR,
-    _GENAI_HAS_GENERATIVE_MODEL,
-    _GENAI_HAS_CLIENT,
-)
+_mistral_api_key = os.getenv("MISTRAL_API_KEY")
+if _mistral_api_key:
+    try:
+        _MISTRAL_CLIENT = Mistral(api_key=_mistral_api_key)
+        logger.info("Mistral client initialized (model=%s).", _MISTRAL_MODEL_NAME)
+    except Exception as client_err:
+        logger.error("Mistral client initialization failed: %s", client_err)
+        _MISTRAL_CLIENT = None
+else:
+    logger.warning("MISTRAL_API_KEY is not set; chat generation will fail until configured.")
 
 # Optional Supabase client for health checks
 supabase = None
@@ -551,13 +520,13 @@ NO_DOCUMENTS_ANSWER = (
     "- Contact alanayalag@gmail.com if this persists"
 )
 
-GENAI_STREAM_MAX_ATTEMPTS = int(os.getenv("GENAI_STREAM_MAX_ATTEMPTS", "3"))
-GENAI_STREAM_RETRY_BASE_SECONDS = float(os.getenv("GENAI_STREAM_RETRY_BASE_SECONDS", "0.5"))
-GENAI_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+MISTRAL_STREAM_MAX_ATTEMPTS = int(os.getenv("MISTRAL_STREAM_MAX_ATTEMPTS", "3"))
+MISTRAL_STREAM_RETRY_BASE_SECONDS = float(os.getenv("MISTRAL_STREAM_RETRY_BASE_SECONDS", "0.5"))
+MISTRAL_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def _extract_http_status(error: Exception | None) -> Optional[int]:
-    """Best-effort extraction of HTTP status code from Gemini SDK errors."""
+    """Best-effort extraction of HTTP status code from SDK errors."""
     if not error:
         return None
     for attr in ("status_code", "code", "http_status", "status"):
@@ -579,10 +548,10 @@ def _extract_http_status(error: Exception | None) -> Optional[int]:
     return None
 
 
-def _is_retryable_genai_error(error: Exception | None) -> bool:
-    """Determine whether a Gemini failure should be retried."""
+def _is_retryable_mistral_error(error: Exception | None) -> bool:
+    """Determine whether a Mistral failure should be retried."""
     status = _extract_http_status(error)
-    if status in GENAI_RETRYABLE_STATUS_CODES:
+    if status in MISTRAL_RETRYABLE_STATUS_CODES:
         return True
     if not error:
         return False
@@ -597,17 +566,17 @@ def _is_retryable_genai_error(error: Exception | None) -> bool:
     return any(token in message for token in retry_indicators)
 
 
-def _format_genai_service_error(error: Exception | None) -> str:
-    """Generate a user-facing message when Gemini cannot fulfill the request."""
+def _format_mistral_service_error(error: Exception | None) -> str:
+    """Generate a user-facing message when Mistral cannot fulfill the request."""
     status = _extract_http_status(error)
     if status == 503:
-        prefix = "Gemini is temporarily overloaded (HTTP 503 - Service Unavailable)."
+        prefix = "Mistral is temporarily overloaded (HTTP 503 - Service Unavailable)."
     elif status == 429:
-        prefix = "Gemini is rate limiting us right now (HTTP 429)."
+        prefix = "Mistral is rate limiting us right now (HTTP 429)."
     elif status:
-        prefix = f"Gemini could not process the request (HTTP {status})."
+        prefix = f"Mistral could not process the request (HTTP {status})."
     else:
-        prefix = "Gemini could not process the request right now."
+        prefix = "Mistral could not process the request right now."
 
     suggestion = "Please wait a moment and try again, or review the course PDFs/manual notes locally as a backup."
     return f"{prefix} {suggestion}"
@@ -643,203 +612,36 @@ def _get_rag_params() -> Dict[str, object]:
     }
 
 
-def _stream_genai_response(
-    contents: List[Dict[str, object]],
-    system_instruction: str,
-):
-    """Return a streaming iterator compatible with both Gemini SDKs."""
-    def _try_call(callable_obj, variants: List[Dict[str, object]]):
-        last_type_error: Optional[TypeError] = None
-        for kwargs in variants:
-            try:
-                return callable_obj(**kwargs)
-            except TypeError as exc:
-                last_type_error = exc
-                continue
-        if last_type_error:
-            logger.debug(
-                "Gemini streaming variant rejected for %s: %s",
-                getattr(callable_obj, "__qualname__", repr(callable_obj)),
-                last_type_error,
-            )
-        return None
-
-    model_ctor = getattr(genai, "GenerativeModel", None)
-    if callable(model_ctor):
-        init_variants: List[Dict[str, object]] = []
-        if _GENAI_CLIENT is not None:
-            init_variants.extend(
-                [
-                    {
-                        "model_name": _GENAI_MODEL_NAME,
-                        "system_instruction": system_instruction,
-                        "client": _GENAI_CLIENT,
-                    },
-                    {
-                        "model": _GENAI_MODEL_NAME,
-                        "system_instruction": system_instruction,
-                        "client": _GENAI_CLIENT,
-                    },
-                ]
-            )
-        init_variants.extend(
-            [
-                {
-                    "model_name": _GENAI_MODEL_NAME,
-                    "system_instruction": system_instruction,
-                },
-                {
-                    "model": _GENAI_MODEL_NAME,
-                    "system_instruction": system_instruction,
-                },
-                {"model_name": _GENAI_MODEL_NAME},
-                {"model": _GENAI_MODEL_NAME},
-            ]
-        )
-
-        model_instance = None
-        for init_kwargs in init_variants:
-            try:
-                model_instance = model_ctor(**init_kwargs)
-                break
-            except TypeError:
-                continue
-
-        if model_instance is None:
-            model_instance = model_ctor(_GENAI_MODEL_NAME)
-
-        stream_call_variants: List[Dict[str, object]] = []
-        if system_instruction:
-            stream_call_variants.extend(
-                [
-                    {
-                        "contents": contents,
-                        "system_instruction": system_instruction,
-                    },
-                    {
-                        "contents": contents,
-                        "config": {"system_instruction": system_instruction},
-                    },
-                ]
-            )
-        stream_call_variants.extend(
-            [
-                {"contents": contents},
-                {"input": contents},
-            ]
-        )
-
-        stream_method = getattr(model_instance, "generate_content_stream", None)
-        if callable(stream_method):
-            response = _try_call(stream_method, stream_call_variants)
-            if response is not None:
-                return response
-
-        legacy_variants: List[Dict[str, object]] = []
-        if system_instruction:
-            legacy_variants.extend(
-                [
-                    {
-                        "contents": contents,
-                        "system_instruction": system_instruction,
-                        "stream": True,
-                    },
-                    {
-                        "contents": contents,
-                        "config": {"system_instruction": system_instruction},
-                        "stream": True,
-                    },
-                    {
-                        "content": contents,
-                        "system_instruction": system_instruction,
-                        "stream": True,
-                    },
-                ]
-            )
-        legacy_variants.extend(
-            [
-                {"contents": contents, "stream": True},
-                {"content": contents, "stream": True},
-            ]
-        )
-
-        legacy_method = getattr(model_instance, "generate_content", None)
-        if callable(legacy_method):
-            response = _try_call(legacy_method, legacy_variants)
-            if response is not None:
-                return response
-
-    client = _GENAI_CLIENT
-    if client is not None:
-        models_iface = getattr(client, "models", None)
-        if models_iface is not None:
-            models_stream_variants: List[Dict[str, object]] = []
-            if system_instruction:
-                models_stream_variants.extend(
-                    [
-                        {
-                            "model": _GENAI_MODEL_NAME,
-                            "contents": contents,
-                            "system_instruction": system_instruction,
-                        },
-                        {
-                            "model": _GENAI_MODEL_NAME,
-                            "contents": contents,
-                            "config": {"system_instruction": system_instruction},
-                        },
-                    ]
-                )
-            models_stream_variants.extend(
-                [
-                    {
-                        "model": _GENAI_MODEL_NAME,
-                        "contents": contents,
-                    },
-                    {
-                        "model": _GENAI_MODEL_NAME,
-                        "input": contents,
-                    },
-                ]
-            )
-
-            stream_method = getattr(models_iface, "generate_content_stream", None)
-            if callable(stream_method):
-                response = _try_call(stream_method, models_stream_variants)
-                if response is not None:
-                    return response
-
-            generate_method = getattr(models_iface, "generate_content", None)
-            if callable(generate_method):
-                legacy_variants: List[Dict[str, object]] = []
-                for variant in models_stream_variants:
-                    legacy_variant = dict(variant)
-                    legacy_variant["stream"] = True
-                    legacy_variants.append(legacy_variant)
-                response = _try_call(generate_method, legacy_variants)
-                if response is not None:
-                    return response
-
-        responses_iface = getattr(client, "responses", None)
-        if responses_iface is not None and hasattr(responses_iface, "stream_generate"):
-            response_kwargs = {
-                "model": _GENAI_MODEL_NAME,
-                "contents": contents,
-            }
-            if system_instruction:
-                try:
-                    return responses_iface.stream_generate(
-                        system_instruction=system_instruction,
-                        **response_kwargs,
-                    )
-                except TypeError:
-                    logger.debug(
-                        "Gemini responses.stream_generate does not accept system_instruction directly; continuing without it."
-                    )
-            return responses_iface.stream_generate(**response_kwargs)
-
-    raise RuntimeError(
-        "Gemini client is not initialized with a compatible SDK. Check GEMINI_API_KEY and installed SDK version."
+def _stream_mistral_response(messages: List[Dict[str, object]]):
+    """Return a streaming iterator using the Mistral SDK."""
+    if _MISTRAL_CLIENT is None:
+        raise RuntimeError("Mistral client is not initialized. Check MISTRAL_API_KEY.")
+    return _MISTRAL_CLIENT.chat.stream(
+        model=_MISTRAL_MODEL_NAME,
+        messages=messages,
+        temperature=_MISTRAL_TEMPERATURE,
     )
+
+
+def _extract_mistral_chunk_text(chunk: Any) -> str:
+    """Extract textual content from a streaming chunk."""
+    if chunk is None:
+        return ""
+    content = getattr(chunk, "content", None)
+    texts: List[str] = []
+    if isinstance(content, str):
+        texts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                text_val = block.get("text") or block.get("content") or ""
+                if text_val:
+                    texts.append(text_val)
+            elif hasattr(block, "text"):
+                text_val = getattr(block, "text")
+                if text_val:
+                    texts.append(text_val)
+    return "".join(texts)
 
 
 class Message(BaseModel):
@@ -886,7 +688,7 @@ async def health_check(request: Request):
         "version": "1.0.0-beta",
         "timestamp": datetime.now().isoformat(),
         "database": db_status,
-        "model_loaded": _GENAI_CLIENT is not None,
+        "model_loaded": _MISTRAL_CLIENT is not None,
         "endpoints": {
             "chat": "/api/chat",
             "rag_search": "/api/rag-search",
@@ -1132,23 +934,26 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             f"Response rules:\n{rules}"
         )
         
-        def _to_genai_contents(chat_messages: List[Dict[str, str]]):
-            contents: List[Dict[str, object]] = []
+        def _to_mistral_messages(chat_messages: List[Dict[str, str]]):
+            outputs: List[Dict[str, str]] = []
             for m in chat_messages:
                 role_raw = (m.get("role") or "").lower()
                 if role_raw == "system":
                     continue
-                role = "user" if role_raw == "user" else "model" if role_raw == "assistant" else "user"
-                contents.append({
-                    "role": role,
-                    "parts": [{"text": m.get("content", "")}],
-                })
-            return contents
+                role = "user" if role_raw == "user" else "assistant"
+                outputs.append(
+                    {
+                        "role": role,
+                        "content": m.get("content", "") or "",
+                    }
+                )
+            return outputs
         
         clean_messages: List[Dict[str, str]] = [
             {"role": m.role, "content": m.content} for m in payload.messages
         ]
-        genai_contents = _to_genai_contents(clean_messages)
+        mistral_messages = _to_mistral_messages(clean_messages)
+        mistral_messages_with_system = [{"role": "system", "content": system_prompt}] + mistral_messages
         
         async def generate():
             sources_payload = {
@@ -1174,65 +979,57 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 )
             yield f"data: {json.dumps(sources_payload)}\n\n"
             
-            if _GENAI_CLIENT is None and not _GENAI_HAS_GENERATIVE_MODEL:
-                raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
+            if _MISTRAL_CLIENT is None:
+                raise RuntimeError("Mistral client is not initialized. Check MISTRAL_API_KEY.")
 
-            response = None
+            response_stream = None
             stream_error: Exception | None = None
-            backoff = GENAI_STREAM_RETRY_BASE_SECONDS
+            backoff = MISTRAL_STREAM_RETRY_BASE_SECONDS
 
-            for attempt in range(1, GENAI_STREAM_MAX_ATTEMPTS + 1):
+            for attempt in range(1, MISTRAL_STREAM_MAX_ATTEMPTS + 1):
                 try:
-                    response = _stream_genai_response(
-                        contents=genai_contents,
-                        system_instruction=system_prompt,
-                    )
+                    response_stream = _stream_mistral_response(mistral_messages_with_system)
                     break
                 except Exception as err:
                     stream_error = err
-                    retryable = _is_retryable_genai_error(err)
+                    retryable = _is_retryable_mistral_error(err)
                     logger.warning(
                         "CHAT LLM error | attempt=%s/%s retryable=%s | %s",
                         attempt,
-                        GENAI_STREAM_MAX_ATTEMPTS,
+                        MISTRAL_STREAM_MAX_ATTEMPTS,
                         retryable,
                         err,
                     )
-                    if not retryable or attempt == GENAI_STREAM_MAX_ATTEMPTS:
+                    if not retryable or attempt == MISTRAL_STREAM_MAX_ATTEMPTS:
                         break
                     await asyncio.sleep(min(2.5, backoff))
                     backoff *= 2
 
-            if response is None:
-                fallback_text = _format_genai_service_error(stream_error)
+            if response_stream is None:
+                fallback_text = _format_mistral_service_error(stream_error)
                 data = {"choices": [{"delta": {"content": fallback_text}}]}
                 yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
             try:
-                for chunk in response:
-                    chunk_text = getattr(chunk, "text", None)
-
-                    if not chunk_text and getattr(chunk, "candidates", None):
-                        parts: List[str] = []
-                        for candidate in chunk.candidates:
-                            content = getattr(candidate, "content", None)
-                            if not content:
-                                continue
-                            for part in getattr(content, "parts", []) or []:
-                                text = getattr(part, "text", None)
-                                if text:
-                                    parts.append(text)
-                        chunk_text = "".join(parts) if parts else None
-
-                    if chunk_text:
-                        data = {
-                            "choices": [{
-                                "delta": {"content": chunk_text}
-                            }]
-                        }
-                        yield f"data: {json.dumps(data)}\n\n"
+                for event in response_stream:
+                    chunk_data = getattr(event, "data", None)
+                    if not chunk_data:
+                        continue
+                    choices = getattr(chunk_data, "choices", None) or []
+                    for choice in choices:
+                        delta = getattr(choice, "delta", None)
+                        if not delta:
+                            continue
+                        chunk_text = _extract_mistral_chunk_text(delta)
+                        if chunk_text:
+                            data = {
+                                "choices": [{
+                                    "delta": {"content": chunk_text}
+                                }]
+                            }
+                            yield f"data: {json.dumps(data)}\n\n"
             except Exception as stream_err:
                 err_payload = {"error": str(stream_err)}
                 yield f"data: {json.dumps(err_payload)}\n\n"
