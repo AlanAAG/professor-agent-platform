@@ -94,6 +94,7 @@ class _FakeDriver:
 def set_test_env():
     """Set required environment variables so modules initialize without real secrets."""
     os.environ["GEMINI_API_KEY"] = "test-gemini-key"
+    os.environ["LLM_PROVIDER"] = "gemini"
     os.environ["SUPABASE_URL"] = "https://example.supabase.co"
     os.environ["SUPABASE_KEY"] = "test-supabase-key"
     os.environ["COACH_USERNAME"] = "test-user"

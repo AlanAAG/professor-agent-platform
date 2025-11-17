@@ -9,6 +9,14 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false  # Set manually in Render dashboard
+      - key: LLM_PROVIDER
+        value: gemini  # Set to 'mistral' when migrating
+      - key: MISTRAL_API_KEY
+        sync: false  # Optional: falls back to GEMINI_API_KEY when provider=mistral
+      - key: MISTRAL_MODEL
+        value: mistral-large-latest
+      - key: MISTRAL_BASE_URL
+        value: https://api.mistral.ai/v1
       - key: OPENAI_API_KEY
         sync: false  # Optional: enables OpenAI embedding fallback
       - key: SUPABASE_URL
@@ -22,7 +30,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11
       - key: EMBEDDING_MODEL_NAME
-        value: text-embedding-004  # or models/embedding-001
+        value: text-embedding-004  # switch to mistral-embed when LLM_PROVIDER=mistral
       - key: COACH_PASSWORD
         sync: false
     

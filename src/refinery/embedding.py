@@ -7,15 +7,25 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_mistralai import MistralAIEmbeddings
 from src.shared.utils import EMBEDDING_MODEL_NAME, EXPECTED_EMBEDDING_DIM
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
+from src.shared.provider_config import (
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_mistral,
+)
 
 # --- Load Environment Variables ---
 # Ensures .env file is read when running locally.
 load_dotenv()
+
+LLM_PROVIDER = get_llm_provider()
+logging.info("Embedding pipeline targeting provider=%s model=%s", LLM_PROVIDER, EMBEDDING_MODEL_NAME)
 
 # --- 1. Initialize Clients ---
 supabase = None
@@ -26,24 +36,34 @@ try:
     # --- Check and Load Environment Variables ---
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
 
     if not supabase_url or not supabase_key:
         raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY must be set in .env for embeddings")
 
     # --- Initialize Supabase Client ---
     supabase = create_client(supabase_url, supabase_key)
     logging.info("Supabase client initialized.")
 
     # --- Initialize Embedding Model ---
-    # Keep model name in one shared place for consistency
-    embeddings_model = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL_NAME,
-        google_api_key=gemini_api_key
-    )
-    logging.info("Gemini embedding model initialized.")
+    if is_mistral():
+        mistral_api_key = get_mistral_api_key()
+        if not mistral_api_key:
+            raise ValueError("Mistral API key is required for embeddings when LLM_PROVIDER=mistral.")
+        embeddings_model = MistralAIEmbeddings(
+            model=EMBEDDING_MODEL_NAME,
+            api_key=mistral_api_key,
+            endpoint=get_mistral_base_url(),
+        )
+        logging.info("Mistral embedding model initialized.")
+    else:
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise ValueError("GEMINI_API_KEY must be set in .env for embeddings")
+        embeddings_model = GoogleGenerativeAIEmbeddings(
+            model=EMBEDDING_MODEL_NAME,
+            google_api_key=gemini_api_key
+        )
+        logging.info("Gemini embedding model initialized.")
 
     # Validate embedding dimensions match database schema
     try:
@@ -73,7 +93,7 @@ except Exception as e:
     # --- Improved Error Handling ---
     logging.error("Could not initialize embedding clients.")
     logging.error(f"Error details: {e}")
-    logging.error("Please double-check your .env file for correct SUPABASE_URL, SUPABASE_KEY, and GEMINI_API_KEY.")
+    logging.error("Please double-check your .env file for correct Supabase credentials and LLM API keys.")
     # Do not exit here; allow importing modules that handle missing clients gracefully.
 
 # --- 3. Initialize the Text Splitter ---
@@ -142,8 +162,7 @@ def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
     """
     if not vector_store or not embeddings_model or not supabase:
         raise EnvironmentError(
-            "Embedding system not initialized. Check that GEMINI_API_KEY, SUPABASE_URL, "
-            "and SUPABASE_KEY are correctly set in your environment variables."
+            "Embedding system not initialized. Verify SUPABASE_URL, SUPABASE_KEY, and the configured LLM API key."
         )
     if not vector_store:
         # This check is important because initialization may have failed gracefully.

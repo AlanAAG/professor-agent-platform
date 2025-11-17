@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai.chat_models import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document # For type hinting
@@ -18,6 +19,13 @@ from src.shared.utils import (
     retrieve_rag_documents,
     retrieve_rag_documents_keyword_fallback,
     _to_langchain_documents,
+)
+from src.shared.provider_config import (
+    get_chat_model_name,
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_mistral,
 )
 
 try:  # pragma: no cover - defensive import
@@ -33,6 +41,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Load Environment Variables ---
 # Loads variables from .env file for local development
 load_dotenv()
+
+LLM_PROVIDER = get_llm_provider()
+CHAT_MODEL_NAME = get_chat_model_name()
+MODEL_TEMPERATURE = float(os.environ.get("RAG_MODEL_TEMPERATURE", "0.5"))
 
 # --- Load Professor Personas ---
 PERSONA_FILE_PATH = Path(__file__).with_name("persona.json")
@@ -78,20 +90,32 @@ def _get_fallback_persona() -> Dict[str, str]:
 # --- Initialize LLM (using LangChain for consistency) ---
 llm = None
 try:
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY not found in environment variables.")
+    if is_mistral():
+        mistral_api_key = get_mistral_api_key()
+        if not mistral_api_key:
+            raise ValueError("Mistral API key not configured. Set MISTRAL_API_KEY or GEMINI_API_KEY with a Mistral key.")
+        llm = ChatMistralAI(
+            model=CHAT_MODEL_NAME,
+            api_key=mistral_api_key,
+            endpoint=get_mistral_base_url(),
+            temperature=MODEL_TEMPERATURE,
+        )
+        logging.info("RAG Core: Mistral model initialized.")
+    else:
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise ValueError("GEMINI_API_KEY not found in environment variables.")
 
-    # Initialize the Gemini model via LangChain
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash", # Cost-effective model with large context
-        google_api_key=gemini_api_key,
-        convert_system_message_to_human=True, # Helps with certain prompt structures
-        temperature=0.5 # Lower temperature for more factual, less creative responses
-    )
-    logging.info("RAG Core: Gemini model initialized.")
+        llm = ChatGoogleGenerativeAI(
+            model=CHAT_MODEL_NAME,
+            google_api_key=gemini_api_key,
+            convert_system_message_to_human=True,
+            temperature=MODEL_TEMPERATURE,
+        )
+        logging.info("RAG Core: Gemini model initialized.")
 except Exception as e:
-    logging.error(f"RAG Core: Error initializing Gemini model: {e}")
+    logging.error(f"RAG Core: Error initializing {LLM_PROVIDER} model: {e}")
+    llm = None
 
 # --- Constants ---
 INITIAL_RETRIEVAL_K = 20 # Number of chunks to fetch initially from vector store

@@ -5,6 +5,7 @@ from fastapi.security import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from openai import OpenAI
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from src.shared.utils import (
     EMBEDDING_MODEL_NAME,
@@ -13,31 +14,44 @@ from src.shared.utils import (
     retrieve_rag_documents_keyword_fallback,
 )
 from src.app import rag_core
+from src.shared.provider_config import (
+    get_chat_model_name,
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_gemini,
+    is_mistral,
+)
 _genai_import_errors = []
 genai = None
-_GENAI_SDK_FLAVOR = "unknown"
+_GENAI_SDK_FLAVOR = "disabled"
 
-try:
-    from google import genai as _modern_genai  # type: ignore[import]
-except ImportError as _modern_err:  # pragma: no cover - SDK not installed this way
-    _genai_import_errors.append(_modern_err)
-else:
-    genai = _modern_genai
-    _GENAI_SDK_FLAVOR = "google-genai"
+LLM_PROVIDER = get_llm_provider()
+_LLM_MODEL_NAME = get_chat_model_name()
 
-if genai is None:
+if is_gemini():
+    _GENAI_SDK_FLAVOR = "unknown"
     try:
-        import google.generativeai as _legacy_genai
-    except ImportError as _legacy_err:  # pragma: no cover - SDK missing entirely
-        _genai_import_errors.append(_legacy_err)
+        from google import genai as _modern_genai  # type: ignore[import]
+    except ImportError as _modern_err:  # pragma: no cover - SDK not installed this way
+        _genai_import_errors.append(_modern_err)
     else:
-        genai = _legacy_genai
-        _GENAI_SDK_FLAVOR = "google-generativeai"
+        genai = _modern_genai
+        _GENAI_SDK_FLAVOR = "google-genai"
 
-if genai is None:  # pragma: no cover - fail fast if SDK unavailable
-    raise ImportError(
-        "Unable to import the Google Gemini SDK. Install either 'google-genai' or 'google-generativeai'."
-    )
+    if genai is None:
+        try:
+            import google.generativeai as _legacy_genai
+        except ImportError as _legacy_err:  # pragma: no cover - SDK missing entirely
+            _genai_import_errors.append(_legacy_err)
+        else:
+            genai = _legacy_genai
+            _GENAI_SDK_FLAVOR = "google-generativeai"
+
+    if genai is None:  # pragma: no cover - fail fast if SDK unavailable
+        raise ImportError(
+            "Unable to import the Google Gemini SDK. Install either 'google-genai' or 'google-generativeai'."
+        )
 
 _GENAI_HAS_GENERATIVE_MODEL = hasattr(genai, "GenerativeModel")
 _GENAI_HAS_CLIENT = hasattr(genai, "Client")
@@ -143,6 +157,7 @@ def sanitize_sentry_event(event, hint):
     if "request" in event and "env" in event["request"]:
         sensitive_keys = [
             "GEMINI_API_KEY",
+            "MISTRAL_API_KEY",
             "SUPABASE_KEY",
             "SECRET_API_KEY",
             "OPENAI_API_KEY",
@@ -489,29 +504,43 @@ app.add_middleware(
 
 # --- Initialize clients ---
 _GENAI_CLIENT = None
-_GENAI_MODEL_NAME = "gemini-2.5-flash"
-_api_key = os.getenv("GEMINI_API_KEY")
-if _api_key:
-    client_ctor = getattr(genai, "Client", None)
-    if callable(client_ctor):
-        try:
-            _GENAI_CLIENT = client_ctor(api_key=_api_key)
-        except Exception as client_err:  # pragma: no cover - SDK differences
-            logger.warning("Gemini Client initialization failed via Client(): %s", client_err)
-            _GENAI_CLIENT = None
-    if _GENAI_CLIENT is None and hasattr(genai, "configure"):
-        try:
-            genai.configure(api_key=_api_key)
-            logger.debug("Configured Gemini SDK via configure().")
-        except Exception as cfg_err:  # pragma: no cover - configuration failure
-            logger.warning("Gemini SDK configure() failed: %s", cfg_err)
+_GENAI_MODEL_NAME = _LLM_MODEL_NAME
+_MISTRAL_CLIENT: OpenAI | None = None
 
-logger.info(
-    "Gemini SDK flavor=%s | has_generative_model=%s | has_client=%s",
-    _GENAI_SDK_FLAVOR,
-    _GENAI_HAS_GENERATIVE_MODEL,
-    _GENAI_HAS_CLIENT,
-)
+if is_gemini():
+    _api_key = os.getenv("GEMINI_API_KEY")
+    if _api_key:
+        client_ctor = getattr(genai, "Client", None)
+        if callable(client_ctor):
+            try:
+                _GENAI_CLIENT = client_ctor(api_key=_api_key)
+            except Exception as client_err:  # pragma: no cover - SDK differences
+                logger.warning("Gemini Client initialization failed via Client(): %s", client_err)
+                _GENAI_CLIENT = None
+        if _GENAI_CLIENT is None and hasattr(genai, "configure"):
+            try:
+                genai.configure(api_key=_api_key)
+                logger.debug("Configured Gemini SDK via configure().")
+            except Exception as cfg_err:  # pragma: no cover - configuration failure
+                logger.warning("Gemini SDK configure() failed: %s", cfg_err)
+
+    logger.info(
+        "Gemini SDK flavor=%s | has_generative_model=%s | has_client=%s | model=%s",
+        _GENAI_SDK_FLAVOR,
+        _GENAI_HAS_GENERATIVE_MODEL,
+        _GENAI_HAS_CLIENT,
+        _GENAI_MODEL_NAME,
+    )
+else:
+    mistral_api_key = get_mistral_api_key()
+    if not mistral_api_key:
+        logger.error("LLM_PROVIDER=mistral but no API key configured. Set MISTRAL_API_KEY or GEMINI_API_KEY with a Mistral key.")
+    else:
+        try:
+            _MISTRAL_CLIENT = OpenAI(api_key=mistral_api_key, base_url=get_mistral_base_url())
+            logger.info("Mistral client initialized (model=%s).", _LLM_MODEL_NAME)
+        except Exception as exc:
+            logger.exception("Failed to initialize Mistral client: %s", exc)
 
 # Optional Supabase client for health checks
 supabase = None
@@ -522,6 +551,13 @@ except Exception:
     supabase = None
 
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
+
+
+def _llm_ready() -> bool:
+    if is_mistral():
+        return _MISTRAL_CLIENT is not None
+    return _GENAI_CLIENT is not None or _GENAI_HAS_GENERATIVE_MODEL
+
 
 # --- API Key Authentication Setup ---
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
@@ -551,13 +587,13 @@ NO_DOCUMENTS_ANSWER = (
     "- Contact alanayalag@gmail.com if this persists"
 )
 
-GENAI_STREAM_MAX_ATTEMPTS = int(os.getenv("GENAI_STREAM_MAX_ATTEMPTS", "3"))
-GENAI_STREAM_RETRY_BASE_SECONDS = float(os.getenv("GENAI_STREAM_RETRY_BASE_SECONDS", "0.5"))
-GENAI_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+LLM_STREAM_MAX_ATTEMPTS = int(os.getenv("GENAI_STREAM_MAX_ATTEMPTS", "3"))
+LLM_STREAM_RETRY_BASE_SECONDS = float(os.getenv("GENAI_STREAM_RETRY_BASE_SECONDS", "0.5"))
+LLM_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def _extract_http_status(error: Exception | None) -> Optional[int]:
-    """Best-effort extraction of HTTP status code from Gemini SDK errors."""
+    """Best-effort extraction of HTTP status code from upstream LLM SDK errors."""
     if not error:
         return None
     for attr in ("status_code", "code", "http_status", "status"):
@@ -579,10 +615,10 @@ def _extract_http_status(error: Exception | None) -> Optional[int]:
     return None
 
 
-def _is_retryable_genai_error(error: Exception | None) -> bool:
-    """Determine whether a Gemini failure should be retried."""
+def _is_retryable_llm_error(error: Exception | None) -> bool:
+    """Determine whether an upstream LLM failure should be retried."""
     status = _extract_http_status(error)
-    if status in GENAI_RETRYABLE_STATUS_CODES:
+    if status in LLM_RETRYABLE_STATUS_CODES:
         return True
     if not error:
         return False
@@ -597,17 +633,18 @@ def _is_retryable_genai_error(error: Exception | None) -> bool:
     return any(token in message for token in retry_indicators)
 
 
-def _format_genai_service_error(error: Exception | None) -> str:
-    """Generate a user-facing message when Gemini cannot fulfill the request."""
+def _format_llm_service_error(error: Exception | None) -> str:
+    """Generate a user-facing message when the selected LLM cannot fulfill the request."""
     status = _extract_http_status(error)
+    provider_label = "Mistral" if is_mistral() else "Gemini"
     if status == 503:
-        prefix = "Gemini is temporarily overloaded (HTTP 503 - Service Unavailable)."
+        prefix = f"{provider_label} is temporarily overloaded (HTTP 503 - Service Unavailable)."
     elif status == 429:
-        prefix = "Gemini is rate limiting us right now (HTTP 429)."
+        prefix = f"{provider_label} is rate limiting us right now (HTTP 429)."
     elif status:
-        prefix = f"Gemini could not process the request (HTTP {status})."
+        prefix = f"{provider_label} could not process the request (HTTP {status})."
     else:
-        prefix = "Gemini could not process the request right now."
+        prefix = f"{provider_label} could not process the request right now."
 
     suggestion = "Please wait a moment and try again, or review the course PDFs/manual notes locally as a backup."
     return f"{prefix} {suggestion}"
@@ -886,7 +923,8 @@ async def health_check(request: Request):
         "version": "1.0.0-beta",
         "timestamp": datetime.now().isoformat(),
         "database": db_status,
-        "model_loaded": _GENAI_CLIENT is not None,
+        "llm_provider": LLM_PROVIDER,
+        "model_loaded": _llm_ready(),
         "endpoints": {
             "chat": "/api/chat",
             "rag_search": "/api/rag-search",
@@ -901,7 +939,7 @@ async def health_check(request: Request):
 async def health(request: Request):
     """Dedicated health endpoint for uptime monitoring."""
     db_status = _check_db_status()
-    return {"status": "ok", "database": db_status}
+    return {"status": "ok", "database": db_status, "llm_provider": LLM_PROVIDER, "model_loaded": _llm_ready()}
 
 
 @app.get("/metrics")
@@ -1144,11 +1182,28 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                     "parts": [{"text": m.get("content", "")}],
                 })
             return contents
-        
+
+        def _to_openai_messages(chat_messages: List[Dict[str, str]], system_prompt: str) -> List[Dict[str, str]]:
+            """Convert stored chat history into OpenAI-compatible messages."""
+            messages: List[Dict[str, str]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for m in chat_messages:
+                role_raw = (m.get("role") or "").lower()
+                if role_raw == "system":
+                    continue
+                if role_raw == "assistant":
+                    role = "assistant"
+                else:
+                    role = "user"
+                messages.append({"role": role, "content": m.get("content", "")})
+            return messages
+
         clean_messages: List[Dict[str, str]] = [
             {"role": m.role, "content": m.content} for m in payload.messages
         ]
         genai_contents = _to_genai_contents(clean_messages)
+        openai_messages = _to_openai_messages(clean_messages, system_prompt)
         
         async def generate():
             sources_payload = {
@@ -1173,15 +1228,76 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                     int((time.time() - _t0) * 1000),
                 )
             yield f"data: {json.dumps(sources_payload)}\n\n"
-            
+
+            if is_mistral():
+                if _MISTRAL_CLIENT is None:
+                    raise RuntimeError("Mistral client is not initialized. Check MISTRAL_API_KEY or set LLM_PROVIDER=gemini.")
+                response = None
+                stream_error: Exception | None = None
+                backoff = LLM_STREAM_RETRY_BASE_SECONDS
+                for attempt in range(1, LLM_STREAM_MAX_ATTEMPTS + 1):
+                    try:
+                        response = _MISTRAL_CLIENT.chat.completions.create(
+                            model=_LLM_MODEL_NAME,
+                            messages=openai_messages,
+                            stream=True,
+                        )
+                        break
+                    except Exception as err:
+                        stream_error = err
+                        retryable = _is_retryable_llm_error(err)
+                        logger.warning(
+                            "CHAT LLM error | attempt=%s/%s retryable=%s | %s",
+                            attempt,
+                            LLM_STREAM_MAX_ATTEMPTS,
+                            retryable,
+                            err,
+                        )
+                        if not retryable or attempt == LLM_STREAM_MAX_ATTEMPTS:
+                            break
+                        await asyncio.sleep(min(2.5, backoff))
+                        backoff *= 2
+
+                if response is None:
+                    fallback_text = _format_llm_service_error(stream_error)
+                    data = {"choices": [{"delta": {"content": fallback_text}}]}
+                    yield f"data: {json.dumps(data)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                try:
+                    for chunk in response:
+                        chunk_texts: List[str] = []
+                        for choice in getattr(chunk, "choices", []) or []:
+                            delta = getattr(choice, "delta", None)
+                            text_piece = getattr(delta, "content", None) if delta else None
+                            if isinstance(text_piece, list):
+                                for part in text_piece:
+                                    text_value = getattr(part, "text", None)
+                                    if text_value:
+                                        chunk_texts.append(text_value)
+                                    elif isinstance(part, str):
+                                        chunk_texts.append(part)
+                            elif text_piece:
+                                chunk_texts.append(text_piece)
+                        if chunk_texts:
+                            data = {"choices": [{"delta": {"content": "".join(chunk_texts)}}]}
+                            yield f"data: {json.dumps(data)}\n\n"
+                except Exception as stream_err:
+                    err_payload = {"error": str(stream_err)}
+                    yield f"data: {json.dumps(err_payload)}\n\n"
+
+                yield "data: [DONE]\n\n"
+                return
+
             if _GENAI_CLIENT is None and not _GENAI_HAS_GENERATIVE_MODEL:
                 raise RuntimeError("Gemini client is not initialized. Check GEMINI_API_KEY.")
 
             response = None
-            stream_error: Exception | None = None
-            backoff = GENAI_STREAM_RETRY_BASE_SECONDS
+            stream_error = None
+            backoff = LLM_STREAM_RETRY_BASE_SECONDS
 
-            for attempt in range(1, GENAI_STREAM_MAX_ATTEMPTS + 1):
+            for attempt in range(1, LLM_STREAM_MAX_ATTEMPTS + 1):
                 try:
                     response = _stream_genai_response(
                         contents=genai_contents,
@@ -1190,21 +1306,21 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                     break
                 except Exception as err:
                     stream_error = err
-                    retryable = _is_retryable_genai_error(err)
+                    retryable = _is_retryable_llm_error(err)
                     logger.warning(
                         "CHAT LLM error | attempt=%s/%s retryable=%s | %s",
                         attempt,
-                        GENAI_STREAM_MAX_ATTEMPTS,
+                        LLM_STREAM_MAX_ATTEMPTS,
                         retryable,
                         err,
                     )
-                    if not retryable or attempt == GENAI_STREAM_MAX_ATTEMPTS:
+                    if not retryable or attempt == LLM_STREAM_MAX_ATTEMPTS:
                         break
                     await asyncio.sleep(min(2.5, backoff))
                     backoff *= 2
 
             if response is None:
-                fallback_text = _format_genai_service_error(stream_error)
+                fallback_text = _format_llm_service_error(stream_error)
                 data = {"choices": [{"delta": {"content": fallback_text}}]}
                 yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -1236,7 +1352,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             except Exception as stream_err:
                 err_payload = {"error": str(stream_err)}
                 yield f"data: {json.dumps(err_payload)}\n\n"
-            
+
             yield "data: [DONE]\n\n"
         
         return StreamingResponse(
