@@ -52,6 +52,13 @@ HEAD_PROBE_BYPASS_DOMAINS: Tuple[str, ...] = (
     "docs.google.com",
 )
 
+HEAD_FALLBACK_STATUS_CODES: Tuple[int, ...] = (
+    401,
+    403,
+    405,
+    429,
+)
+
 # Transcription scraping implementations moved to src/refinery/recording_processor.py
 
 
@@ -68,6 +75,27 @@ def _should_skip_head_probe(url: str) -> bool:
         return False
 
     return any(_matches_domain(netloc, domain) for domain in HEAD_PROBE_BYPASS_DOMAINS)
+
+
+def _infer_content_type_from_url(url: str) -> str:
+    """
+    Attempt to infer a reasonable content type based on the URL path/extension.
+    Falls back to HTML to allow downstream handlers to attempt scraping.
+    """
+    sanitized = (url or "").split("?", 1)[0].split("#", 1)[0].lower()
+    extension_map = {
+        ".pdf": "application/pdf",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+    }
+    for ext, mime in extension_map.items():
+        if sanitized.endswith(ext):
+            return f"{mime}; inferred-extension"
+    return "text/html; head-probe-fallback"
 
 
 def check_url_content_type(url: str) -> str:
@@ -92,6 +120,16 @@ def check_url_content_type(url: str) -> str:
         resp.raise_for_status()
         return (resp.headers.get("Content-Type", "")).lower()
     except RequestException as e:
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
+        if status_code in HEAD_FALLBACK_STATUS_CODES:
+            inferred_type = _infer_content_type_from_url(url)
+            logging.warning(
+                "   HEAD probe blocked for %s (HTTP %s). Falling back to inferred content type: %s",
+                url,
+                status_code,
+                inferred_type,
+            )
+            return inferred_type
         logging.error(f"   Error checking content type for {url}: {e}")
         return "error"
 
