@@ -2,7 +2,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai.chat_models import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
@@ -10,15 +10,20 @@ from langchain_core.output_parsers import StrOutputParser
 load_dotenv() 
 
 # --- Configure the LLM Client (using LangChain) ---
+mistral_model_name = os.environ.get("MISTRAL_MODEL_NAME", "mistral-large-latest")
 try:
-    # Prefer a broadly available, cost-effective model
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("MISTRAL_API_KEY")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not set")
+
+    model = ChatMistralAI(
+        model=mistral_model_name,
+        api_key=api_key,
+        temperature=0.45,
     )
-    logging.info("Gemini model configured successfully (via LangChain).")
+    logging.info("Mistral model configured successfully (via LangChain).")
 except Exception as e:
-    logging.error(f"Error configuring Gemini via LangChain: {e}")
+    logging.error(f"Error configuring Mistral via LangChain: {e}")
     model = None
 
 def _clean_transcript_locally(raw_text: str) -> str:

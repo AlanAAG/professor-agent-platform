@@ -5,7 +5,7 @@ import os
 import base64
 from dotenv import load_dotenv
 import logging  # Use logging instead of print for better tracking
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai.chat_models import ChatMistralAI
 from langchain_core.messages import HumanMessage
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -22,22 +22,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Load Environment Variables ---
 load_dotenv()
 
-# --- Configure Gemini Client via LangChain (for image descriptions) ---
+# --- Configure Mistral Client via LangChain (for image descriptions) ---
 image_model = None
+vision_model_name = os.environ.get("MISTRAL_VISION_MODEL_NAME") or os.environ.get("MISTRAL_MODEL_NAME") or "pixtral-large-latest"
+vision_temperature = float(os.environ.get("MISTRAL_VISION_TEMPERATURE", "0.2"))
 try:
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY not found in environment variables.")
+    mistral_api_key = os.environ.get("MISTRAL_API_KEY")
+    if not mistral_api_key:
+        raise ValueError("MISTRAL_API_KEY not found in environment variables.")
 
-    # Use a multi-modal capable Gemini model
-    image_model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=gemini_api_key,
+    image_model = ChatMistralAI(
+        model=vision_model_name,
+        api_key=mistral_api_key,
+        temperature=vision_temperature,
     )
-    logging.info("Gemini multi-modal model configured via LangChain for image descriptions.")
+    logging.info(
+        "Mistral vision model configured via LangChain for image descriptions (model=%s).",
+        vision_model_name,
+    )
 except Exception as e:
     logging.warning(
-        f"Could not configure Gemini multi-modal model via LangChain: {e}. Image descriptions will be unavailable."
+        "Could not configure Mistral vision model via LangChain: %s. Image descriptions will be unavailable.",
+        e,
     )
 
 # --- Image Description Function ---
@@ -184,7 +190,7 @@ def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                 except Exception:
                     pass
 
-                # Images -> Gemini description as a last resort OCR-like fallback
+                # Images -> Vision description as a last resort OCR-like fallback
                 images = page.get_images(full=True)
                 if images:
                     logging.info(f"   Page {page_idx + 1}: Found {len(images)} images.")
@@ -222,7 +228,7 @@ def process_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                         results.append(page_info)
                         continue
 
-                # Fallback 2: image render + Gemini vision for OCR-like content
+                # Fallback 2: image render + vision model for OCR-like content
                 try:
                     pix = page.get_pixmap(dpi=200)
                     img_bytes = pix.tobytes("png")

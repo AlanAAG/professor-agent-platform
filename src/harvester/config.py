@@ -205,7 +205,7 @@ class HarvesterSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",  # Ignore undeclared env vars (e.g., GEMINI_API_KEY)
+        extra="ignore",  # Ignore undeclared env vars (e.g., MISTRAL_API_KEY)
     )
 
     # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS

@@ -6,7 +6,7 @@ import datetime
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import Client, create_client
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_mistralai.embeddings import MistralAIEmbeddings
 from src.shared.utils import EMBEDDING_MODEL_NAME, EXPECTED_EMBEDDING_DIM
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -26,12 +26,12 @@ try:
     # --- Check and Load Environment Variables ---
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    mistral_api_key = os.environ.get("MISTRAL_API_KEY")
 
     if not supabase_url or not supabase_key:
         raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY must be set in .env for embeddings")
+    if not mistral_api_key:
+        raise ValueError("MISTRAL_API_KEY must be set in .env for embeddings")
 
     # --- Initialize Supabase Client ---
     supabase = create_client(supabase_url, supabase_key)
@@ -39,11 +39,11 @@ try:
 
     # --- Initialize Embedding Model ---
     # Keep model name in one shared place for consistency
-    embeddings_model = GoogleGenerativeAIEmbeddings(
+    embeddings_model = MistralAIEmbeddings(
         model=EMBEDDING_MODEL_NAME,
-        google_api_key=gemini_api_key
+        api_key=mistral_api_key,
     )
-    logging.info("Gemini embedding model initialized.")
+    logging.info("Mistral embedding model initialized.")
 
     # Validate embedding dimensions match database schema
     try:
@@ -73,7 +73,7 @@ except Exception as e:
     # --- Improved Error Handling ---
     logging.error("Could not initialize embedding clients.")
     logging.error(f"Error details: {e}")
-    logging.error("Please double-check your .env file for correct SUPABASE_URL, SUPABASE_KEY, and GEMINI_API_KEY.")
+    logging.error("Please double-check your .env file for correct SUPABASE_URL, SUPABASE_KEY, and MISTRAL_API_KEY.")
     # Do not exit here; allow importing modules that handle missing clients gracefully.
 
 # --- 3. Initialize the Text Splitter ---
@@ -140,11 +140,6 @@ def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
     Takes clean text, splits it into chunks, and embeds it
     into the Supabase vector store with metadata.
     """
-    if not vector_store or not embeddings_model or not supabase:
-        raise EnvironmentError(
-            "Embedding system not initialized. Check that GEMINI_API_KEY, SUPABASE_URL, "
-            "and SUPABASE_KEY are correctly set in your environment variables."
-        )
     if not vector_store:
         # This check is important because initialization may have failed gracefully.
         raise EnvironmentError("Vector store is not initialized.")

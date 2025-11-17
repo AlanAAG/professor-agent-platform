@@ -27,7 +27,7 @@ from src.shared import utils
 def sanitize_pipeline_event(event, hint):
     """Sanitize sensitive data from pipeline events."""
     sensitive_patterns = [
-        "GEMINI_API_KEY",
+        "MISTRAL_API_KEY",
         "SUPABASE_KEY",
         "COACH_PASSWORD",
         "SECRET_API_KEY",

@@ -93,37 +93,42 @@ class _FakeDriver:
 @pytest.fixture(scope="session", autouse=True)
 def set_test_env():
     """Set required environment variables so modules initialize without real secrets."""
-    os.environ["GEMINI_API_KEY"] = "test-gemini-key"
+    os.environ["MISTRAL_API_KEY"] = "test-mistral-key"
     os.environ["SUPABASE_URL"] = "https://example.supabase.co"
     os.environ["SUPABASE_KEY"] = "test-supabase-key"
     os.environ["COACH_USERNAME"] = "test-user"
     os.environ["SECRET_API_KEY"] = "secret"
     # Provide defaults used by utils
-    os.environ["EMBEDDING_MODEL_NAME"] = "models/embedding-001"
+    os.environ["EMBEDDING_MODEL_NAME"] = "mistral-embed"
 
 
-@pytest.fixture()
-def mock_genai(monkeypatch):
-    """Mock google.generativeai's embed_content to return deterministic embeddings."""
+@pytest.fixture(autouse=True)
+def mock_mistral_embeddings(monkeypatch):
+    """Mock Mistral embeddings to avoid real network calls during tests."""
     try:
         import src.shared.utils as utils
     except Exception:
-        return  # Not needed for tests that don't import utils
+        return
 
-    class FakeGenAI:
-        def configure(self, **kwargs):
-            return None
+    class FakeEmbedder:
+        model = utils.EMBEDDING_MODEL_NAME
 
-        def embed_content(self, model=None, content=None, task_type=None):
-            # Deterministic small embedding for tests
-            def fixed_vec():
-                return [0.1, 0.2, 0.3, 0.4]
+        def __init__(self):
+            self._vector = [0.1] * utils.EXPECTED_EMBEDDING_DIM
 
-            if isinstance(content, list):
-                return {"embedding": [fixed_vec() for _ in content]}
-            return {"embedding": fixed_vec()}
+        def embed_query(self, text: str) -> list[float]:
+            return list(self._vector)
 
-    monkeypatch.setattr(utils, "genai", FakeGenAI(), raising=True)
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            return [self.embed_query(t) for t in texts]
+
+    fake_embedder = FakeEmbedder()
+
+    def _fake_getter(model_name: str | None = None):
+        return fake_embedder
+
+    monkeypatch.setattr(utils, "_MISTRAL_EMBEDDERS", {utils.EMBEDDING_MODEL_NAME: fake_embedder}, raising=False)
+    monkeypatch.setattr(utils, "_get_mistral_embedder", _fake_getter, raising=False)
 
 
 @pytest.fixture()
