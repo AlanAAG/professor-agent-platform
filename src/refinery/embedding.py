@@ -25,6 +25,8 @@ from src.shared.provider_config import (
 # Ensures .env file is read when running locally.
 load_dotenv()
 
+LLM_PROVIDER = get_llm_provider()
+
 CURRENT_EMBEDDING_MODEL = get_embedding_model_name()
 logging.info("Embedding pipeline targeting provider=%s model=%s", LLM_PROVIDER, CURRENT_EMBEDDING_MODEL)
 
