@@ -17,14 +17,16 @@ from src.shared.provider_config import (
     get_mistral_api_key,
     get_mistral_base_url,
     is_mistral,
+    get_embedding_model_name,
+    get_expected_embedding_dim,
 )
 
 # --- Load Environment Variables ---
 # Ensures .env file is read when running locally.
 load_dotenv()
 
-LLM_PROVIDER = get_llm_provider()
-logging.info("Embedding pipeline targeting provider=%s model=%s", LLM_PROVIDER, EMBEDDING_MODEL_NAME)
+CURRENT_EMBEDDING_MODEL = get_embedding_model_name()
+logging.info("Embedding pipeline targeting provider=%s model=%s", LLM_PROVIDER, CURRENT_EMBEDDING_MODEL)
 
 # --- 1. Initialize Clients ---
 supabase = None
@@ -55,14 +57,23 @@ try:
     logging.info("Mistral embedding model initialized.")
 
     # Validate embedding dimensions match database schema
+    # --- Initialize Embedding Model ---
+    embeddings_model = MistralAIEmbeddings(
+        model=CURRENT_EMBEDDING_MODEL,
+        api_key=mistral_api_key,
+    )
+    logging.info("Mistral embedding model initialized.")
+
+    # Validate embedding dimensions match database schema
     try:
+        expected_dim = get_expected_embedding_dim()
         test_embedding = embeddings_model.embed_query("dimension validation test")
-        if len(test_embedding) != EXPECTED_EMBEDDING_DIM:
+        if len(test_embedding) != expected_dim:
             raise ValueError(
-                f"Embedding model {EMBEDDING_MODEL_NAME} produces {len(test_embedding)}-dimensional "
-                f"vectors, but database expects {EXPECTED_EMBEDDING_DIM}. Check database/match_documents.sql"
+                f"Embedding model {CURRENT_EMBEDDING_MODEL} produces {len(test_embedding)}-dimensional "
+                f"vectors, but database expects {expected_dim}. Check database/match_documents.sql and run migration."
             )
-        logging.info(f"✓ Embedding dimension validated: {EXPECTED_EMBEDDING_DIM}")
+        logging.info(f"✓ Embedding dimension validated: {expected_dim}")
     except Exception as e:
         logging.error(f"Embedding dimension validation failed: {e}")
         raise
@@ -426,3 +437,66 @@ if __name__ == "__main__":
         logging.info("✅ Initialization appears successful.")
     else:
         logging.error("❌ Initialization failed. Check error messages above.")
+
+#---New logic to skip manually ingested scripts
+from difflib import SequenceMatcher
+
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+async def find_manual_transcript_by_metadata(title: str, date_iso: str) -> bool:
+    """
+    Checks if a manual transcript exists for the given date and similar title.
+    Used to skip Whisper transcription if we already have the text manually.
+    """
+    if not supabase or not date_iso:
+        return False
+
+    try:
+        # 1. First, find ALL manual transcripts on that specific date
+        # We use the "manual_transcript" content_type we set in manual_ingest.py
+        def _execute_query():
+            return (
+                supabase
+                .table("documents")
+                .select("metadata")
+                .eq("metadata->>content_type", "manual_transcript")
+                .eq("metadata->>lecture_date", date_iso)
+                .execute()
+            )
+
+        response = await asyncio.to_thread(_execute_query)
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+
+        if not data:
+            return False
+
+        # 2. If we find matches on date, check Title similarity in Python
+        # (Simple fuzzy match: if title is > 80% similar, or one is contained in the other)
+        target_title = (title or "").lower().strip()
+        
+        for record in data:
+            meta = record.get("metadata", {})
+            db_title = (meta.get("title") or "").lower().strip()
+            
+            # Direct containment check (e.g., "Lecture 1" in "Statistics Lecture 1")
+            if target_title in db_title or db_title in target_title:
+                logging.info(f"Found metadata match by title containment: '{target_title}' ~= '{db_title}'")
+                return True
+                
+            # Fuzzy similarity check
+            if _similarity(target_title, db_title) > 0.8:
+                logging.info(f"Found metadata match by similarity: '{target_title}' ~= '{db_title}'")
+                return True
+
+        return False
+
+    except Exception as e:
+        logging.error(f"Error checking for manual transcript metadata: {e}")
+        return False
+
+# Synchronous wrapper for the selenium pipeline
+def find_manual_transcript_by_metadata_sync(title: str, date_iso: str) -> bool:
+    return asyncio.run(find_manual_transcript_by_metadata(title, date_iso))

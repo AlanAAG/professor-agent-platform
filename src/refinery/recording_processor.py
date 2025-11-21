@@ -29,6 +29,8 @@ except Exception:  # pragma: no cover - optional dependency
 # Import harvester-side config and navigation helpers via absolute package path
 from src.harvester import config
 from src.harvester.navigation import safe_find, safe_find_all, safe_click
+from src.refinery.embedding import url_exists_in_db_sync, find_manual_transcript_by_metadata_sync
+from src.shared.utils import parse_general_date
 
 _TIMEDTEXT_URL_REGEX = re.compile(
     r"https://drive\.google\.com[^\"'`<>\s]*timedtext[^\"'`<>\s]*",
@@ -551,9 +553,35 @@ def _transcribe_with_whisper(file_path: str) -> str:
     return text.strip()
 
 
-def _attempt_whisper_fallback(driver: webdriver.Chrome, url: str, resource_type: str) -> str:
+def _attempt_whisper_fallback(
+    driver: webdriver.Chrome, 
+    url: str, 
+    resource_type: str,
+    title: str = None,      # New Argument
+    date_str: str = None    # New Argument
+) -> str:
+    # 1. Check exact URL match (Dedup)
+    if url and url_exists_in_db_sync(url):
+        logging.info("   Url already exists in DB. Skipping Whisper fallback for: %s", url)
+        return ""
+
+    # 2. Check Metadata Match (Manual Transcript Logic)
+    if date_str:
+        try:
+            # Parse the scraped date string (e.g. "Sep 12, 2023") to ISO (e.g. "2023-09-12")
+            # to match how manual_ingest stores it.
+            dt_obj = parse_general_date(date_str)
+            if dt_obj:
+                date_iso = dt_obj.isoformat()
+                if find_manual_transcript_by_metadata_sync(title, date_iso):
+                    logging.info(f"   Manual transcript found for date={date_iso}, title='{title}'. Skipping Whisper.")
+                    return ""
+        except Exception as e:
+            logging.warning(f"   Failed to check metadata match: {e}")
+
     if not _can_attempt_whisper_fallback():
         return ""
+
     normalized = (resource_type or "").upper()
     download_url: Optional[str] = None
     if "ZOOM" in normalized:
@@ -584,7 +612,7 @@ def _attempt_whisper_fallback(driver: webdriver.Chrome, url: str, resource_type:
             pass
 
 
-def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -> str:
+def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str, title: str = None, date_str: str = None) -> str:
     """Public entry point to selectively extract transcript content from a recording URL.
 
     - For ZOOM_RECORDING: open in a new tab and scrape transcript content.
@@ -631,7 +659,7 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str) -
 
         if not transcript_text:
             logging.info("   Primary transcript scrape empty; attempting Whisper fallback.")
-            transcript_text = _attempt_whisper_fallback(driver, url, normalized_type) or ""
+            transcript_text = _attempt_whisper_fallback(driver, url, normalized_type, title, date_str) or ""
 
         return transcript_text
 
