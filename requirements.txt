@@ -71,7 +71,6 @@ lxml==6.0.2
 lxml_html_clean==0.4.3
 MarkupSafe==3.0.3
 marshmallow==3.26.1
-mistralai==0.4.1
 moviepy==2.2.1
 multidict==6.7.0
 mypy_extensions==1.1.0
