@@ -10,100 +10,83 @@ from src.refinery.cleaning import clean_transcript_with_llm
 from src.refinery.embedding import chunk_and_embed_text, url_exists_in_db_sync
 from src.shared.utils import parse_general_date
 
-
-# --- New multi-lecture segmentation ---
-# Pattern captures segments with 3-line header:
-# 1) title (non-empty line)
-# 2) date/time (flexible, parsed later)
-# 3) teacher name (non-empty)
-# 4+) transcript body until a blank line followed by the next header, or EOF
-# Notes:
-# - Use non-greedy body capture with DOTALL
-# - Lookahead asserts either two newlines then 3 non-empty header lines, or end of file
+# --- Robust Segmentation Pattern ---
+# This pattern relies on finding the DATE line (DD/MM/YYYY) to anchor the header.
+# 1. It captures everything before the date as the 'title_block'.
+# 2. It captures the 'date_line' (must start with digit/digit/digit).
+# 3. It captures the 'teacher_line' immediately following.
+# 4. It captures the 'body' until the next date pattern or EOF.
 LECTURE_SEGMENTATION_PATTERN = re.compile(
-    r"^\s*(?P<title>[^\n].*?)\n"  # Line 1: title
-    r"(?P<date_time>[^\n].*?)\n"     # Line 2: date time
-    r"(?P<teacher_name>[^\n].*?)\n"  # Line 3: teacher name
-    r"(?P<body>.*?)(?=^([^\n]+)\n([^\n]+)\n([^\n]+)\n{2}|\Z)",
+    r"^\s*(?P<title_block>(?:[^\n]+\n)+?)"       # 1 or more lines before date (Title)
+    r"(?P<date_line>\d{2}/\d{2}/\d{4}.*?)\n"     # Date line (Anchor) - Looks for DD/MM/YYYY
+    r"(?P<teacher_line>[^\n]+)\n"                # Teacher line
+    r"(?P<body>.*?)"                             # Body
+    r"(?=\n\s*(?:[^\n]+\n)+?\d{2}/\d{2}/\d{4}|\Z)", # Lookahead: Next title+date OR End of String
     flags=re.MULTILINE | re.DOTALL,
 )
 
+def _clean_source_tag(text: str) -> str:
+    """Removes tags from text."""
+    if not text:
+        return ""
+    # Remove prefix if present
+    return re.sub(r"^\\s*", "", text).strip()
 
 def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str, Any]]:
     """
     Split a full multi-lecture transcript text into individual lecture segments.
-
-    New file format per lecture:
-    Line 1: {Lecture Title}
-    Line 2: {Date of Lecture} {Time of Class}
-    Line 3: {Teacher's Name}
-    Line 4+: Transcript body until one blank line ("\n\n") before the next header or EOF.
-
-    class_name is derived from the filename (e.g., "Statistics.txt" -> "Statistics").
+    Flexible format:
+    - Header: Title (1+ lines), Date (DD/MM/YYYY...), Teacher (1 line)
+    - Body: Rest of text
     """
     segments: List[Dict[str, Any]] = []
     class_name = os.path.basename(filename)
     if class_name.lower().endswith(".txt"):
         class_name = class_name[:-4]
 
+    # Use the robust regex to find blocks
     for match in LECTURE_SEGMENTATION_PATTERN.finditer(full_text or ""):
-        title = (match.group("title") or "").strip()
-        date_time_str = (match.group("date_time") or "").strip()
-        teacher_name = (match.group("teacher_name") or "").strip()
-        body = (match.group("body") or "").strip()
+        raw_title_block = match.group("title_block")
+        date_str = match.group("date_line").strip()
+        teacher_name = _clean_source_tag(match.group("teacher_line").strip())
+        body = match.group("body").strip()
 
-        # Validate required fields
+        # Process Title: Remove source tags and join lines
+        title_lines = [
+            _clean_source_tag(line.strip()) 
+            for line in raw_title_block.split('\n') 
+            if line.strip()
+        ]
+        # Join multiple title lines (e.g. Title + Subtitle) with a separator
+        title = " - ".join(title_lines)
+
+        # Parse Date
+        lecture_date = parse_general_date(date_str)
+
+        # Validation
         if not title:
-            logging.warning(
-                f"Skipping segment in {filename}: empty title. "
-                f"Date: {date_time_str}, Teacher: {teacher_name}"
-            )
+            logging.warning(f"Skipping segment in {filename}: empty title.")
             continue
-
         if not teacher_name:
-            logging.warning(
-                f"Skipping segment in {filename}: empty teacher name. "
-                f"Title: {title}, Date: {date_time_str}"
-            )
+            logging.warning(f"Skipping segment in {filename}: empty teacher name.")
+            continue
+        if len(body) < 50:
+            logging.warning(f"Skipping segment in {filename}: body too short.")
             continue
 
-        if len(body.strip()) < 50:
-            logging.warning(
-                f"Skipping segment in {filename}: transcript body too short (<50 chars). "
-                f"Title: {title}"
-            )
-            continue
-
-        lecture_date = parse_general_date(date_time_str)
-
-        segments.append(
-            {
-                "class_name": class_name,
-                "title": title,
-                "lecture_date": lecture_date,
-                "teacher_name": teacher_name,
-                "transcript_body": body,
-            }
-        )
+        segments.append({
+            "class_name": class_name,
+            "title": title,
+            "lecture_date": lecture_date,
+            "teacher_name": teacher_name,
+            "transcript_body": body,
+        })
 
     return segments
 
-
 def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
     """
-    Process a single manually-provided transcript file that may contain multiple lectures.
-    
-    Steps:
-    1. Read entire file content
-    2. Split into lecture segments using regex
-    3. For each segment: clean, de-duplicate (by filename|title), and embed
-    4. Return (successful_segment_count, [failed_segment_titles])
-    
-    Args:
-        file_path: Full path to .txt file
-        
-    Returns:
-        Tuple[int, List[str]]: (count of successful segments, list of failed titles)
+    Process a single manually-provided transcript file.
     """
     successful_segments = 0
     failed_titles: List[str] = []
@@ -112,13 +95,12 @@ def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
         file_path = str(Path(file_path).resolve())
         filename = os.path.basename(file_path)
 
-        logging.info(f"Processing manual transcript file (multi-lecture): {filename}")
+        logging.info(f"Processing manual transcript file: {filename}")
 
         if not filename.endswith('.txt'):
             logging.warning(f"Skipping non-txt file: {filename}")
             return (0, [f"Invalid file type: {filename}"])
 
-        # Read full file content
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 full_text = f.read()
@@ -126,50 +108,43 @@ def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
             logging.error(f"Failed to read file {filename}: {e}")
             return (0, [f"Read error: {filename}"])
 
-        # Split into segments
         segments = _split_into_lecture_segments(full_text, filename)
         if not segments:
-            logging.warning(f"No lecture segments detected in {filename}")
+            logging.warning(f"No lecture segments detected in {filename} (Check date format DD/MM/YYYY)")
             return (0, [f"No segments: {filename}"])
 
-        # Process each segment
         for segment in segments:
             segment_title = segment.get("title") or "Untitled"
             source_key = f"{filename}|{segment_title}"
 
-            # De-duplication by unique segment key
+            # De-duplication check
             try:
                 if url_exists_in_db_sync(source_key):
-                    logging.info(f"Segment already exists (dedup): {source_key} -> skipping")
-                    successful_segments += 1  # Consider dedup as success
+                    logging.info(f"Segment already exists (dedup): {source_key}")
+                    successful_segments += 1
                     continue
             except Exception as e:
-                # Fail-open: do not treat check failure as hard failure for the segment
                 logging.warning(f"Dedup check failed for {source_key}: {e}")
 
             raw_body = segment.get("transcript_body") or ""
-            if not raw_body.strip():
-                logging.warning(f"Empty transcript body for segment '{segment_title}' in {filename}")
-                failed_titles.append(segment_title)
-                continue
-
+            
             # Clean transcript
             try:
                 clean_text = clean_transcript_with_llm(raw_body)
                 if not clean_text:
-                    logging.warning(f"Cleaning produced empty result for segment '{segment_title}' in {filename}")
+                    logging.warning(f"Cleaning produced empty result for '{segment_title}'")
                     failed_titles.append(segment_title)
                     continue
             except Exception as e:
-                logging.error(f"Failed cleaning for segment '{segment_title}' in {filename}: {e}")
+                logging.error(f"Failed cleaning for '{segment_title}': {e}")
                 failed_titles.append(segment_title)
                 continue
 
-            # Prepare embedding metadata (include new teacher_name and dedupe key as source_url)
+            # Prepare metadata
             embedding_metadata: Dict[str, Any] = {
                 "class_name": segment["class_name"],
                 "content_type": "manual_transcript",
-                "title": segment["title"],
+                "title": segment_title,
                 "lecture_date": segment["lecture_date"].isoformat() if segment.get("lecture_date") else None,
                 "teacher_name": segment.get("teacher_name"),
                 "source_file": filename,
@@ -180,10 +155,10 @@ def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
             # Embed
             try:
                 chunk_and_embed_text(clean_text, embedding_metadata)
-                logging.info(f"✅ Embedded segment '{segment_title}' from {filename}")
+                logging.info(f"✅ Embedded segment '{segment_title}'")
                 successful_segments += 1
             except Exception as e:
-                logging.error(f"Failed to embed segment '{segment_title}' in {filename}: {e}")
+                logging.error(f"Failed to embed segment '{segment_title}': {e}")
                 failed_titles.append(segment_title)
 
         return (successful_segments, failed_titles)
@@ -192,140 +167,50 @@ def process_manual_transcript(file_path: str) -> Tuple[int, List[str]]:
         logging.error(f"Unexpected error processing {file_path}: {e}")
         return (successful_segments, failed_titles)
 
-
 def ingest_all_manual_transcripts(directory: str = "data/raw_transcripts/manual/") -> Dict[str, Any]:
-    """
-    Process all .txt files in the manual transcripts directory.
-    
-    Args:
-        directory: Directory containing manual transcript files
-        
-    Returns:
-        dict: Segment-level statistics {
-            "total_segments": int,
-            "successful_segments": int,
-            "failed_titles": list[str],  # lecture titles that failed
-        }
-    """
     directory_path = Path(directory)
+    if not directory_path.exists() or not directory_path.is_dir():
+        return {"total": 0, "successful": 0, "failed": ["Directory not found"]}
     
-    if not directory_path.exists():
-        logging.error(f"Directory does not exist: {directory}")
-        return {
-            "total": 0,
-            "successful": 0,
-            "failed": [f"Directory not found: {directory}"]
-        }
-    
-    if not directory_path.is_dir():
-        logging.error(f"Path is not a directory: {directory}")
-        return {
-            "total": 0,
-            "successful": 0,
-            "failed": [f"Not a directory: {directory}"]
-        }
-    
-    # Find all .txt files
     txt_files = list(directory_path.glob("*.txt"))
+    logging.info(f"Found {len(txt_files)} .txt files")
     
-    if not txt_files:
-        logging.warning(f"No .txt files found in {directory}")
-        return {
-            "total": 0,
-            "successful": 0,
-            "failed": []
-        }
-    
-    logging.info(f"Found {len(txt_files)} .txt files to process")
-    
-    # Process each file and aggregate segment stats
     total_segments = 0
     successful_segments = 0
     failed_titles: List[str] = []
     
     for txt_file in txt_files:
         try:
-            succ_count, file_failed_titles = process_manual_transcript(str(txt_file))
-            # Total is successes + failures (dedup counted as success inside)
-            total_segments += succ_count + len(file_failed_titles)
-            successful_segments += succ_count
-            failed_titles.extend(file_failed_titles)
+            succ, failed = process_manual_transcript(str(txt_file))
+            total_segments += succ + len(failed)
+            successful_segments += succ
+            failed_titles.extend(failed)
         except Exception as e:
-            logging.error(f"Critical error processing {txt_file.name}: {e}")
-            # Cannot determine how many segments; count as 0 success, 0 total increment, but note filename
-            failed_titles.append(f"{txt_file.name} (file error)")
+            logging.error(f"Critical error in {txt_file.name}: {e}")
+            failed_titles.append(f"{txt_file.name} (error)")
     
-    # Return statistics
-    stats = {
+    return {
         "total_segments": total_segments,
         "successful_segments": successful_segments,
         "failed_titles": failed_titles,
     }
-    
-    logging.info(
-        f"Processing complete: {successful_segments}/{total_segments} segments successful across {len(txt_files)} files"
-    )
-    if failed_titles:
-        logging.warning(f"Failed titles: {failed_titles}")
-    
-    return stats
 
-
-# --- Testing/Debug Functions ---
 def validate_file_format(file_path: str) -> bool:
-    """
-    Validate that a file follows the expected manual transcript format.
-    
-    Args:
-        file_path: Path to the file to validate
-        
-    Returns:
-        bool: True if format is valid, False otherwise
-    """
+    """Test function to validate file format without embedding."""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             full_text = f.read()
-
-        filename = os.path.basename(file_path)
-        segments = _split_into_lecture_segments(full_text, filename)
+        segments = _split_into_lecture_segments(full_text, os.path.basename(file_path))
         if not segments:
-            logging.error("No lecture segments found")
+            logging.error("No segments found.")
             return False
-
-        # Basic sanity checks on first segment
-        seg = segments[0]
-        if not seg.get('class_name'):
-            logging.error("Missing class name (from filename)")
-            return False
-        if not seg.get('title'):
-            logging.error("Missing lecture title")
-            return False
-        if not seg.get('teacher_name'):
-            logging.error("Missing teacher name")
-            return False
-        if not seg.get('transcript_body'):
-            logging.error("Missing transcript body")
-            return False
-
-        logging.info(f"✅ File format validation passed for {os.path.basename(file_path)} with {len(segments)} segment(s)")
+        for i, seg in enumerate(segments):
+            logging.info(f"Segment {i+1}: Title='{seg['title']}', Date={seg['lecture_date']}, Teacher='{seg['teacher_name']}'")
         return True
     except Exception as e:
-        logging.error(f"❌ File format validation failed: {e}")
+        logging.error(f"Validation failed: {e}")
         return False
 
-
 if __name__ == "__main__":
-    # Basic test when run directly
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    
-    test_dir = "data/raw_transcripts/manual/"
-    logging.info(f"Testing manual ingestion from {test_dir}")
-    
-    if os.path.exists(test_dir):
-        stats = ingest_all_manual_transcripts(test_dir)
-        logging.info(f"Test results: {stats}")
-    else:
-        logging.info(f"Test directory {test_dir} does not exist")
+    logging.basicConfig(level=logging.INFO)
+    ingest_all_manual_transcripts()
