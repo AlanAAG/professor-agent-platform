@@ -7,10 +7,11 @@ import hashlib
 import logging
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Sequence
 import datetime
 from dateutil import parser # Use dateutil for flexible parsing
 from dateutil import tz
+from langchain_mistralai.embeddings import MistralAIEmbeddings
 
 try:
     from postgrest.exceptions import APIError as PostgrestAPIError
@@ -23,13 +24,12 @@ except Exception:  # pragma: no cover - optional dependency
     sentry_sdk = None  # type: ignore[assignment]
 
 # Shared constants
-# Prefer the current public Google GenAI embedding model by default.
+# Prefer the current public Mistral embedding model by default.
 # Can be overridden via EMBEDDING_MODEL_NAME env var.
-EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-004")
+EMBEDDING_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "mistral-embed")
 # CRITICAL: This dimension must match the database vector column definition
-# See database/match_documents.sql line 5: vector(768)
-# Compatible models: text-embedding-004 (768), models/embedding-001 (768)
-EXPECTED_EMBEDDING_DIM = 768
+# See database/match_documents.sql for details.
+EXPECTED_EMBEDDING_DIM = int(os.environ.get("EXPECTED_EMBEDDING_DIM", "1024"))
 # OpenAI embedding model fallback
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 DISABLE_OPENAI_FALLBACK = os.environ.get("DISABLE_OPENAI_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -300,28 +300,7 @@ def cohere_rerank(query: str, documents: List[Dict[str, Any]]) -> List[Dict[str,
         return _to_langchain_documents(mmr_selected_dicts)  # type: ignore[return-value]
     return mmr_selected_dicts
 
-# --- Shared RAG Retrieval (Supabase RPC + Gemini embeddings) ---
-genai = None
-genai_types = None
-try:
-    from google import genai as _genai_mod  # Preferred for google-genai>=1.0
-    genai = _genai_mod
-except Exception:
-    try:
-        import google.generativeai as _legacy_genai  # Backwards compatibility
-        genai = _legacy_genai
-    except Exception:
-        genai = None  # Optional dependency
-
-if genai is not None:
-    try:
-        from google.genai import types as genai_types  # type: ignore[attr-defined]
-    except Exception:
-        try:
-            genai_types = getattr(genai, "types", None)  # legacy packages
-        except Exception:
-            genai_types = None
-
+# --- Shared RAG Retrieval (Supabase RPC + Mistral embeddings) ---
 try:
     from supabase import create_client, Client
 except Exception:
@@ -334,9 +313,9 @@ except Exception:
     Document = None  # type: ignore
 
 _SUPABASE_CLIENT = None
-_GENAI_CLIENT = None
+_MISTRAL_EMBEDDERS: dict[str, MistralAIEmbeddings] = {}
 _OPENAI_CLIENT = None
-_GENAI_EMBED_WARNING_EMITTED = False
+_MISTRAL_EMBED_WARNING_EMITTED = False
 _OPENAI_DISABLED = False
 _OPENAI_DISABLED_REASON = ""
 
@@ -344,18 +323,6 @@ _MATCH_DOCUMENTS_RPC_STYLE: Optional[str] = None
 _MATCH_DOCUMENTS_RPC_STYLE_HINT = os.environ.get("MATCH_DOCUMENTS_RPC_STYLE", "").strip().lower()
 if _MATCH_DOCUMENTS_RPC_STYLE_HINT in {"legacy", "modern"}:
     _MATCH_DOCUMENTS_RPC_STYLE = _MATCH_DOCUMENTS_RPC_STYLE_HINT
-
-
-def _build_embed_config(task_type: str | None = "retrieval_query"):
-    """Return google-genai EmbedContentConfig when available."""
-    if not task_type or genai_types is None:
-        return None
-    for key in ("taskType", "task_type"):
-        try:
-            return genai_types.EmbedContentConfig(**{key: task_type})  # type: ignore[arg-type]
-        except Exception:
-            continue
-    return None
 
 
 def _handle_openai_embedding_error(error: Exception) -> None:
@@ -372,7 +339,7 @@ def _handle_openai_embedding_error(error: Exception) -> None:
         _OPENAI_DISABLED_REASON = "insufficient_quota"
         logging.error(
             "OpenAI embedding fallback disabled after insufficient quota error. "
-            "Provide a funded OpenAI account or configure GEMINI_API_KEY/GOOGLE_API_KEY to avoid this fallback. "
+            "Provide a funded OpenAI account or configure MISTRAL_API_KEY to avoid this fallback. "
             "Set DISABLE_OPENAI_FALLBACK=1 to suppress OpenAI usage altogether."
         )
     else:
@@ -399,37 +366,41 @@ def _get_supabase_client():
     return _SUPABASE_CLIENT
 
 
-def _ensure_genai():
-    """Best-effort initialize Google GenAI; don't raise to allow fallbacks."""
-    global _GENAI_CLIENT, _GENAI_EMBED_WARNING_EMITTED
-    try:
-        if genai is None:
-            return
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            if not _GENAI_EMBED_WARNING_EMITTED:
-                logging.warning(
-                    "Google GenAI embeddings unavailable: set GEMINI_API_KEY or GOOGLE_API_KEY to avoid falling back to OpenAI."
-                )
-                _GENAI_EMBED_WARNING_EMITTED = True
-            return
-        if getattr(genai, "Client", None) is not None:
-            if _GENAI_CLIENT is None:
-                _GENAI_CLIENT = genai.Client(api_key=api_key)
-            return
-        try:
-            if hasattr(genai, "configure"):
-                genai.configure(api_key=api_key)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    except Exception:
-        # Swallow to allow OpenAI fallback
-        _GENAI_CLIENT = None
-        if not _GENAI_EMBED_WARNING_EMITTED:
+def _validate_embedding_dimension(vec: Sequence[float], model_name: str) -> None:
+    if len(vec) != EXPECTED_EMBEDDING_DIM:
+        raise ValueError(
+            f"Embedding dimension mismatch: model {model_name} returned "
+            f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
+            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
+        )
+
+
+def _get_mistral_embedder(model_name: str | None = None) -> MistralAIEmbeddings | None:
+    """Return a cached Mistral embedding client for the requested model."""
+    global _MISTRAL_EMBED_WARNING_EMITTED
+    target_model = (model_name or EMBEDDING_MODEL_NAME).strip() or EMBEDDING_MODEL_NAME
+    embedder = _MISTRAL_EMBEDDERS.get(target_model)
+    if embedder is not None:
+        return embedder
+
+    api_key = os.environ.get("MISTRAL_API_KEY")
+    if not api_key:
+        if not _MISTRAL_EMBED_WARNING_EMITTED:
             logging.warning(
-                "Failed to initialize Google GenAI embeddings; will attempt OpenAI fallback if enabled."
+                "Mistral embeddings unavailable: set MISTRAL_API_KEY to avoid falling back to OpenAI."
             )
-            _GENAI_EMBED_WARNING_EMITTED = True
+            _MISTRAL_EMBED_WARNING_EMITTED = True
+        return None
+
+    try:
+        embedder = MistralAIEmbeddings(model=target_model, api_key=api_key)
+        _MISTRAL_EMBEDDERS[target_model] = embedder
+        return embedder
+    except Exception as exc:
+        if not _MISTRAL_EMBED_WARNING_EMITTED:
+            logging.error("Failed to initialize Mistral embeddings for model %s: %s", target_model, exc)
+            _MISTRAL_EMBED_WARNING_EMITTED = True
+        return None
 
 
 def _ensure_openai():
@@ -555,167 +526,27 @@ def _invoke_match_documents_rpc(
 
 
 def embed_query(text: str, model: str | None = None) -> list[float]:
-    """Embed a single query string with robust fallbacks (Gemini -> OpenAI)."""
-    _ensure_genai()
-    # Try the provided model first, then sensible fallbacks
-    primary_model = model or EMBEDDING_MODEL_NAME
-    candidate_models: list[str] = []
-    for m in (primary_model, "text-embedding-004", "models/embedding-001"):
-        if m and m not in candidate_models:
-            candidate_models.append(m)
+    """Embed a single query string with robust fallbacks (Mistral -> OpenAI)."""
+    mistral_embedder = _get_mistral_embedder(model)
+    last_mistral_error: Exception | None = None
 
-    gemini_attempted = False
-    last_gemini_error: Exception | None = None
-
-    def _extract_single(result: Any) -> list[float]:
-        # Common forms
-        if isinstance(result, dict):
-            if "embedding" in result and isinstance(result["embedding"], list):
-                # Either a single vector or batch
-                emb = result["embedding"]
-                if emb and isinstance(emb[0], (int, float)):
-                    return emb  # single vector
-                if emb and isinstance(emb[0], list):
-                    return emb[0]  # first of batch
-            if "embeddings" in result and isinstance(result["embeddings"], list):
-                first = result["embeddings"][0] if result["embeddings"] else None
-                if isinstance(first, dict) and "values" in first:
-                    return first["values"]
-                if isinstance(first, list):
-                    return first
-        # Attr-like
-        if hasattr(result, "embedding"):
-            emb = getattr(result, "embedding")
-            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
-                return emb
-            if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                return emb[0]
-        if hasattr(result, "embeddings"):
-            embeddings = getattr(result, "embeddings")
-            if isinstance(embeddings, list) and embeddings:
-                first = embeddings[0]
-                if isinstance(first, dict) and "values" in first:
-                    return first["values"]
-                if isinstance(first, list):
-                    return first
-                if hasattr(first, "values") and isinstance(getattr(first, "values"), list):
-                    return list(getattr(first, "values"))  # type: ignore[arg-type]
-        # Index-like
+    if mistral_embedder is not None:
         try:
-            emb = result["embedding"]  # type: ignore[index]
-            if isinstance(emb, list) and emb and isinstance(emb[0], (int, float)):
-                return emb
-            if isinstance(emb, list) and emb and isinstance(emb[0], list):
-                return emb[0]
-        except Exception:
-            pass
-        raise RuntimeError(f"Unexpected embed_content result shape: {type(result)}")
-
-    # Try each candidate model across known SDK call styles
-    for embedding_model in candidate_models:
-        # Try modern client API first (prefer 'contents' per new SDK)
-        if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
-            config = _build_embed_config("retrieval_query")
-            kwargs = {
-                "model": embedding_model,
-                "contents": [text],
-            }
-            if config is not None:
-                kwargs["config"] = config
-            try:
-                gemini_attempted = True
-                result = _GENAI_CLIENT.models.embed_content(**kwargs)
-                result_vec = _extract_single(result)  # existing line
-
-                # Validate dimension matches database constraint
-                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                    raise ValueError(
-                        f"Embedding dimension mismatch: model {embedding_model} returned "
-                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                    )
-                return result_vec
-            except TypeError as err:
-                last_gemini_error = err
-                # Older signature that accepts 'content='
-                try:
-                    gemini_attempted = True
-                    result = _GENAI_CLIENT.models.embed_content(
-                        model=embedding_model,
-                        content=text,
-                        task_type="retrieval_query",
-                    )
-                    result_vec = _extract_single(result)  # existing line
-
-                    # Validate dimension matches database constraint
-                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                        raise ValueError(
-                            f"Embedding dimension mismatch: model {embedding_model} returned "
-                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                        )
-                    return result_vec
-                except Exception as err:
-                    last_gemini_error = err
-                    pass
-            except Exception as err:
-                # Try alternative API below
-                last_gemini_error = err
-
-            # Alternative new API: generate_content_embeddings
-            try:
-                gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
-                if gce is not None:
-                    gemini_attempted = True
-                    result = gce(
-                        model=embedding_model,
-                        requests=[{"content": {"text": text}}],
-                    )
-                    result_vec = _extract_single(result)  # existing line
-
-                    # Validate dimension matches database constraint
-                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                        raise ValueError(
-                            f"Embedding dimension mismatch: model {embedding_model} returned "
-                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                        )
-                    return result_vec
-            except Exception as err:
-                last_gemini_error = err
-                pass
-
-        # Fallback: module-level API (older libraries or tests)
-        try:
-            if hasattr(genai, "embed_content"):
-                gemini_attempted = True
-                result = genai.embed_content(
-                    model=embedding_model,
-                    content=text,
-                    task_type="retrieval_query",
-                )
-                result_vec = _extract_single(result)  # existing line
-
-                # Validate dimension matches database constraint
-                if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                    raise ValueError(
-                        f"Embedding dimension mismatch: model {embedding_model} returned "
-                        f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                        f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                    )
-                return result_vec
+            vector = mistral_embedder.embed_query(text)
+            _validate_embedding_dimension(vector, mistral_embedder.model)
+            return vector
         except Exception as err:
-            last_gemini_error = err
-            pass
-    if gemini_attempted:
-        if last_gemini_error:
+            last_mistral_error = err
             logging.warning(
-                "Gemini embedding attempts failed for all candidate models; last error: %s",
-                last_gemini_error,
+                "Mistral embedding attempt failed for model %s: %s",
+                getattr(mistral_embedder, "model", model or EMBEDDING_MODEL_NAME),
+                err,
             )
-    else:
+
+    if last_mistral_error:
         logging.warning(
-            "Gemini embeddings were not attempted. Verify GEMINI_API_KEY or GOOGLE_API_KEY configuration to avoid OpenAI fallback."
+            "Mistral embedding attempts failed; falling back to OpenAI. Last error: %s",
+            last_mistral_error,
         )
 
     # OpenAI fallback
@@ -733,15 +564,7 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                 data = getattr(resp, "data", None) or []
                 if data and hasattr(data[0], "embedding"):
                     result_vec = data[0].embedding  # type: ignore[assignment]
-
-                    # Validate dimension matches database constraint
-                    if len(result_vec) != EXPECTED_EMBEDDING_DIM:
-                        raise ValueError(
-                            f"Embedding dimension mismatch: model {openai_model} returned "
-                            f"{len(result_vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                        )
-
+                    _validate_embedding_dimension(result_vec, openai_model)
                     return result_vec
             except Exception as e:
                 _handle_openai_embedding_error(e)
@@ -751,174 +574,35 @@ def embed_query(text: str, model: str | None = None) -> list[float]:
                 _OPENAI_DISABLED_REASON or "unknown reason",
             )
 
-    raise RuntimeError("Failed to obtain embedding via available Google GenAI or OpenAI interfaces.")
+    raise RuntimeError("Failed to obtain embedding via available Mistral or OpenAI interfaces.")
 
 
 def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List[float]]:
-    """Embed multiple query strings with robust fallbacks (Gemini -> OpenAI)."""
+    """Embed multiple query strings with robust fallbacks (Mistral -> OpenAI)."""
     if not texts:
         return []
 
-    _ensure_genai()
-    # Try the provided model first, then sensible fallbacks
-    primary_model = model or EMBEDDING_MODEL_NAME
-    candidate_models: list[str] = []
-    for m in (primary_model, "text-embedding-004", "models/embedding-001"):
-        if m and m not in candidate_models:
-            candidate_models.append(m)
+    mistral_embedder = _get_mistral_embedder(model)
+    last_mistral_error: Exception | None = None
 
-    gemini_attempted = False
-    last_gemini_error: Exception | None = None
-
-    def _extract_batch(result: Any) -> List[List[float]]:
-        # Dict-like
-        if isinstance(result, dict):
-            if "embedding" in result and isinstance(result["embedding"], list):
-                emb = result["embedding"]
-                if emb and isinstance(emb[0], list):
-                    return emb  # list of vectors
-                if emb and isinstance(emb[0], (int, float)):
-                    return [emb]
-            if "embeddings" in result and isinstance(result["embeddings"], list):
-                out: List[List[float]] = []
-                for item in result["embeddings"]:
-                    if isinstance(item, dict) and "values" in item:
-                        out.append(item["values"])  # type: ignore[list-item]
-                    elif isinstance(item, list):
-                        out.append(item)
-                if out:
-                    return out
-        # Attr-like
-        if hasattr(result, "embedding"):
-            emb = getattr(result, "embedding")
-            if isinstance(emb, list) and emb:
-                if isinstance(emb[0], list):
-                    return emb
-                if isinstance(emb[0], (int, float)):
-                    return [emb]
-        if hasattr(result, "embeddings"):
-            embeddings = getattr(result, "embeddings")
-            if isinstance(embeddings, list) and embeddings:
-                out: List[List[float]] = []
-                for item in embeddings:
-                    if isinstance(item, dict) and "values" in item:
-                        out.append(item["values"])  # type: ignore[list-item]
-                    elif isinstance(item, list):
-                        out.append(item)
-                    elif hasattr(item, "values") and isinstance(getattr(item, "values"), list):
-                        out.append(list(getattr(item, "values")))  # type: ignore[list-item]
-                if out:
-                    return out
-        raise RuntimeError(f"Unexpected batch embed_content result shape: {type(result)}")
-
-    # Try each candidate model across known SDK call styles
-    for embedding_model in candidate_models:
-        # Try modern client API first (prefer 'contents' per new SDK)
-        if _GENAI_CLIENT is not None and getattr(_GENAI_CLIENT, "models", None) is not None:
-            config = _build_embed_config("retrieval_query")
-            kwargs = {
-                "model": embedding_model,
-                "contents": texts,
-            }
-            if config is not None:
-                kwargs["config"] = config
-            try:
-                gemini_attempted = True
-                result = _GENAI_CLIENT.models.embed_content(**kwargs)
-                vectors = _extract_batch(result)
-
-                # Validate dimension matches database constraint
-                for vec in vectors:
-                    if len(vec) != EXPECTED_EMBEDDING_DIM:
-                        raise ValueError(
-                            f"Embedding dimension mismatch: model {embedding_model} returned "
-                            f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                        )
-                return vectors
-            except TypeError as err:
-                last_gemini_error = err
-                try:
-                    gemini_attempted = True
-                    result = _GENAI_CLIENT.models.embed_content(
-                        model=embedding_model,
-                        content=texts,
-                        task_type="retrieval_query",
-                    )
-                    vectors = _extract_batch(result)
-
-                    # Validate dimension matches database constraint
-                    for vec in vectors:
-                        if len(vec) != EXPECTED_EMBEDDING_DIM:
-                            raise ValueError(
-                                f"Embedding dimension mismatch: model {embedding_model} returned "
-                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                            )
-                    return vectors
-                except Exception as err:
-                    last_gemini_error = err
-                    pass
-            except Exception as err:
-                last_gemini_error = err
-                pass
-
-            # Alternative new API: generate_content_embeddings
-            try:
-                gce = getattr(_GENAI_CLIENT.models, "generate_content_embeddings", None)
-                if gce is not None:
-                    gemini_attempted = True
-                    result = gce(
-                        model=embedding_model,
-                        requests=[{"content": {"text": t}} for t in texts],
-                    )
-                    vectors = _extract_batch(result)
-
-                    # Validate dimension matches database constraint
-                    for vec in vectors:
-                        if len(vec) != EXPECTED_EMBEDDING_DIM:
-                            raise ValueError(
-                                f"Embedding dimension mismatch: model {embedding_model} returned "
-                                f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                                f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                            )
-                    return vectors
-            except Exception as err:
-                last_gemini_error = err
-                pass
-
-        # Fallback: module-level API (older libraries or tests)
+    if mistral_embedder is not None:
         try:
-            if hasattr(genai, "embed_content"):
-                gemini_attempted = True
-                result = genai.embed_content(
-                    model=embedding_model,
-                    content=texts,
-                    task_type="retrieval_query",
-                )
-                vectors = _extract_batch(result)
-
-                # Validate dimension matches database constraint
-                for vec in vectors:
-                    if len(vec) != EXPECTED_EMBEDDING_DIM:
-                        raise ValueError(
-                            f"Embedding dimension mismatch: model {embedding_model} returned "
-                            f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                            f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                        )
-                return vectors
+            vectors = mistral_embedder.embed_documents(texts)
+            for vec in vectors:
+                _validate_embedding_dimension(vec, mistral_embedder.model)
+            return vectors
         except Exception as err:
-            last_gemini_error = err
-            pass
-    if gemini_attempted:
-        if last_gemini_error:
+            last_mistral_error = err
             logging.warning(
-                "Gemini batch embedding attempts failed for all candidate models; last error: %s",
-                last_gemini_error,
+                "Mistral batch embedding attempt failed for model %s: %s",
+                getattr(mistral_embedder, "model", model or EMBEDDING_MODEL_NAME),
+                err,
             )
-    else:
+
+    if last_mistral_error:
         logging.warning(
-            "Gemini batch embeddings were not attempted. Verify GEMINI_API_KEY or GOOGLE_API_KEY configuration to avoid OpenAI fallback."
+            "Mistral batch embeddings failed; falling back to OpenAI. Last error: %s",
+            last_mistral_error,
         )
 
     # OpenAI batch fallback
@@ -935,10 +619,7 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                 )
                 data = getattr(resp, "data", None) or []
                 if data:
-                    # Ensure order aligns with inputs
                     vectors: List[List[float]] = []
-                    # Some SDK versions return a list where each item has an 'index'
-                    # We'll sort to be safe, then map to embeddings
                     try:
                         data_sorted = sorted(data, key=lambda d: getattr(d, "index", 0))
                     except Exception:
@@ -948,15 +629,8 @@ def embed_queries_batch(texts: List[str], model: str | None = None) -> List[List
                         if isinstance(vec, list):
                             vectors.append(vec)
                     if vectors:
-                        # Validate dimension matches database constraint
                         for vec in vectors:
-                            if len(vec) != EXPECTED_EMBEDDING_DIM:
-                                raise ValueError(
-                                    f"Embedding dimension mismatch: model {openai_model} returned "
-                                    f"{len(vec)}-dimensional vector, but database expects {EXPECTED_EMBEDDING_DIM}. "
-                                    f"Update database/match_documents.sql or change EMBEDDING_MODEL_NAME."
-                                )
-
+                            _validate_embedding_dimension(vec, openai_model)
                         return vectors
             except Exception as e:
                 _handle_openai_embedding_error(e)
@@ -991,9 +665,13 @@ def retrieve_rag_documents(
                 embed_duration_ms = (time.time() - embed_start) * 1000
 
                 # Track embedding costs (approximate)
-                # text-embedding-004: $0.00001 per 1K tokens
-                estimated_tokens = len(query.split()) * 1.3  # rough estimate
-                estimated_cost = (estimated_tokens / 1000) * 0.00001
+                # Rough cost estimate (adjust with actual provider pricing as needed)
+                estimated_tokens = len(query.split()) * 1.3
+                try:
+                    cost_per_1k = float(os.environ.get("MISTRAL_EMBED_COST_PER_1K", "0.0001"))
+                except ValueError:
+                    cost_per_1k = 0.0001
+                estimated_cost = (estimated_tokens / 1000) * cost_per_1k
 
                 logging.debug(
                     f"EMBEDDING_METRICS | duration_ms={embed_duration_ms:.2f} "

@@ -7,7 +7,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GEMINI_API_KEY
+      - key: MISTRAL_API_KEY
         sync: false  # Set manually in Render dashboard
       - key: LLM_PROVIDER
         value: gemini  # Set to 'mistral' when migrating
@@ -30,10 +30,9 @@ services:
       - key: PYTHON_VERSION
         value: 3.11
       - key: EMBEDDING_MODEL_NAME
-        value: text-embedding-004  # switch to mistral-embed when LLM_PROVIDER=mistral
+        value: mistral-embed
       - key: COACH_PASSWORD
         sync: false
-    
     healthCheckPath: /health
     healthCheckTimeoutSeconds: 60
 
