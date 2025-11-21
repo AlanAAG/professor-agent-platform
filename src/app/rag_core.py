@@ -864,7 +864,7 @@ def get_rag_response(
         except Exception as generation_error:
             logging.error("   Error during LLM generation: %s", generation_error)
             return "Sorry, I encountered an error while generating the response. Please try again later."
-    answer=answer.replace("**", "")
+    answer = answer.replace("**", "").replace("__", "").replace("*", "")
     if active_subject == "MarketGaps":
         answer = _enforce_market_gaps_voice(answer)
 
