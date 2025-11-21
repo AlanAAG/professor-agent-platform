@@ -339,8 +339,10 @@ def _build_system_prompt(persona: Dict[str, str]) -> str:
         "value-creation, and real-world impact relevant to their chosen field of study."
     )
     formatting_rules = (
-        "Formatting rules: Respond in plain text sentences without markdown headings, bullet points, or emphasis. "
-        "Only use special formatting when it is strictly required for equations."
+        "Formatting rules: Respond in plain text sentences ONLY. "
+        "Do NOT use markdown bolding (**), italics (*), bullet points, or headers. "
+        "Do not wrap terms in asterisks. "
+        "Only use special formatting when it is strictly required for mathematical equations."
     )
     brevity_rules = (
         "Brevity rules: Default to a single short paragraph of no more than five sentences unless the student explicitly asks for detailed steps, lists, or a study guide."
@@ -862,7 +864,7 @@ def get_rag_response(
         except Exception as generation_error:
             logging.error("   Error during LLM generation: %s", generation_error)
             return "Sorry, I encountered an error while generating the response. Please try again later."
-
+    answer=answer.replace("**", "")
     if active_subject == "MarketGaps":
         answer = _enforce_market_gaps_voice(answer)
 
