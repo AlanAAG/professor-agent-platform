@@ -689,7 +689,7 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
             # EXECUTE the remote Zoom transcription logic
             try:
                 from src.refinery.recording_processor import extract_transcript  # type: ignore
-                content = extract_transcript(driver, url, resource_type)
+                content = extract_transcript(driver, url, resource_type, title=resource_metadata.get("title"), date_str=resource_metadata.get("date"))
                 if not content:
                     content = "(Zoom transcript extraction failed or returned no text)"
             except Exception as e:
@@ -698,7 +698,7 @@ def scrape_and_refine_resource(driver: webdriver.Chrome, resource_metadata: Dict
 
         elif resource_type in {"DRIVE_RECORDING", "RECORDING_DRIVE"}:
             try:
-                content = extract_transcript(driver, url, resource_type)
+                content = extract_transcript(driver, url, resource_type, title=resource_metadata.get("title"), date_str=resource_metadata.get("date"))
                 if not content:
                     content = "(Drive transcript extraction failed or returned no text)"
             except Exception as e:
