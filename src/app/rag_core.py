@@ -19,6 +19,13 @@ from src.shared.utils import (
     retrieve_rag_documents_keyword_fallback,
     _to_langchain_documents,
 )
+from src.shared.provider_config import (
+    get_chat_model_name,
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_mistral,
+)
 
 try:  # pragma: no cover - defensive import
     from src.harvester.config import COURSE_MAP, LEGACY_COURSE_MAP
@@ -33,6 +40,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Load Environment Variables ---
 # Loads variables from .env file for local development
 load_dotenv()
+
+LLM_PROVIDER = get_llm_provider()
+CHAT_MODEL_NAME = get_chat_model_name()
+MODEL_TEMPERATURE = float(os.environ.get("RAG_MODEL_TEMPERATURE", "0.5"))
 
 # --- Load Professor Personas ---
 PERSONA_FILE_PATH = Path(__file__).with_name("persona.json")

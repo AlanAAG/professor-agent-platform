@@ -12,10 +12,19 @@ from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
+from src.shared.provider_config import (
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_mistral,
+)
 
 # --- Load Environment Variables ---
 # Ensures .env file is read when running locally.
 load_dotenv()
+
+LLM_PROVIDER = get_llm_provider()
+logging.info("Embedding pipeline targeting provider=%s model=%s", LLM_PROVIDER, EMBEDDING_MODEL_NAME)
 
 # --- 1. Initialize Clients ---
 supabase = None

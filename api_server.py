@@ -5,6 +5,7 @@ from fastapi.security import APIKeyHeader
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from openai import OpenAI
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from src.shared.utils import (
     EMBEDDING_MODEL_NAME,
@@ -492,6 +493,13 @@ except Exception:
 
 EMBEDDING_MODEL = EMBEDDING_MODEL_NAME
 
+
+def _llm_ready() -> bool:
+    if is_mistral():
+        return _MISTRAL_CLIENT is not None
+    return _GENAI_CLIENT is not None or _GENAI_HAS_GENERATIVE_MODEL
+
+
 # --- API Key Authentication Setup ---
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=True)
 
@@ -569,6 +577,7 @@ def _is_retryable_mistral_error(error: Exception | None) -> bool:
 def _format_mistral_service_error(error: Exception | None) -> str:
     """Generate a user-facing message when Mistral cannot fulfill the request."""
     status = _extract_http_status(error)
+    provider_label = "Mistral" if is_mistral() else "Gemini"
     if status == 503:
         prefix = "Mistral is temporarily overloaded (HTTP 503 - Service Unavailable)."
     elif status == 429:
@@ -703,7 +712,7 @@ async def health_check(request: Request):
 async def health(request: Request):
     """Dedicated health endpoint for uptime monitoring."""
     db_status = _check_db_status()
-    return {"status": "ok", "database": db_status}
+    return {"status": "ok", "database": db_status, "llm_provider": LLM_PROVIDER, "model_loaded": _llm_ready()}
 
 
 @app.get("/metrics")
@@ -1033,7 +1042,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             except Exception as stream_err:
                 err_payload = {"error": str(stream_err)}
                 yield f"data: {json.dumps(err_payload)}\n\n"
-            
+
             yield "data: [DONE]\n\n"
         
         return StreamingResponse(

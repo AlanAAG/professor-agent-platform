@@ -10,6 +10,11 @@ from langchain_core.messages import HumanMessage
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import tempfile
+from src.shared.provider_config import (
+    get_chat_model_name,
+    get_llm_provider,
+    is_mistral,
+)
 
 try:
     import pdfplumber  # type: ignore
@@ -45,6 +50,22 @@ except Exception as e:
         "Could not configure Mistral vision model via LangChain: %s. Image descriptions will be unavailable.",
         e,
     )
+else:
+    try:
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise ValueError("GEMINI_API_KEY not found in environment variables.")
+
+        # Use a multi-modal capable Gemini model
+        image_model = ChatGoogleGenerativeAI(
+            model=CHAT_MODEL_NAME,
+            google_api_key=gemini_api_key,
+        )
+        logging.info("Gemini multi-modal model configured via LangChain for image descriptions.")
+    except Exception as e:
+        logging.warning(
+            f"Could not configure Gemini multi-modal model via LangChain: {e}. Image descriptions will be unavailable."
+        )
 
 # --- Image Description Function ---
 @retry(

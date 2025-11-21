@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 from langchain_mistralai.chat_models import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from src.shared.provider_config import (
+    get_chat_model_name,
+    get_llm_provider,
+    get_mistral_api_key,
+    get_mistral_base_url,
+    is_mistral,
+)
 
 # --- Load Environment Variables ---
 load_dotenv() 
