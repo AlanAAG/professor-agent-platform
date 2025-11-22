@@ -109,7 +109,7 @@ def test_extract_transcript_triggers_whisper_fallback(monkeypatch, mock_driver):
 
     called = {}
 
-    def fake_whisper(driver, url, resource_type):
+    def fake_whisper(driver, url, resource_type, title=None, date_str=None):
         called["url"] = url
         return "fallback text"
 
