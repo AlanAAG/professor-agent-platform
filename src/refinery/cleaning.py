@@ -27,6 +27,8 @@ try:
         model=mistral_model_name,
         api_key=api_key,
         temperature=0.45,
+        timeout=100,
+        max_retries=3, 
     )
     logging.info("Mistral model configured successfully (via LangChain).")
 except Exception as e:
