@@ -147,3 +147,4 @@ python-multipart
 httpx
 slowapi  # REQUIRED for Rate Limiting
 gunicorn  # For production WSGI server (optional, uvicorn is fine)
+google-generativeai>=0.8.0

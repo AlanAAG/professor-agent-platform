@@ -105,24 +105,17 @@ ZOOM_INITIAL_INTERACTIONS = [
 
 # --- Course Mappings ---
 LEGACY_COURSE_MAP = {
-    # Quantitative Tools for Business
     "AIML101": {"name": "AIML", "group": "Quantitative Tools for Business"},
     "PRTC301": {"name": "Statistics", "group": "Quantitative Tools for Business"},
-    # FIX APPLIED: PRTC201 moved from "Quantitative Tools" to "Management Accounting"
     "PRTC201": {"name": "Excel", "group": "Management Accounting"},
-    # Mathematics for Engineers
     "CAL101": {"name": "Calculus", "group": "Mathematics for Engineers"},
-    # Management Project - I
     "MAST401": {"name": "Startup", "group": "Management Project - I"},
     "CAP101": {"name": "Dropshipping", "group": "Management Project - I"},
     "COMM101": {"name": "PublicSpeaking", "group": "Management Project - I"},
     "MAST601": {"name": "Networking", "group": "Management Project - I"},
-    # Computer Science
     "CS101": {"name": "OOP", "group": "Computer Science"},
-    # Management Accounting
     "FIFI101": {"name": "FinanceBasics", "group": "Management Accounting"},
     "MAST102": {"name": "MarketAnalysis", "group": "Management Accounting"},
-    # Marketing Strategies
     "SAMA101": {"name": "MarketGaps", "group": "Marketing Strategies"},
     "SAMA401": {"name": "MetaMarketing", "group": "Marketing Strategies"},
     "SAMA502": {"name": "CRO", "group": "Marketing Strategies"},
@@ -147,7 +140,6 @@ _PARTNER_SUBJECTS = [
 PARTNER_COURSE_TO_GROUP = {
     "AIML101": "Quantitative Tools for Business",
     "PRTC301": "Quantitative Tools for Business",
-    # FIX APPLIED: PRTC201 moved from "Quantitative Tools" to "Management Accounting"
     "PRTC201": "Management Accounting",
     "MAST401": "Management Project - I",
     "FIFI101": "Management Accounting",
@@ -187,64 +179,47 @@ for code in sorted(all_codes):
     }
     COURSE_MAP[code] = merged
 
-# Default visible courses (from partner script)
 DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
 
-# --- Other Settings ---
-# Cutoff date logic handled dynamically in the pipeline
-
-
-# --- Structured settings (via Pydantic Settings) ---
 class HarvesterSettings(BaseSettings):
-    """Centralized, typed settings for harvester behavior.
-
-    Values can be configured via environment variables. Prefer the
-    HARVESTER_* variants, but common legacy envs are supported where noted.
-    """
+    """Centralized, typed settings for harvester behavior."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",  # Ignore undeclared env vars (e.g., MISTRAL_API_KEY)
+        extra="ignore",
     )
 
-    # Accept both HARVESTER_SELENIUM_HEADLESS and legacy SELENIUM_HEADLESS
     selenium_headless: bool = Field(
         default=True,
         validation_alias=AliasChoices("HARVESTER_SELENIUM_HEADLESS", "SELENIUM_HEADLESS"),
     )
 
-    # Page load timeout for Selenium's driver
     page_load_timeout: int = Field(
         default=60,
         validation_alias=AliasChoices("HARVESTER_PAGE_LOAD_TIMEOUT"),
     )
 
-    # Default wait timeout for WebDriverWait operations
     wait_timeout: int = Field(
         default=30,
         validation_alias=AliasChoices("HARVESTER_WAIT_TIMEOUT"),
     )
 
-    # Directory to store screenshots when errors occur
     screenshot_dir: str = Field(
         default="logs/error_screenshots",
         validation_alias=AliasChoices("HARVESTER_SCREENSHOT_DIR"),
     )
 
-    # Temporary downloads directory for any saved assets
     downloads_dir: str = Field(
         default="/tmp/harvester_downloads",
         validation_alias=AliasChoices("HARVESTER_DOWNLOADS_DIR"),
     )
     
-    # Batch size for processing resources in the main pipeline to save memory
     resource_batch_size: int = Field(
         default=50,
         validation_alias=AliasChoices("HARVESTER_RESOURCE_BATCH_SIZE"),
     )
 
-    # --- Monitoring & Telemetry Settings ---
     telemetry_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices("HARVESTER_TELEMETRY_ENABLED", "TELEMETRY_ENABLED"),
@@ -255,12 +230,27 @@ class HarvesterSettings(BaseSettings):
         validation_alias=AliasChoices("HARVESTER_TELEMETRY_LOG_LEVEL", "TELEMETRY_LOG_LEVEL"),
     )
 
-    # Where to persist the last pipeline status JSON
     metrics_report_path: str = Field(
         default="data/pipeline_status.json",
         validation_alias=AliasChoices("HARVESTER_METRICS_REPORT_PATH", "METRICS_REPORT_PATH"),
     )
 
+    # --- NEW: Gemini & Fallback Settings (Replaces Whisper) ---
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    )
 
-# Instantiate settings once for module-level access
+    # Generic fallback flag (supports legacy env var name for backward compatibility)
+    enable_recording_fallback: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ENABLE_RECORDING_FALLBACK", "ENABLE_WHISPER_FALLBACK"),
+    )
+
+    # Generic download limit (supports legacy env var name)
+    recording_max_download_mb: float = Field(
+        default=400.0,
+        validation_alias=AliasChoices("RECORDING_MAX_DOWNLOAD_MB", "WHISPER_MAX_DOWNLOAD_MB"),
+    )
+
 SETTINGS = HarvesterSettings()

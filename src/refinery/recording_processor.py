@@ -15,20 +15,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException,
     NoSuchElementException,
-    StaleElementReferenceException,
     WebDriverException,
 )
 from selenium import webdriver
 from urllib.parse import urlparse, urlsplit, urljoin
 
-try:
-    from openai import OpenAI  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    OpenAI = None
+import google.generativeai as genai
 
 # Import harvester-side config and navigation helpers via absolute package path
 from src.harvester import config
-from src.harvester.navigation import safe_find, safe_find_all, safe_click
+from src.harvester.navigation import safe_find, safe_find_all
 from src.refinery.embedding import url_exists_in_db_sync, find_manual_transcript_by_metadata_sync
 from src.shared.utils import parse_general_date
 
@@ -37,15 +33,10 @@ _TIMEDTEXT_URL_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-_WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL_NAME", "whisper-1")
-_ENABLE_WHISPER_FALLBACK = os.environ.get("ENABLE_WHISPER_FALLBACK", "true").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-_WHISPER_MAX_DOWNLOAD_MB = float(os.environ.get("WHISPER_MAX_DOWNLOAD_MB", "400"))
-_OPENAI_AUDIO_CLIENT: Optional["OpenAI"] = None
+# Updated Constants linked to config
+_ENABLE_FALLBACK = config.SETTINGS.enable_recording_fallback
+_MAX_DOWNLOAD_MB = config.SETTINGS.recording_max_download_mb
+
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -318,33 +309,6 @@ def scrape_zoom_transcript_content(driver: webdriver.Chrome) -> str:
     return raw_transcription
 
 
-def _can_attempt_whisper_fallback() -> bool:
-    if not _ENABLE_WHISPER_FALLBACK:
-        logging.info("   Whisper fallback disabled via ENABLE_WHISPER_FALLBACK.")
-        return False
-    if OpenAI is None:
-        logging.warning("   OpenAI SDK not installed; cannot run Whisper fallback.")
-        return False
-    if not os.environ.get("OPENAI_API_KEY"):
-        logging.warning("   OPENAI_API_KEY is not set; skipping Whisper fallback.")
-        return False
-    return True
-
-
-def _get_openai_audio_client() -> Optional["OpenAI"]:
-    global _OPENAI_AUDIO_CLIENT
-    if _OPENAI_AUDIO_CLIENT is not None:
-        return _OPENAI_AUDIO_CLIENT
-    if OpenAI is None:
-        return None
-    try:
-        _OPENAI_AUDIO_CLIENT = OpenAI()
-    except Exception as exc:  # pragma: no cover - initialization failure is rare
-        logging.error("   Failed to initialize OpenAI client for Whisper fallback: %s", exc)
-        _OPENAI_AUDIO_CLIENT = None
-    return _OPENAI_AUDIO_CLIENT
-
-
 def _build_session_from_driver(driver: webdriver.Chrome) -> requests.Session:
     session = requests.Session()
     referer = getattr(driver, "current_url", "") or ""
@@ -493,7 +457,8 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
         ext = ".mp4"
     filename = f"recording_{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(target_dir, filename)
-    max_bytes = int(_WHISPER_MAX_DOWNLOAD_MB * 1024 * 1024)
+    # Use updated generic constant
+    max_bytes = int(_MAX_DOWNLOAD_MB * 1024 * 1024)
     try:
         with session.get(download_url, stream=True, timeout=(15, 300)) as resp:
             resp.raise_for_status()
@@ -506,14 +471,14 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
                     written += len(chunk)
                     if written > max_bytes:
                         logging.error(
-                            "   Recording download exceeded %s MB limit; aborting Whisper fallback.",
-                            _WHISPER_MAX_DOWNLOAD_MB,
+                            "   Recording download exceeded %s MB limit; aborting fallback.",
+                            _MAX_DOWNLOAD_MB,
                         )
                         fh.close()
                         os.remove(file_path)
                         return None
     except RequestException as exc:
-        logging.error("   Failed to download recording for Whisper fallback: %s", exc)
+        logging.error("   Failed to download recording for fallback: %s", exc)
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -521,7 +486,7 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
             pass
         return None
     except OSError as exc:
-        logging.error("   Failed to persist recording for Whisper fallback: %s", exc)
+        logging.error("   Failed to persist recording for fallback: %s", exc)
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -531,55 +496,82 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
     return file_path
 
 
-def _transcribe_with_whisper(file_path: str) -> str:
-    client = _get_openai_audio_client()
-    if client is None:
+def _transcribe_with_gemini(file_path: str) -> str:
+    """Uploads file to Gemini and requests a transcript."""
+    api_key = config.SETTINGS.gemini_api_key
+    if not api_key:
+        logging.error("   Gemini API Key missing in config.")
         return ""
-    logging.info("   Whisper fallback: sending audio to %s ...", _WHISPER_MODEL_NAME)
+
+    genai.configure(api_key=api_key)
+    
     try:
-        with open(file_path, "rb") as audio_file:
-            response = client.audio.transcriptions.create(
-                model=_WHISPER_MODEL_NAME,
-                file=audio_file,
-            )
-    except Exception as exc:  # pragma: no cover - network failure
-        logging.error("   Whisper transcription failed: %s", exc)
+        logging.info("   Uploading file to Gemini 1.5 Flash...")
+        audio_file = genai.upload_file(path=file_path)
+        
+        # Wait for processing
+        while audio_file.state.name == "PROCESSING":
+            time.sleep(1)
+            audio_file = genai.get_file(audio_file.name)
+
+        if audio_file.state.name == "FAILED":
+            logging.error("   Gemini file upload failed.")
+            return ""
+
+        logging.info("   Generating transcript...")
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        response = model.generate_content(
+            [
+                "Transcribe this audio file into a clean, accurate lecture transcript. "
+                "Do not add any conversational filler, intro, or markdown. Just the text.",
+                audio_file
+            ]
+        )
+        
+        # Cleanup
+        try:
+            genai.delete_file(audio_file.name)
+        except Exception:
+            pass
+            
+        return response.text.strip()
+
+    except Exception as exc:
+        logging.error(f"   Gemini transcription failed: {exc}")
         return ""
-    text = ""
-    if isinstance(response, dict):
-        text = response.get("text") or ""
-    else:
-        text = getattr(response, "text", "") or ""
-    return text.strip()
 
 
-def _attempt_whisper_fallback(
+def _attempt_recording_fallback(
     driver: webdriver.Chrome, 
     url: str, 
     resource_type: str,
-    title: str = None,      # New Argument
-    date_str: str = None    # New Argument
+    title: str = None,
+    date_str: str = None
 ) -> str:
     # 1. Check exact URL match (Dedup)
     if url and url_exists_in_db_sync(url):
-        logging.info("   Url already exists in DB. Skipping Whisper fallback for: %s", url)
+        logging.info("   Url already exists in DB. Skipping fallback for: %s", url)
         return ""
 
     # 2. Check Metadata Match (Manual Transcript Logic)
     if date_str:
         try:
-            # Parse the scraped date string (e.g. "Sep 12, 2023") to ISO (e.g. "2023-09-12")
-            # to match how manual_ingest stores it.
+            # Parse the scraped date string
             dt_obj = parse_general_date(date_str)
             if dt_obj:
                 date_iso = dt_obj.isoformat()
                 if find_manual_transcript_by_metadata_sync(title, date_iso):
-                    logging.info(f"   Manual transcript found for date={date_iso}, title='{title}'. Skipping Whisper.")
+                    logging.info(f"   Manual transcript found for date={date_iso}, title='{title}'. Skipping fallback.")
                     return ""
         except Exception as e:
             logging.warning(f"   Failed to check metadata match: {e}")
 
-    if not _can_attempt_whisper_fallback():
+    # 3. Permission Check
+    if not _ENABLE_FALLBACK:
+        return ""
+    if not config.SETTINGS.gemini_api_key:
+        logging.warning("   GEMINI_API_KEY not set in config. Skipping fallback.")
         return ""
 
     normalized = (resource_type or "").upper()
@@ -589,20 +581,21 @@ def _attempt_whisper_fallback(
     elif "DRIVE" in normalized:
         download_url = _resolve_drive_download_url(driver, url)
     else:
-        logging.warning("   Whisper fallback does not support resource type: %s", resource_type)
+        logging.warning("   Fallback does not support resource type: %s", resource_type)
         return ""
     if not download_url:
-        logging.warning("   Whisper fallback: unable to determine download URL for %s", url)
+        logging.warning("   Fallback: unable to determine download URL for %s", url)
         return ""
+    
     media_path = _download_recording_media(driver, download_url)
     if not media_path:
         return ""
     try:
-        transcript = _transcribe_with_whisper(media_path)
+        transcript = _transcribe_with_gemini(media_path)
         if transcript:
-            logging.info("   Whisper fallback succeeded (%s chars).", len(transcript))
+            logging.info("   Gemini fallback succeeded (%s chars).", len(transcript))
         else:
-            logging.warning("   Whisper fallback produced no text.")
+            logging.warning("   Gemini fallback produced no text.")
         return transcript
     finally:
         try:
@@ -658,8 +651,8 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str, t
             logging.warning(f"   Unknown recording type: {resource_type}. Skipping primary scrape.")
 
         if not transcript_text:
-            logging.info("   Primary transcript scrape empty; attempting Whisper fallback.")
-            transcript_text = _attempt_whisper_fallback(driver, url, normalized_type, title, date_str) or ""
+            logging.info("   Primary transcript scrape empty; attempting Recording fallback.")
+            transcript_text = _attempt_recording_fallback(driver, url, normalized_type, title, date_str) or ""
 
         return transcript_text
 

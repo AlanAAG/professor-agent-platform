@@ -31,7 +31,8 @@ def sanitize_pipeline_event(event, hint):
         "SUPABASE_KEY",
         "COACH_PASSWORD",
         "SECRET_API_KEY",
-        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
     ]
 
     def contains_sensitive(text: str) -> bool:
