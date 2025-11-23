@@ -1,5 +1,9 @@
 # src/run_hybrid_pipeline.py
 
+# --- CRITICAL FIX: Load Environment Variables FIRST ---
+from dotenv import load_dotenv
+load_dotenv() 
+
 import os
 import datetime
 import logging
@@ -7,7 +11,7 @@ import tempfile
 import json
 import time
 from typing import Dict, Any, List, Optional
-from dotenv import load_dotenv
+# (Removed duplicate load_dotenv import from here)
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.by import By
@@ -70,9 +74,6 @@ logging.basicConfig(
         logging.StreamHandler() # Also print to console
     ]
 )
-
-# --- Load Environment Variables ---
-load_dotenv()
 
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")

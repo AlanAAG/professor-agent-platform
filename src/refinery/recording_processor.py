@@ -20,6 +20,7 @@ from selenium.common.exceptions import (
 from selenium import webdriver
 from urllib.parse import urlparse, urlsplit, urljoin
 
+# --- ADDED: Google Gemini SDK ---
 import google.generativeai as genai
 
 # Import harvester-side config and navigation helpers via absolute package path
@@ -33,7 +34,7 @@ _TIMEDTEXT_URL_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Updated Constants linked to config
+# --- UPDATED: Constants linked to config ---
 _ENABLE_FALLBACK = config.SETTINGS.enable_recording_fallback
 _MAX_DOWNLOAD_MB = config.SETTINGS.recording_max_download_mb
 
@@ -457,7 +458,8 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
         ext = ".mp4"
     filename = f"recording_{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(target_dir, filename)
-    # Use updated generic constant
+    
+    # --- UPDATED: Use new download limit constant ---
     max_bytes = int(_MAX_DOWNLOAD_MB * 1024 * 1024)
     try:
         with session.get(download_url, stream=True, timeout=(15, 300)) as resp:
@@ -652,6 +654,7 @@ def extract_transcript(driver: webdriver.Chrome, url: str, resource_type: str, t
 
         if not transcript_text:
             logging.info("   Primary transcript scrape empty; attempting Recording fallback.")
+            # --- UPDATED: Call renamed fallback function ---
             transcript_text = _attempt_recording_fallback(driver, url, normalized_type, title, date_str) or ""
 
         return transcript_text
