@@ -36,7 +36,8 @@ def test_extract_transcript_drive_success(monkeypatch, mock_driver):
     # Arrange
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     monkeypatch.setattr(rp, "scrape_drive_transcript_content", lambda d: "Drive transcript text", raising=True)
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", lambda *a, **k: "", raising=True)
+    # FIX: Use the new function name
+    monkeypatch.setattr(rp, "_attempt_recording_fallback", lambda *a, **k: "", raising=True)
 
     # Act
     result = rp.extract_transcript(mock_driver, "https://drive.google.com/file/d/abc/view", "DRIVE_RECORDING")
@@ -50,7 +51,8 @@ def test_extract_transcript_window_cleanup(monkeypatch, mock_driver):
     # Arrange: success path should still cleanup windows
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     monkeypatch.setattr(rp, "scrape_zoom_transcript_content", lambda d: "ok", raising=True)
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", lambda *a, **k: "", raising=True)
+    # FIX: Use the new function name
+    monkeypatch.setattr(rp, "_attempt_recording_fallback", lambda *a, **k: "", raising=True)
 
     # Act
     _ = rp.extract_transcript(mock_driver, "https://zoom.us/rec/abc", "ZOOM_RECORDING")
@@ -103,17 +105,19 @@ def test_scrape_drive_transcript_content_missing_url(monkeypatch, mock_driver):
     assert result == ""
 
 
-def test_extract_transcript_triggers_whisper_fallback(monkeypatch, mock_driver):
+# FIX: Rename the test and update the mocked function call
+def test_extract_transcript_triggers_recording_fallback(monkeypatch, mock_driver):
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     monkeypatch.setattr(rp, "scrape_zoom_transcript_content", lambda d: "", raising=True)
 
     called = {}
 
-    def fake_whisper(driver, url, resource_type, title=None, date_str=None):
+    def fake_fallback(driver, url, resource_type, title=None, date_str=None):
         called["url"] = url
         return "fallback text"
 
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", fake_whisper, raising=True)
+    # CRITICAL FIX: Reference the new function name
+    monkeypatch.setattr(rp, "_attempt_recording_fallback", fake_fallback, raising=True)
 
     result = rp.extract_transcript(mock_driver, "https://zoom.us/rec/abc", "ZOOM_RECORDING")
     assert result == "fallback text"
