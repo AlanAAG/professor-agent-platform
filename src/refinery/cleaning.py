@@ -13,8 +13,11 @@ load_dotenv()
 try:
     # Prefer a broadly available, cost-effective model
     model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=os.environ.get("GEMINI_API_KEY")
+        model="gemini-2.0-flash",
+        google_api_key=os.environ.get("GEMINI_API_KEY"),
+        temperature=0.45,
+        timeout=300,
+        max_retries=3
     )
     logging.info("Gemini model configured successfully (via LangChain).")
 except Exception as e:

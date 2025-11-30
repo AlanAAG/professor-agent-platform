@@ -109,8 +109,13 @@ def test_extract_transcript_triggers_whisper_fallback(monkeypatch, mock_driver):
 
     called = {}
 
-    def fake_whisper(driver, url, resource_type):
-        called["url"] = url
+    def fake_whisper(*args, **kwargs):
+        # We assume the second positional arg (index 1) or a keyword arg 'url' is the URL
+        # The signature in recording_processor is (driver, url, resource_type, ...)
+        if len(args) > 1:
+            called["url"] = args[1]
+        elif "url" in kwargs:
+            called["url"] = kwargs["url"]
         return "fallback text"
 
     monkeypatch.setattr(rp, "_attempt_whisper_fallback", fake_whisper, raising=True)
