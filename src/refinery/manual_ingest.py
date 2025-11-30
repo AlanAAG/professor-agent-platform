@@ -11,80 +11,132 @@ from src.refinery.embedding import chunk_and_embed_text, url_exists_in_db_sync
 from src.shared.utils import parse_general_date
 
 
-# --- New multi-lecture segmentation ---
-# Pattern captures segments with 3-line header:
-# 1) title (non-empty line)
-# 2) date/time (flexible, parsed later)
-# 3) teacher name (non-empty)
-# 4+) transcript body until a blank line followed by the next header, or EOF
-# Notes:
-# - Use non-greedy body capture with DOTALL
-# - Lookahead asserts either two newlines then 3 non-empty header lines, or end of file
-LECTURE_SEGMENTATION_PATTERN = re.compile(
-    r"^\s*(?P<title>[^\n].*?)\n"  # Line 1: title
-    r"(?P<date_time>[^\n].*?)\n"     # Line 2: date time
-    r"(?P<teacher_name>[^\n].*?)\n"  # Line 3: teacher name
-    r"(?P<body>.*?)(?=^([^\n]+)\n([^\n]+)\n([^\n]+)\n{2}|\Z)",
-    flags=re.MULTILINE | re.DOTALL,
-)
+def _clean_source_tag(text: str) -> str:
+    """Helper to strip artifacts like <v Speaker> from strings."""
+    # Remove <...> tags
+    return re.sub(r"<[^>]+>", "", text).strip()
 
 
 def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str, Any]]:
     """
     Split a full multi-lecture transcript text into individual lecture segments.
 
-    New file format per lecture:
-    Line 1: {Lecture Title}
-    Line 2: {Date of Lecture} {Time of Class}
-    Line 3: {Teacher's Name}
-    Line 4+: Transcript body until one blank line ("\n\n") before the next header or EOF.
-
-    class_name is derived from the filename (e.g., "Statistics.txt" -> "Statistics").
+    Refactored Strategy: "Date-Anchor"
+    1. Find all lines starting with a date pattern (DD/MM/YYYY).
+    2. The "Title Block" is everything before the date line (up to a blank line or start of file).
+    3. The "Teacher Name" is the line immediately following the date, unless it looks like a timestamp/body.
+    4. The Body is the rest until the next segment starts.
     """
     segments: List[Dict[str, Any]] = []
     class_name = os.path.basename(filename)
     if class_name.lower().endswith(".txt"):
         class_name = class_name[:-4]
 
-    for match in LECTURE_SEGMENTATION_PATTERN.finditer(full_text or ""):
-        title = (match.group("title") or "").strip()
-        date_time_str = (match.group("date_time") or "").strip()
-        teacher_name = (match.group("teacher_name") or "").strip()
-        body = (match.group("body") or "").strip()
+    lines = full_text.splitlines()
 
-        # Validate required fields
+    # Regex to identify the date anchor line (DD/MM/YYYY)
+    # Using \d{1,2}/\d{1,2}/\d{4} to match dates like 20/05/2023 or 1/1/2024
+    # We look for this pattern at the start of a line (ignoring whitespace)
+    date_anchor_pattern = re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{4}")
+
+    # Find all line indices that match the date pattern
+    date_indices = [i for i, line in enumerate(lines) if date_anchor_pattern.match(line)]
+
+    if not date_indices:
+        logging.warning(f"No date anchors found in {filename} with pattern DD/MM/YYYY.")
+        return []
+
+    # Identify segment boundaries
+    # Each segment is defined by its Date Anchor.
+    # Title is above Date. Body is below Date (and optional Teacher).
+
+    segment_infos = []
+
+    for i, date_idx in enumerate(date_indices):
+        # 1. Capture Title Block
+        # Walk backwards from date_idx - 1 until we hit a blank line or start of file
+        title_lines = []
+        curr = date_idx - 1
+        while curr >= 0 and lines[curr].strip() != "":
+            title_lines.append(lines[curr])
+            curr -= 1
+
+        # The lines were collected in reverse order (closest to date first)
+        # We need to reverse them back to original order
+        title_lines.reverse()
+
+        # Clean tags from title lines
+        cleaned_title_lines = [_clean_source_tag(l) for l in title_lines]
+        title = " - ".join(cleaned_title_lines)
         if not title:
-            logging.warning(
-                f"Skipping segment in {filename}: empty title. "
-                f"Date: {date_time_str}, Teacher: {teacher_name}"
-            )
-            continue
+             title = "Untitled Segment"
 
-        if not teacher_name:
-            logging.warning(
-                f"Skipping segment in {filename}: empty teacher name. "
-                f"Title: {title}, Date: {date_time_str}"
-            )
-            continue
+        # 2. Capture Date
+        date_line = lines[date_idx].strip()
+        lecture_date = parse_general_date(date_line)
 
-        if len(body.strip()) < 50:
+        # 3. Capture Teacher Name (Optional) and determine Body Start
+        teacher_name = "Unknown Instructor"
+        body_start_idx = date_idx + 1
+
+        if body_start_idx < len(lines):
+            potential_teacher_line = lines[body_start_idx]
+            # Check if it looks like a timestamp (starts with a number)
+            # e.g., "0:00 Welcome" or "10:00 ..."
+            if re.match(r"^\s*\d", potential_teacher_line):
+                # It looks like body content (timestamp), so teacher is missing
+                pass
+            elif potential_teacher_line.strip() == "":
+                 # Empty line? Skip it, assume teacher is missing.
+                 # Body starts after this blank line if next line is body?
+                 # If empty, we just skip checking for teacher name and use default.
+                 # Body starts at the line after.
+                 pass
+            else:
+                 # It's a non-empty line not starting with a number -> Teacher Name
+                 teacher_name = _clean_source_tag(potential_teacher_line)
+                 body_start_idx += 1
+
+        # 4. Determine Body End
+        # The body goes until the start of the *next* title block.
+        # We need to know where the next title block starts.
+        # The next title block starts at `next_date_idx - (number of title lines)`.
+        # Actually, we calculated title by walking back from date until blank line.
+        # So the *next* segment starts at the blank line before its title.
+
+        if i < len(date_indices) - 1:
+            next_date_idx = date_indices[i+1]
+            # Find start of next title
+            curr_next = next_date_idx - 1
+            while curr_next >= 0 and lines[curr_next].strip() != "":
+                curr_next -= 1
+            # curr_next is now the index of the blank line (or -1)
+            # So body of current segment ends at curr_next (exclusive)
+            body_end_idx = curr_next
+            # Handle edge case where body_start_idx > body_end_idx (overlapping/messy)
+            if body_end_idx < body_start_idx:
+                body_end_idx = body_start_idx # Empty body
+        else:
+            body_end_idx = len(lines)
+
+        raw_body_lines = lines[body_start_idx:body_end_idx]
+        body = "\n".join(raw_body_lines).strip()
+
+        # Validation
+        if len(body) < 50:
             logging.warning(
                 f"Skipping segment in {filename}: transcript body too short (<50 chars). "
                 f"Title: {title}"
             )
             continue
 
-        lecture_date = parse_general_date(date_time_str)
-
-        segments.append(
-            {
-                "class_name": class_name,
-                "title": title,
-                "lecture_date": lecture_date,
-                "teacher_name": teacher_name,
-                "transcript_body": body,
-            }
-        )
+        segments.append({
+            "class_name": class_name,
+            "title": title,
+            "lecture_date": lecture_date,
+            "teacher_name": teacher_name,
+            "transcript_body": body
+        })
 
     return segments
 
@@ -300,9 +352,10 @@ def validate_file_format(file_path: str) -> bool:
         if not seg.get('title'):
             logging.error("Missing lecture title")
             return False
-        if not seg.get('teacher_name'):
-            logging.error("Missing teacher name")
-            return False
+        # Teacher Name is now optional (defaults to Unknown Instructor), so checking for key existence is enough
+        if 'teacher_name' not in seg:
+             logging.error("Missing teacher name key")
+             return False
         if not seg.get('transcript_body'):
             logging.error("Missing transcript body")
             return False
