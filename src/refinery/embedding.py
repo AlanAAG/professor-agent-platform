@@ -4,83 +4,82 @@ import os
 import logging
 import datetime
 import asyncio
+from difflib import SequenceMatcher  # <--- Critical for title matching
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from supabase.client import Client, create_client
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from src.shared.utils import EMBEDDING_MODEL_NAME, EXPECTED_EMBEDDING_DIM
+from supabase.client import create_client
 from langchain_community.vectorstores import SupabaseVectorStore
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 # --- Load Environment Variables ---
-# Ensures .env file is read when running locally.
 load_dotenv()
+
+# --- Configuration ---
+# Default to Gemini 768-dim model
+EMBEDDING_MODEL_NAME = "text-embedding-004"
+EXPECTED_DIM = 768
 
 # --- 1. Initialize Clients ---
 supabase = None
 embeddings_model = None
-vector_store = None # Initialize vector_store as None initially
+vector_store = None 
 
 try:
     # --- Check and Load Environment Variables ---
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    # Support both key names to prevent "API_KEY_INVALID" errors
+    gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
     if not supabase_url or not supabase_key:
         raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
     if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY must be set in .env for embeddings")
+        # Warning only; allows importing this module for typing/testing without crashing immediately
+        logging.warning("GEMINI_API_KEY (or GOOGLE_API_KEY) not set in environment.")
+    else:
+        # --- Initialize Supabase Client ---
+        supabase = create_client(supabase_url, supabase_key)
+        logging.info("Supabase client initialized.")
 
-    # --- Initialize Supabase Client ---
-    supabase = create_client(supabase_url, supabase_key)
-    logging.info("Supabase client initialized.")
+        # --- Initialize Gemini Embedding Model ---
+        embeddings_model = GoogleGenerativeAIEmbeddings(
+            model=EMBEDDING_MODEL_NAME,
+            google_api_key=gemini_api_key,
+        )
+        logging.info(f"Gemini embeddings initialized: {EMBEDDING_MODEL_NAME}")
 
-    # --- Initialize Embedding Model ---
-    # Keep model name in one shared place for consistency
-    embeddings_model = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL_NAME,
-        google_api_key=gemini_api_key
-    )
-    logging.info("Gemini embedding model initialized.")
+        # Validate embedding dimensions match database schema
+        try:
+            # Perform a quick test query to verify dimensions
+            test_embedding = embeddings_model.embed_query("dimension validation test")
+            if len(test_embedding) != EXPECTED_DIM:
+                raise ValueError(
+                    f"Embedding model {EMBEDDING_MODEL_NAME} produces {len(test_embedding)}-dimensional "
+                    f"vectors, but database expects {EXPECTED_DIM} (Gemini Standard). Please reset your DB."
+                )
+            logging.info(f"✓ Embedding dimension validated: {EXPECTED_DIM}")
+        except Exception as e:
+            logging.error(f"Embedding dimension validation failed: {e}")
+            raise
 
-    # Validate embedding dimensions match database schema
-    try:
-        test_embedding = embeddings_model.embed_query("dimension validation test")
-        if len(test_embedding) != EXPECTED_EMBEDDING_DIM:
-            raise ValueError(
-                f"Embedding model {EMBEDDING_MODEL_NAME} produces {len(test_embedding)}-dimensional "
-                f"vectors, but database expects {EXPECTED_EMBEDDING_DIM}. Check database/match_documents.sql"
-            )
-        logging.info(f"✓ Embedding dimension validated: {EXPECTED_EMBEDDING_DIM}")
-    except Exception as e:
-        logging.error(f"Embedding dimension validation failed: {e}")
-        raise
-
-    # --- Initialize the Vector Store Client ---
-    # Moved initialization here after ensuring supabase and embeddings_model are valid
-    vector_store = SupabaseVectorStore(
-        client=supabase,
-        table_name="documents", # The table you created in Supabase SQL Editor
-        embedding=embeddings_model
-    )
-    logging.info("SupabaseVectorStore initialized.")
-
-    logging.info("✅ Embedding clients configured successfully.")
+        # --- Initialize the Vector Store Client ---
+        vector_store = SupabaseVectorStore(
+            client=supabase,
+            table_name="documents", 
+            embedding=embeddings_model
+        )
+        logging.info("SupabaseVectorStore initialized.")
 
 except Exception as e:
-    # --- Improved Error Handling ---
     logging.error("Could not initialize embedding clients.")
     logging.error(f"Error details: {e}")
-    logging.error("Please double-check your .env file for correct SUPABASE_URL, SUPABASE_KEY, and GEMINI_API_KEY.")
-    # Do not exit here; allow importing modules that handle missing clients gracefully.
 
 # --- 3. Initialize the Text Splitter ---
-# This object is responsible for "chunking" your large text
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1500, # Max characters per chunk (adjust if needed)
-    chunk_overlap=200, # Characters to overlap between chunks (helps maintain context)
+    chunk_size=1500, 
+    chunk_overlap=200, 
     length_function=len
 )
 logging.info("Text splitter initialized.")
@@ -88,23 +87,9 @@ logging.info("Text splitter initialized.")
 
 # --- Metadata Validation ---
 REQUIRED_METADATA = ["class_name", "content_type"]
-OPTIONAL_METADATA = [
-    "source_file",
-    "source_url",
-    "title",
-    "lecture_date",
-    "page_number",
-    "links",
-    "retrieval_date",
-    "content_hash",
-]
 
 def validate_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Validates and normalizes metadata before embedding.
-
-    Ensures required fields exist, adds a default retrieval_date if missing,
-    and removes None-valued entries.
-    """
+    """Validates and normalizes metadata before embedding."""
     if not isinstance(metadata, dict):
         raise ValueError("Metadata must be a dictionary.")
 
@@ -118,7 +103,6 @@ def validate_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     if "content_hash" in metadata and metadata["content_hash"] is not None:
         metadata["content_hash"] = str(metadata["content_hash"])
 
-    # Remove None values
     return {k: v for k, v in metadata.items() if v is not None}
 
 
@@ -134,291 +118,115 @@ def _add_documents_with_retry(documents: List[Any]):
     return vector_store.add_documents(documents)
 
 
-# --- Main Function to be Called by Other Scripts ---
+# --- Main Functions ---
 def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
-    """
-    Takes clean text, splits it into chunks, and embeds it
-    into the Supabase vector store with metadata.
-    """
-    if not vector_store or not embeddings_model or not supabase:
-        raise EnvironmentError(
-            "Embedding system not initialized. Check that GEMINI_API_KEY, SUPABASE_URL, "
-            "and SUPABASE_KEY are correctly set in your environment variables."
-        )
     if not vector_store:
-        # This check is important because initialization may have failed gracefully.
         raise EnvironmentError("Vector store is not initialized.")
     if not clean_text:
-        logging.info("-> Skipping embedding: No clean text provided.")
         return
 
     logging.info(f"-> Chunking and embedding for: {metadata.get('class_name')}")
-
-    # 1. Split the clean text into LangChain "Document" objects (chunks)
     documents = text_splitter.create_documents([clean_text])
-    logging.info(f"   Split text into {len(documents)} chunks.")
-
-    # 2. Validate and attach metadata to each chunk
+    
     normalized_metadata = validate_metadata(metadata)
     for doc in documents:
         doc.metadata = normalized_metadata
 
-    # 3. Add all prepared documents to Supabase
-    # LangChain's SupabaseVectorStore handles calculating embeddings
-    # and saving everything to your 'documents' table.
     try:
         _add_documents_with_retry(documents)
         logging.info(f"✅ Embedding successful for {len(documents)} chunks.")
     except Exception as e:
-        logging.error(f"❌ Failed after retries during Supabase add_documents: {e}")
-        # Re-raising ensures the calling script knows about the failure.
+        logging.error(f"❌ Failed after retries: {e}")
         raise
 
-
-def check_if_embedded(filter: Dict[str, Any]) -> bool:
-    """
-    (Advanced) Checks if a document (like a syllabus) with specific metadata
-    already exists in the database.
-    """
-    # For now, just return False so it always embeds new static files.
-    # You can implement this later using vector_store.similarity_search()
-    # or direct Supabase queries if needed.
-    return False
-
-
 async def check_if_embedded_recently(filter: Dict[str, Any], days: int = 7) -> bool:
-    """Checks Supabase metadata to see if content matching the filter was processed recently."""
-    if not supabase:
-        # Default to re-processing if Supabase is not configured
-        return False
-
-    if not isinstance(filter, dict):
-        logging.warning("check_if_embedded_recently called with invalid filter (expected dict).")
-        return False
-
-    try:
-        # Use naive ISO timestamps to match how metadata['retrieval_date'] is stored
-        cutoff_dt = datetime.datetime.now() - datetime.timedelta(days=days)
-        cutoff_iso = cutoff_dt.isoformat()
-
-        def _execute_query():
-            # Base query: restrict by recent retrieval_date
-            query = supabase.table("documents").select("metadata", count="exact")
-
-            # Prefer strict URL identity when available
-            if "source_url" in filter and filter["source_url"]:
-                query = query.eq("metadata->>source_url", filter["source_url"])
-            elif filter:
-                # Fall back to JSON contains on metadata for provided keys
-                query = query.contains("metadata", filter)
-
-            query = query.gt("metadata->>retrieval_date", cutoff_iso).limit(1)
-            return query.execute()
-
-        response = await asyncio.to_thread(_execute_query)
-
-        # supabase-py may return an object with attribute or dict with 'count'
-        count = getattr(response, "count", None)
-        if count is None and isinstance(response, dict):
-            count = response.get("count")
-
-        if count and count > 0:
-            logging.info(f"Content matching filter {filter} found recently. Skipping.")
-            return True
-        return False
-    except Exception as e:
-        logging.error(f"Error checking Supabase for recent embedding: {e}")
-        # Default to re-processing on error
-        return False
-
-
-async def url_exists_in_db(url: str) -> bool:
-    """Checks if any document with the given source URL already exists.
-
-    This is a cross-run de-duplication helper. If a resource with the exact
-    same `metadata.source_url` is present in the `documents` table, return True.
-    """
-    if not supabase:
-        # If Supabase isn't configured, avoid blocking the pipeline
-        return False
-    
-    if not url:
-        return False
-
-    try:
-        def _execute_query():
-            return (
-                supabase
-                .table("documents")
-                .select("id", count="exact")
-                .eq("metadata->>source_url", url)
-                .limit(1)
-                .execute()
-            )
-
-        response = await asyncio.to_thread(_execute_query)
-
-        count = getattr(response, "count", None)
-        if count is None and isinstance(response, dict):
-            count = response.get("count")
-
-        return bool(count and count > 0)
-    except Exception as e:
-        logging.error(f"Error checking Supabase for existing URL '{url}': {e}")
-        # Fail-open: if the check fails, allow processing rather than silently skipping
-        return False
-
-
-async def content_has_changed(url: str, new_hash: str) -> bool:
-    """Return True when the stored content hash differs from the new hash."""
-    if not url or not new_hash:
-        return True
-    if not supabase:
-        return True
-
-    try:
-        def _execute_query():
-            return (
-                supabase
-                .table("documents")
-                .select("metadata")
-                .eq("metadata->>source_url", url)
-                .limit(1)
-                .execute()
-            )
-
-        response = await asyncio.to_thread(_execute_query)
-        data = getattr(response, "data", None)
-        if data is None and isinstance(response, dict):
-            data = response.get("data")
-
-        if not data:
-            return True
-
-        first_record = data[0] if isinstance(data, list) else data
-        stored_metadata = (first_record or {}).get("metadata") or {}
-        stored_hash = stored_metadata.get("content_hash")
-        if stored_hash is None:
-            return True
-        return stored_hash != new_hash
-    except Exception as e:
-        logging.error(f"Error comparing content hash for '{url}': {e}")
-        return True
-
-
-# --- Synchronous helpers for harvesting pipeline ---
-def check_if_embedded_recently_sync(filter: Dict[str, Any], days: int = 2) -> bool:
-    """Synchronous variant to check for recently embedded content.
-
-    Mirrors check_if_embedded_recently but executes the Supabase query directly
-    without asyncio to allow use from synchronous Selenium pipeline.
-    """
-    if not supabase:
-        return False
-    if not isinstance(filter, dict):
-        return False
-
+    if not supabase: return False
     try:
         cutoff_dt = datetime.datetime.now() - datetime.timedelta(days=days)
         cutoff_iso = cutoff_dt.isoformat()
-
         query = supabase.table("documents").select("metadata", count="exact")
         if "source_url" in filter and filter["source_url"]:
             query = query.eq("metadata->>source_url", filter["source_url"])
         elif filter:
             query = query.contains("metadata", filter)
         query = query.gt("metadata->>retrieval_date", cutoff_iso).limit(1)
-        response = query.execute()
-        count = getattr(response, "count", None)
-        if count is None and isinstance(response, dict):
-            count = response.get("count")
+        response = await asyncio.to_thread(query.execute)
+        count = getattr(response, "count", None) or (response.get("count") if isinstance(response, dict) else 0)
         return bool(count and count > 0)
     except Exception as e:
-        logging.error(f"Error (sync) checking Supabase for recent embedding: {e}")
+        logging.error(f"Error checking Supabase: {e}")
         return False
 
+# Sync Helpers
+def check_if_embedded_recently_sync(filter: Dict[str, Any], days: int = 2) -> bool:
+    return asyncio.run(check_if_embedded_recently(filter, days))
 
 def url_exists_in_db_sync(url: str) -> bool:
-    """Synchronous check for existing document by source_url."""
-    if not supabase:
-        return False
-    if not url:
-        return False
+    if not supabase or not url: return False
     try:
-        response = (
-            supabase
-            .table("documents")
-            .select("id", count="exact")
-            .eq("metadata->>source_url", url)
-            .limit(1)
-            .execute()
-        )
-        count = getattr(response, "count", None)
-        if count is None and isinstance(response, dict):
-            count = response.get("count")
+        response = supabase.table("documents").select("id", count="exact").eq("metadata->>source_url", url).limit(1).execute()
+        count = getattr(response, "count", None) or (response.get("count") if isinstance(response, dict) else 0)
         return bool(count and count > 0)
     except Exception as e:
-        logging.error(f"Error (sync) checking Supabase for existing URL '{url}': {e}")
+        logging.error(f"Error checking URL {url}: {e}")
         return False
 
-
 def content_has_changed_sync(url: str, new_hash: str) -> bool:
-    """Synchronous variant of content_has_changed."""
-    if not url or not new_hash:
-        return True
-    if not supabase:
-        return True
-
+    if not supabase or not url: return True
     try:
-        response = (
-            supabase
-            .table("documents")
-            .select("metadata")
-            .eq("metadata->>source_url", url)
-            .limit(1)
-            .execute()
-        )
-        data = getattr(response, "data", None)
-        if data is None and isinstance(response, dict):
-            data = response.get("data")
-
-        if not data:
-            return True
-
-        first_record = data[0] if isinstance(data, list) else data
-        stored_metadata = (first_record or {}).get("metadata") or {}
-        stored_hash = stored_metadata.get("content_hash")
-        if stored_hash is None:
-            return True
-        return stored_hash != new_hash
-    except Exception as e:
-        logging.error(f"Error (sync) comparing content hash for '{url}': {e}")
+        response = supabase.table("documents").select("metadata").eq("metadata->>source_url", url).limit(1).execute()
+        data = getattr(response, "data", []) or (response.get("data") if isinstance(response, dict) else [])
+        if not data: return True
+        return data[0].get("metadata", {}).get("content_hash") != new_hash
+    except Exception:
         return True
-
 
 def delete_documents_by_source_url(url: str) -> None:
-    """Delete all documents whose metadata.source_url matches the provided URL."""
-    if not supabase or not url:
-        return
-
+    if not supabase or not url: return
     try:
-        (
-            supabase
-            .table("documents")
-            .delete()
-            .eq("metadata->>source_url", url)
-            .execute()
-        )
-        logging.info("Deleted existing documents for source URL %s", url)
+        supabase.table("documents").delete().eq("metadata->>source_url", url).execute()
+        logging.info(f"Deleted existing documents for {url}")
     except Exception as e:
-        logging.error(f"Failed to delete documents for '{url}': {e}")
-        raise
+        logging.error(f"Failed to delete {url}: {e}")
 
+# --- RESTORED: Manual Transcript Helper (Critical for Harvester) ---
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-# --- Optional: Test Initialization ---
-if __name__ == "__main__":
-    logging.info("\n--- Running local initialization test for embedding.py ---")
-    if supabase and embeddings_model and vector_store:
-        logging.info("✅ Initialization appears successful.")
-    else:
-        logging.error("❌ Initialization failed. Check error messages above.")
+async def find_manual_transcript_by_metadata(title: str, date_iso: str) -> bool:
+    """Checks if a manual transcript exists to skip Whisper transcription."""
+    if not supabase or not date_iso:
+        return False
+    try:
+        # 1. Find transcripts on date
+        def _execute_query():
+            return (
+                supabase.table("documents")
+                .select("metadata")
+                .eq("metadata->>content_type", "manual_transcript")
+                .eq("metadata->>lecture_date", date_iso)
+                .execute()
+            )
+        response = await asyncio.to_thread(_execute_query)
+        data = getattr(response, "data", []) or (response.get("data") if isinstance(response, dict) else [])
+        
+        if not data: return False
+
+        # 2. Fuzzy match title
+        target_title = (title or "").lower().strip()
+        for record in data:
+            meta = record.get("metadata", {})
+            db_title = (meta.get("title") or "").lower().strip()
+            if target_title in db_title or db_title in target_title:
+                logging.info(f"Found metadata match: '{target_title}' ~= '{db_title}'")
+                return True
+            if _similarity(target_title, db_title) > 0.8:
+                logging.info(f"Found metadata match (fuzzy): '{target_title}' ~= '{db_title}'")
+                return True
+        return False
+    except Exception as e:
+        logging.error(f"Error checking manual transcript: {e}")
+        return False
+
+def find_manual_transcript_by_metadata_sync(title: str, date_iso: str) -> bool:
+    return asyncio.run(find_manual_transcript_by_metadata(title, date_iso))
