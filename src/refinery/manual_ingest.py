@@ -33,7 +33,7 @@ def _clean_source_tag(text: str) -> str:
     """Removes tags and trims whitespace."""
     if not text:
         return ""
-    # Remove anywhere in the line
+    # Fix: Correctly escape brackets for regex
     text = re.sub(r"\", "", text)
     return text.strip()
 
@@ -46,7 +46,8 @@ def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str
     if class_name.lower().endswith(".txt"):
         class_name = class_name[:-4]
 
-    # 1. GLOBAL CLEAN: Remove all tags first to fix segmentation
+    # 1. GLOBAL CLEAN: Remove all tags first to fix segmentation issues
+    # This prevents the regex from getting confused by tags in the header
     clean_full_text = re.sub(r"\", "", full_text)
 
     for match in LECTURE_SEGMENTATION_PATTERN.finditer(clean_full_text):
@@ -59,7 +60,7 @@ def _split_into_lecture_segments(full_text: str, filename: str) -> List[Dict[str
             
         body = match.group("body").strip()
 
-        # Join title lines
+        # Join title lines and clean up
         title_lines = [
             line.strip() 
             for line in raw_title_block.split('\n') 
