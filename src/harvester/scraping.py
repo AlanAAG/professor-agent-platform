@@ -27,6 +27,15 @@ from . import config
 from .navigation import safe_find, safe_find_all, safe_click
 from urllib.parse import quote, urljoin, urlparse
 
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+_GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {
     "User-Agent": (
@@ -166,10 +175,42 @@ def _requires_authenticated_session(url: str) -> bool:
 # the authenticated `driver` object is passed, as the fallback to the `requests` library has been
 # permanently disabled for these URLs.
 def scrape_html_content(url: str, driver: Optional[webdriver.Chrome] = None) -> Optional[str]:
-    """Scrapes and extracts the main readable text from a general webpage."""
+    """Scrapes and extracts the main readable text from a general webpage.
+
+    Primary Method: GoogleDeepMind URL Extractor (Gemini URL Context).
+    Fallback: Standard Selenium/Requests scraping.
+    """
     logging.info(f"   Attempting to scrape HTML content from: {url}")
+
+    # --- Primary Method: Gemini URL Context ---
+    if genai and _GEMINI_API_KEY:
+        try:
+            logging.info("   Attempting Gemini URL extraction...")
+            client = genai.Client(api_key=_GEMINI_API_KEY)
+
+            # Use client.models.generate_content with the URL directly
+            response = client.models.generate_content(
+                model=_GEMINI_MODEL_NAME,
+                contents=[
+                    f"Extract the main article content from the following URL: {url}. "
+                    "Return only the extracted text content, ignoring navigation, ads, and footers."
+                ]
+            )
+
+            if response.text and len(response.text.strip()) > 50:
+                 logging.info(f"   Successfully scraped content via Gemini ({len(response.text)} chars).")
+                 return response.text
+            else:
+                 logging.warning("   Gemini URL extraction returned empty or too short content.")
+
+        except Exception as e:
+            logging.warning(f"   Gemini URL extraction failed: {e}. Falling back to standard scraping.")
+    else:
+        logging.info("   Gemini SDK not configured or available. Skipping primary method.")
+
+    # --- Fallback: Standard Selenium/Requests scraping ---
     logging.debug(
-        "   scrape_html_content entry driver status: %s (id=%s)",
+        "   scrape_html_content fallback driver status: %s (id=%s)",
         "present" if driver is not None else "missing",
         getattr(driver, "session_id", "n/a") if driver is not None else "n/a",
     )
