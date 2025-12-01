@@ -56,7 +56,7 @@ def test_extract_transcript_drive_success(monkeypatch, mock_driver):
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     monkeypatch.setattr(rp, "scrape_drive_transcript_content", lambda d: "Drive transcript text", raising=True)
     # Mock fallback to ensure it's not called
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", lambda *a, **k: "", raising=True)
+    monkeypatch.setattr(rp, "_attempt_fallback", lambda *a, **k: "", raising=True)
 
     # Act
     result = rp.extract_transcript(mock_driver, "https://drive.google.com/file/d/abc/view", "DRIVE_RECORDING")
@@ -68,7 +68,7 @@ def test_extract_transcript_window_cleanup(monkeypatch, mock_driver):
     # Arrange
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     monkeypatch.setattr(rp, "scrape_zoom_transcript_content", lambda d: "ok", raising=True)
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", lambda *a, **k: "", raising=True)
+    monkeypatch.setattr(rp, "_attempt_fallback", lambda *a, **k: "", raising=True)
 
     # Act
     _ = rp.extract_transcript(mock_driver, "https://zoom.us/rec/abc", "ZOOM_RECORDING")
@@ -116,7 +116,7 @@ def test_scrape_drive_transcript_content_missing_url(monkeypatch, mock_driver):
     result = rp.scrape_drive_transcript_content(mock_driver)
     assert result == ""
 
-def test_extract_transcript_triggers_whisper_fallback(monkeypatch, mock_driver):
+def test_extract_transcript_triggers_gemini_fallback(monkeypatch, mock_driver):
     monkeypatch.setattr(rp, "WebDriverWait", _FakeWait, raising=True)
     # Mock primary scrape failing (empty string)
     monkeypatch.setattr(rp, "scrape_zoom_transcript_content", lambda d: "", raising=True)
@@ -125,11 +125,11 @@ def test_extract_transcript_triggers_whisper_fallback(monkeypatch, mock_driver):
 
     # FIX: Updated mock signature to accept *args and **kwargs
     # This handles the extra 'title' and 'date_str' arguments passed by the new code
-    def fake_whisper(driver, url, resource_type, *args, **kwargs):
+    def fake_fallback(driver, url, resource_type, *args, **kwargs):
         called["url"] = url
         return "fallback text"
 
-    monkeypatch.setattr(rp, "_attempt_whisper_fallback", fake_whisper, raising=True)
+    monkeypatch.setattr(rp, "_attempt_fallback", fake_fallback, raising=True)
 
     result = rp.extract_transcript(mock_driver, "https://zoom.us/rec/abc", "ZOOM_RECORDING")
     
