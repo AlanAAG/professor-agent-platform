@@ -2,6 +2,7 @@
 
 import os
 import logging
+import re
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
@@ -41,6 +42,27 @@ except Exception as e:
     logging.error(f"Error configuring Gemini via LangChain: {e}")
     model = None
 
+def _clean_transcript_locally(text: str) -> str:
+    """
+    Fallback cleaning function that removes timestamps, normalizes whitespace,
+    and ensures basic punctuation.
+    """
+    if not text:
+        return ""
+    
+    # Remove timestamps like 0:00, 10:15, 1:05:23
+    # Matches digits:digits(:digits optionally) bounded by word boundaries
+    text = re.sub(r'\b\d+:\d+(?::\d+)?\b', '', text)
+    
+    # Collapse multiple whitespaces/newlines into single spaces
+    cleaned = " ".join(text.split())
+    
+    # Ensure the text ends with punctuation if it's not empty
+    if cleaned and cleaned[-1] not in ".!?":
+        cleaned += "."
+        
+    return cleaned
+
 def clean_transcript_with_llm(raw_text: str) -> str:
     """
     Cleans a raw transcript using the configured LLM.
@@ -49,8 +71,8 @@ def clean_transcript_with_llm(raw_text: str) -> str:
         return ""
     
     if not model:
-        logging.warning("LLM unavailable or failed to initialize. Falling back to local cleaning (basic whitespace).")
-        return " ".join(raw_text.split())
+        logging.warning("LLM unavailable or failed to initialize. Falling back to local cleaning.")
+        return _clean_transcript_locally(raw_text)
 
     try:
         prompt = ChatPromptTemplate.from_template(CLEANING_PROMPT)
@@ -65,5 +87,5 @@ def clean_transcript_with_llm(raw_text: str) -> str:
 
     except Exception as e:
         logging.error(f"LLM cleaning failed: {e}")
-        # Fallback to basic cleaning
-        return " ".join(raw_text.split())
+        # Fallback to local cleaning
+        return _clean_transcript_locally(raw_text)
