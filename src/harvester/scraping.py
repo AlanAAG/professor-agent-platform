@@ -34,7 +34,7 @@ except ImportError:
     genai = None
 
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-_GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+_GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 # Use a browser-like User-Agent to avoid 403s from some sites
 BROWSER_HEADER = {

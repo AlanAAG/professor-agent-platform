@@ -37,7 +37,7 @@ _TIMEDTEXT_URL_REGEX = re.compile(
 )
 
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-_GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+_GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 _ENABLE_FALLBACK = os.environ.get("ENABLE_WHISPER_FALLBACK", "true").strip().lower() not in {
     "0",
