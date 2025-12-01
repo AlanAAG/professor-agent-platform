@@ -655,6 +655,22 @@ def main_pipeline(mode="daily"):
                                                 logging.info(f"      Skipping YouTube video: {title}")
                                                 continue
 
+                                            # --- NEW LOGIC START ---
+                                            # Check for Manually Ingested Transcript (Deduplication)
+                                            # Assumption: Manual ingest stores key as "{class_name}.txt|{title}"
+                                            manual_key_check = f"{class_name}.txt|{title}"
+                                            is_manually_ingested = False
+                                            try:
+                                                if embedding.url_exists_in_db_sync(manual_key_check):
+                                                    is_manually_ingested = True
+                                            except Exception as e:
+                                                logging.warning(f"      Manual key check failed: {e}")
+
+                                            if is_manually_ingested:
+                                                logging.info(f"      Skipping {title} (Already exists via manual ingest: {manual_key_check})")
+                                                continue
+                                            # --- NEW LOGIC END ---
+
                                             parsed_date = utils.parse_general_date(date_text) if date_text else None
                                             should_process = False
 
