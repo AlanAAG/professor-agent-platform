@@ -5,6 +5,7 @@ import logging
 import re
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser  # <--- Fix 1: Added Import
 from dotenv import load_dotenv
 
 # Ensure environment is loaded
@@ -42,6 +43,7 @@ except Exception as e:
     logging.error(f"Error configuring Gemini via LangChain: {e}")
     model = None
 
+# --- Fix 2: Added Fallback Function ---
 def _clean_transcript_locally(text: str) -> str:
     """
     Fallback cleaning function that removes timestamps, normalizes whitespace,
@@ -76,12 +78,15 @@ def clean_transcript_with_llm(raw_text: str) -> str:
 
     try:
         prompt = ChatPromptTemplate.from_template(CLEANING_PROMPT)
-        chain = prompt | model
+        # --- Fix 3: Use Output Parser in Chain ---
+        chain = prompt | model | StrOutputParser()
         
         logging.info(f"-> Sending {len(raw_text)} characters to Gemini for cleaning...")
         result = chain.invoke({"text": raw_text})
         
-        cleaned_text = result.content
+        # Result is now a string thanks to StrOutputParser
+        cleaned_text = result
+        
         logging.info("-> Transcript cleaned successfully.")
         return cleaned_text
 
