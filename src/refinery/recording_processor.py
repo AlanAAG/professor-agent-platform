@@ -22,7 +22,8 @@ from selenium import webdriver
 from urllib.parse import urlparse, urlsplit, urljoin
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError:
     genai = None
 
@@ -521,37 +522,48 @@ def _transcribe_with_gemini(file_path: str) -> str:
         return ""
 
     logging.info("   Gemini fallback: uploading audio/video to Gemini...")
+    client = genai.Client(api_key=_GEMINI_API_KEY)
     video_file = None
     try:
-        genai.configure(api_key=_GEMINI_API_KEY)
-
         # Upload the file
-        video_file = genai.upload_file(path=file_path)
+        video_file = client.files.upload(path=file_path)
 
         # Wait for processing
         logging.info("   Gemini fallback: waiting for file processing...")
         # Add simple timeout mechanism to avoid infinite loops
         max_retries = 60  # Wait up to 2 minutes (60 * 2s)
         retries = 0
-        while video_file.state.name == "PROCESSING":
+
+        # Check state. Handle both string and enum cases for safety across SDK versions
+        def get_state_str(f):
+            if hasattr(f, "state"):
+                s = f.state
+                if hasattr(s, "name"):
+                    return s.name
+                return str(s)
+            return ""
+
+        while get_state_str(video_file) == "PROCESSING":
             time.sleep(2)
-            video_file = genai.get_file(video_file.name)
+            video_file = client.files.get(name=video_file.name)
             retries += 1
             if retries >= max_retries:
                 logging.error("   Gemini file processing timed out.")
                 return ""
 
-        if video_file.state.name == "FAILED":
+        if get_state_str(video_file) == "FAILED":
             logging.error("   Gemini file processing failed.")
             return ""
 
         logging.info("   Gemini fallback: requesting transcription from %s...", _GEMINI_MODEL_NAME)
 
-        model = genai.GenerativeModel(model_name=_GEMINI_MODEL_NAME)
-
         # Prompt for transcription
         prompt = "Transcribe the audio in this file into text. Provide only the transcription, no introductory text."
-        response = model.generate_content([video_file, prompt])
+
+        response = client.models.generate_content(
+            model=_GEMINI_MODEL_NAME,
+            contents=[video_file, prompt]
+        )
 
         return response.text if response.text else ""
 
@@ -563,7 +575,7 @@ def _transcribe_with_gemini(file_path: str) -> str:
         if video_file:
             try:
                 logging.info("   Gemini fallback: deleting remote file %s", video_file.name)
-                genai.delete_file(video_file.name)
+                client.files.delete(name=video_file.name)
             except Exception as e:
                 logging.warning("   Failed to delete remote file on Gemini: %s", e)
 
