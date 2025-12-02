@@ -44,6 +44,9 @@ def test_chunk_and_embed_text(monkeypatch):
     fake_vs = MagicMock()
     monkeypatch.setattr(embedding, "vector_store", fake_vs, raising=True)
 
+    # Mock _generate_context_summary to return a fixed string
+    monkeypatch.setattr(embedding, "_generate_context_summary", lambda text: "This is a mock summary.")
+
     metadata = {
         "class_name": "C1",
         "content_type": "transcript",
@@ -59,6 +62,7 @@ def test_chunk_and_embed_text(monkeypatch):
 
     # Expected header
     expected_header = (
+        "Context Summary: This is a mock summary.\n"
         "Course: C1\n"
         "Source: T\n"
         "Instructor: Prof. Y\n"
