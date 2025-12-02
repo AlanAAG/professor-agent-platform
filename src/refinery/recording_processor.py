@@ -526,7 +526,7 @@ def _transcribe_with_gemini(file_path: str) -> str:
     video_file = None
     try:
         # Upload the file
-        video_file = client.files.upload(path=file_path)
+        video_file = client.files.upload(file=file_path)
 
         # Wait for processing
         logging.info("   Gemini fallback: waiting for file processing...")
