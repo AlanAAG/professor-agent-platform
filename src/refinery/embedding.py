@@ -67,7 +67,7 @@ try:
         # --- Initialize the Vector Store Client ---
         vector_store = SupabaseVectorStore(
             client=supabase,
-            table_name="documents", 
+            table_name="documents_v2",
             embedding=embeddings_model
         )
         logging.info("SupabaseVectorStore initialized.")
@@ -173,7 +173,7 @@ async def check_if_embedded_recently(filter: Dict[str, Any], days: int = 7) -> b
     try:
         cutoff_dt = datetime.datetime.now() - datetime.timedelta(days=days)
         cutoff_iso = cutoff_dt.isoformat()
-        query = supabase.table("documents").select("metadata", count="exact")
+        query = supabase.table("documents_v2").select("metadata", count="exact")
         if "source_url" in filter and filter["source_url"]:
             query = query.eq("metadata->>source_url", filter["source_url"])
         elif filter:
@@ -193,7 +193,7 @@ def check_if_embedded_recently_sync(filter: Dict[str, Any], days: int = 2) -> bo
 def url_exists_in_db_sync(url: str) -> bool:
     if not supabase or not url: return False
     try:
-        response = supabase.table("documents").select("id", count="exact").eq("metadata->>source_url", url).limit(1).execute()
+        response = supabase.table("documents_v2").select("id", count="exact").eq("metadata->>source_url", url).limit(1).execute()
         count = getattr(response, "count", None) or (response.get("count") if isinstance(response, dict) else 0)
         return bool(count and count > 0)
     except Exception as e:
@@ -203,7 +203,7 @@ def url_exists_in_db_sync(url: str) -> bool:
 def content_has_changed_sync(url: str, new_hash: str) -> bool:
     if not supabase or not url: return True
     try:
-        response = supabase.table("documents").select("metadata").eq("metadata->>source_url", url).limit(1).execute()
+        response = supabase.table("documents_v2").select("metadata").eq("metadata->>source_url", url).limit(1).execute()
         data = getattr(response, "data", []) or (response.get("data") if isinstance(response, dict) else [])
         if not data: return True
         return data[0].get("metadata", {}).get("content_hash") != new_hash
@@ -213,7 +213,7 @@ def content_has_changed_sync(url: str, new_hash: str) -> bool:
 def delete_documents_by_source_url(url: str) -> None:
     if not supabase or not url: return
     try:
-        supabase.table("documents").delete().eq("metadata->>source_url", url).execute()
+        supabase.table("documents_v2").delete().eq("metadata->>source_url", url).execute()
         logging.info(f"Deleted existing documents for {url}")
     except Exception as e:
         logging.error(f"Failed to delete {url}: {e}")
@@ -230,7 +230,7 @@ async def find_manual_transcript_by_metadata(title: str, date_iso: str) -> bool:
         # 1. Find transcripts on date
         def _execute_query():
             return (
-                supabase.table("documents")
+                supabase.table("documents_v2")
                 .select("metadata")
                 .eq("metadata->>content_type", "manual_transcript")
                 .eq("metadata->>lecture_date", date_iso)
