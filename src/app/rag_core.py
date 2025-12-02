@@ -16,7 +16,6 @@ from src.shared.utils import (
     cohere_rerank,
     EMBEDDING_MODEL_NAME,
     retrieve_rag_documents,
-    retrieve_rag_documents_keyword_fallback,
     _to_langchain_documents,
 )
 
@@ -500,14 +499,15 @@ def _retrieve_documents_with_backoff(
         )
 
     try:
-        keyword_docs = retrieve_rag_documents_keyword_fallback(
+        keyword_docs = retrieve_rag_documents(
             query=query,
             selected_class=subject,
-            limit=KEYWORD_FALLBACK_LIMIT,
+            match_count=KEYWORD_FALLBACK_LIMIT,
+            enable_hybrid=True,
         )
     except Exception as exc:
         logging.error(
-            "   Keyword fallback retrieval failed for '%s': %s",
+            "   Hybrid retrieval failed for '%s': %s",
             subject,
             exc,
         )
@@ -515,13 +515,13 @@ def _retrieve_documents_with_backoff(
 
     if keyword_docs:
         logging.info(
-            "   Keyword fallback retrieval returned %s chunks for '%s'.",
+            "   Hybrid retrieval returned %s chunks for '%s'.",
             len(keyword_docs),
             subject,
         )
     else:
         logging.warning(
-            "   Keyword fallback retrieval returned no results for '%s'.",
+            "   Hybrid retrieval returned no results for '%s'.",
             subject,
         )
     return keyword_docs

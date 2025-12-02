@@ -10,7 +10,6 @@ from src.shared.utils import (
     EMBEDDING_MODEL_NAME,
     cohere_rerank,
     retrieve_rag_documents,
-    retrieve_rag_documents_keyword_fallback,
 )
 from src.app import rag_core
 _genai_import_errors = []
@@ -954,10 +953,11 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
             )
         
         if not documents:
-            documents = retrieve_rag_documents_keyword_fallback(
+            documents = retrieve_rag_documents(
                 query=payload.query,
                 selected_class=payload.selectedClass,
-                limit=params["relaxed_count"],
+                match_count=params["relaxed_count"],
+                enable_hybrid=True,
             )
         
         if not documents:
@@ -1078,10 +1078,11 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             documents = cohere_rerank(last_query, documents)
         
         if not documents:
-            documents = retrieve_rag_documents_keyword_fallback(
+            documents = retrieve_rag_documents(
                 query=last_query,
                 selected_class=persona_key,
-                limit=params["relaxed_count"],
+                match_count=params["relaxed_count"],
+                enable_hybrid=True,
             )
         
         if documents:
