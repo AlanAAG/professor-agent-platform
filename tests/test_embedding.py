@@ -33,27 +33,48 @@ def test_validate_metadata_success_and_prune_none():
 def test_chunk_and_embed_text(monkeypatch):
     # Fake text splitter returns deterministic number of docs
     class Doc:
-        def __init__(self):
+        def __init__(self, content="Chunk content"):
+            self.page_content = content
             self.metadata = {}
 
-    fake_docs = [Doc(), Doc(), Doc()]
+    fake_docs = [Doc("Chunk 1"), Doc("Chunk 2"), Doc("Chunk 3")]
     monkeypatch.setattr(embedding.text_splitter, "create_documents", lambda texts: fake_docs)
 
     # Mock vector_store to observe add_documents call
     fake_vs = MagicMock()
     monkeypatch.setattr(embedding, "vector_store", fake_vs, raising=True)
 
-    metadata = {"class_name": "C1", "content_type": "transcript", "title": "T"}
+    metadata = {
+        "class_name": "C1",
+        "content_type": "transcript",
+        "title": "T",
+        "teacher_name": "Prof. Y",
+        "lecture_date": "2023-01-01"
+    }
     embedding.chunk_and_embed_text("some clean text", metadata)
 
     fake_vs.add_documents.assert_called_once()
     (docs_arg,), _ = fake_vs.add_documents.call_args
     assert len(docs_arg) == len(fake_docs)
-    # Ensure metadata was normalized and applied to each doc
-    for d in docs_arg:
+
+    # Expected header
+    expected_header = (
+        "Course: C1\n"
+        "Source: T\n"
+        "Instructor: Prof. Y\n"
+        "Date: 2023-01-01\n"
+        "---\n"
+    )
+
+    # Ensure metadata was normalized and applied to each doc, AND header injected
+    for i, d in enumerate(docs_arg):
         assert d.metadata["class_name"] == "C1"
         assert d.metadata["content_type"] == "transcript"
         assert "retrieval_date" in d.metadata
+
+        # Verify content injection
+        assert d.page_content.startswith(expected_header)
+        assert f"Chunk {i+1}" in d.page_content
 
 
 def test_url_exists_in_db_sync_true_and_false(monkeypatch):
