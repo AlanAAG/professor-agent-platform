@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from requests.exceptions import RequestException
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -481,8 +482,39 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
     file_path = os.path.join(target_dir, filename)
     max_bytes = int(_FALLBACK_MAX_DOWNLOAD_MB * 1024 * 1024)
     try:
-        with session.get(download_url, stream=True, timeout=(15, 300)) as resp:
-            resp.raise_for_status()
+        resp = session.get(download_url, stream=True, timeout=(15, 300))
+        resp.raise_for_status()
+
+        # Check for Google Drive interstitial warning (HTML instead of video)
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+            logging.warning("   Download returned HTML content. Checking for confirmation token...")
+            content = resp.text  # Consumes the stream
+            resp.close()
+
+            soup = BeautifulSoup(content, "html.parser")
+            confirm_href = None
+            for a in soup.find_all("a", href=True):
+                if "confirm=" in a["href"]:
+                    confirm_href = a["href"]
+                    break
+
+            if confirm_href:
+                confirm_href = urljoin(download_url, confirm_href)
+                logging.info("   Found confirmation token. Retrying download...")
+                resp = session.get(confirm_href, stream=True, timeout=(15, 300))
+                resp.raise_for_status()
+            else:
+                logging.error("   Download returned HTML but no confirmation token found.")
+                return None
+
+        # Check again in case the retry also returned HTML
+        if "text/html" in resp.headers.get("Content-Type", "").lower():
+            logging.error("   Download (or retry) returned HTML content; aborting.")
+            resp.close()
+            return None
+
+        with resp:
             written = 0
             with open(file_path, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
@@ -498,6 +530,13 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
                         fh.close()
                         os.remove(file_path)
                         return None
+
+        # Verify file validity (size check)
+        if os.path.getsize(file_path) < 10 * 1024:  # 10KB
+            logging.error("   Downloaded file is too small (<10KB); treating as failure.")
+            os.remove(file_path)
+            return None
+
     except RequestException as exc:
         logging.error("   Failed to download recording for fallback: %s", exc)
         try:
@@ -514,6 +553,7 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
         except OSError:
             pass
         return None
+
     return file_path
 
 
