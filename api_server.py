@@ -10,7 +10,6 @@ from src.shared.utils import (
     EMBEDDING_MODEL_NAME,
     cohere_rerank,
     retrieve_rag_documents,
-    retrieve_rag_documents_keyword_fallback,
 )
 from src.app import rag_core
 _genai_import_errors = []
@@ -943,6 +942,15 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
             )
             documents = cohere_rerank(payload.query, documents)
         
+        if not documents:
+            # Fallback to hybrid search
+            documents = retrieve_rag_documents(
+                query=payload.query,
+                selected_class=payload.selectedClass,
+                match_count=params["relaxed_count"],
+                enable_hybrid=True,
+            )
+
         if documents:
             avg_sim = sum([d.get("similarity", 0) or 0 for d in documents]) / max(len(documents), 1)
             logger.info(
@@ -951,13 +959,6 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
                 len(documents),
                 avg_sim,
                 int((time.time() - _t0) * 1000),
-            )
-        
-        if not documents:
-            documents = retrieve_rag_documents_keyword_fallback(
-                query=payload.query,
-                selected_class=payload.selectedClass,
-                limit=params["relaxed_count"],
             )
         
         if not documents:
@@ -1078,10 +1079,11 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             documents = cohere_rerank(last_query, documents)
         
         if not documents:
-            documents = retrieve_rag_documents_keyword_fallback(
+            documents = retrieve_rag_documents(
                 query=last_query,
                 selected_class=persona_key,
-                limit=params["relaxed_count"],
+                match_count=params["relaxed_count"],
+                enable_hybrid=True,
             )
         
         if documents:
