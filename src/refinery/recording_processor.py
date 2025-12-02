@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -574,27 +575,52 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                     EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
                 )
 
-                # Heuristics for finding download button
-                potential_selectors = [
-                    "div[aria-label='Download']",
-                    "div[data-tooltip='Download']",
-                    "div[role='button'][aria-label='Download']",
-                    "div[role='button'] svg[href*='download']", # Not standard SVG usage but sometimes...
-                    # Drive specific structure often involves divs acting as buttons
-                    "div[role='button'][data-tooltip='Download']",
-                ]
+                # Zoom Specific Logic
+                if "zoom.us" in original_url:
+                    zoom_selectors = [
+                        "a.download-key",
+                        "//a[contains(@href, '/rec/download')]",
+                        "//div[@role='button' and contains(., 'Download')]"
+                    ]
+                    for selector in zoom_selectors:
+                        try:
+                            if selector.startswith("//"):
+                                elements = driver.find_elements(By.XPATH, selector)
+                            else:
+                                elements = driver.find_elements(By.CSS_SELECTOR, selector)
 
-                for selector in potential_selectors:
-                    try:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                        for el in elements:
-                            if el.is_displayed():
-                                download_button = el
+                            for el in elements:
+                                if el.is_displayed():
+                                    download_button = el
+                                    break
+                            if download_button:
                                 break
-                        if download_button:
-                            break
-                    except Exception:
-                        continue
+                        except Exception:
+                            continue
+
+                # General / Drive Logic (if not found yet)
+                if not download_button:
+                    # Heuristics for finding download button
+                    potential_selectors = [
+                        "div[aria-label='Download']",
+                        "div[data-tooltip='Download']",
+                        "div[role='button'][aria-label='Download']",
+                        "div[role='button'] svg[href*='download']", # Not standard SVG usage but sometimes...
+                        # Drive specific structure often involves divs acting as buttons
+                        "div[role='button'][data-tooltip='Download']",
+                    ]
+
+                    for selector in potential_selectors:
+                        try:
+                            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                            for el in elements:
+                                if el.is_displayed():
+                                    download_button = el
+                                    break
+                            if download_button:
+                                break
+                        except Exception:
+                            continue
 
                 if not download_button:
                     # Try looking for icon name "download" in Material Icons if used?
@@ -604,6 +630,8 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                     xpath_selectors = [
                         "//*[@aria-label='Download']",
                         "//*[contains(@aria-label, 'Download')]",
+                        "//div[@aria-label='Download']",
+                        "//div[text()='Download']"
                     ]
                     for xpath in xpath_selectors:
                          try:
@@ -773,13 +801,26 @@ def _transcribe_with_gemini(file_path: str) -> str:
 
     try:
         # Check duration using MoviePy
+        duration_sec = 0.0
         try:
             clip = VideoFileClip(file_path)
             duration_sec = clip.duration
             clip.close()
         except Exception as e:
-            logging.warning(f"   Could not determine video duration with MoviePy: {e}. Proceeding with single upload.")
-            return _transcribe_single_chunk(client, file_path)
+            logging.warning(f"   MoviePy failed to read duration: {e}. Trying ffmpeg...")
+            try:
+                result = subprocess.run(["ffmpeg", "-i", file_path], stderr=subprocess.PIPE, text=True)
+                # Parse output
+                match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", result.stderr)
+                if match:
+                    hours, minutes, seconds = map(float, match.groups())
+                    duration_sec = hours * 3600 + minutes * 60 + seconds
+                else:
+                    raise ValueError("Could not find duration in ffmpeg output")
+            except Exception as ffmpeg_err:
+                logging.error(f"   ffmpeg also failed to determine duration: {ffmpeg_err}")
+                logging.error("   Cannot determine duration. Single upload disabled.")
+                return ""
 
         chunk_size_sec = 50 * 60  # 50 minutes
 
