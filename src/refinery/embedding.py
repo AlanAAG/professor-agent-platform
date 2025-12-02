@@ -126,10 +126,39 @@ def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
         return
 
     logging.info(f"-> Chunking and embedding for: {metadata.get('class_name')}")
+
+    # --- Contextual Header Construction ---
+    header_parts = []
+
+    # Course
+    course = metadata.get("class_name") or "Unknown Context"
+    header_parts.append(f"Course: {course}")
+
+    # Source
+    source = metadata.get("title")
+    if source:
+        header_parts.append(f"Source: {source}")
+    else:
+        header_parts.append("Source: General")
+
+    # Instructor
+    instructor = metadata.get("teacher_name")
+    if instructor:
+        header_parts.append(f"Instructor: {instructor}")
+
+    # Date
+    date_val = metadata.get("lecture_date")
+    if date_val:
+        header_parts.append(f"Date: {date_val}")
+
+    header_parts.append("---")
+    context_header = "\n".join(header_parts) + "\n"
+
     documents = text_splitter.create_documents([clean_text])
     
     normalized_metadata = validate_metadata(metadata)
     for doc in documents:
+        doc.page_content = context_header + doc.page_content
         doc.metadata = normalized_metadata
 
     try:
