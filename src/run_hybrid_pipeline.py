@@ -214,8 +214,7 @@ def process_single_resource(
         # 1. Determine Content Type and Fetch Raw Content
         # Prioritize known transcript platforms before generic content-type checks
         if "drive.google.com" in url or "zoom.us" in url:
-            content_type_tag = "recording_transcript"
-            logging.info("   Content type: Recording Transcript. Scraping...")
+            logging.info("   Potential recording detected. Attempting transcript extraction...")
             resource_type = classify_url(url)
             transcript_text = extract_transcript(
                 driver,
@@ -226,6 +225,7 @@ def process_single_resource(
                 }.get(resource_type, resource_type),
             )
             if transcript_text:
+                content_type_tag = "recording_transcript"
                 raw_content_data = transcript_text
                 # Telemetry: count successfully scraped transcripts
                 try:
@@ -233,9 +233,10 @@ def process_single_resource(
                 except Exception:
                     pass
             else:
-                logging.warning(f"   No transcript content scraped from {url}")
-                return
-        else:
+                logging.info(f"   No transcript content scraped from {url}. Checking content type...")
+
+        # If no transcript found (or not a recording URL), proceed to check content type
+        if not raw_content_data:
             content_type_header = scraping.check_url_content_type(url)
 
             if content_type_header and "application/pdf" in content_type_header:
