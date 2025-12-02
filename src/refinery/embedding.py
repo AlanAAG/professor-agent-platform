@@ -8,7 +8,9 @@ from difflib import SequenceMatcher  # <--- Critical for title matching
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from supabase.client import create_client
 from langchain_community.vectorstores import SupabaseVectorStore
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 from typing import List, Dict, Any
@@ -25,6 +27,7 @@ EXPECTED_DIM = 768
 supabase = None
 embeddings_model = None
 vector_store = None 
+llm_summarizer = None
 
 try:
     # --- Check and Load Environment Variables ---
@@ -49,6 +52,18 @@ try:
             google_api_key=gemini_api_key,
         )
         logging.info(f"Gemini embeddings initialized: {EMBEDDING_MODEL_NAME}")
+
+        # --- Initialize LLM Summarizer ---
+        try:
+            llm_summarizer = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                google_api_key=gemini_api_key,
+                temperature=0.3
+            )
+            logging.info("Gemini summarizer initialized: gemini-2.5-flash")
+        except Exception as e:
+            logging.error(f"Failed to initialize Gemini summarizer: {e}")
+            llm_summarizer = None
 
         # Validate embedding dimensions match database schema
         try:
@@ -118,6 +133,34 @@ def _add_documents_with_retry(documents: List[Any]):
     return vector_store.add_documents(documents)
 
 
+def _generate_context_summary(full_text: str) -> str:
+    """Generates a context summary using LLM."""
+    if not llm_summarizer:
+        return ""
+
+    try:
+        # Truncate to preserve tokens
+        truncated_text = full_text[:30000]
+
+        prompt = ChatPromptTemplate.from_template(
+            """You are an expert archivist. Analyze the following document and provide a concise context summary (max 50 words).
+Focus on: What is the main topic? Who is the intended audience? What are the key entities (concepts, formulas)?
+Do NOT summarize the content details, just the context.
+
+Document Start:
+{text}
+
+Context Summary:"""
+        )
+
+        chain = prompt | llm_summarizer | StrOutputParser()
+        return chain.invoke({"text": truncated_text})
+
+    except Exception as e:
+        logging.error(f"Error generating context summary: {e}")
+        return ""
+
+
 # --- Main Functions ---
 def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
     if not vector_store:
@@ -127,8 +170,13 @@ def chunk_and_embed_text(clean_text: str, metadata: Dict[str, Any]):
 
     logging.info(f"-> Chunking and embedding for: {metadata.get('class_name')}")
 
+    global_context = _generate_context_summary(clean_text)
+
     # --- Contextual Header Construction ---
     header_parts = []
+
+    if global_context:
+        header_parts.append(f"Context Summary: {global_context}")
 
     # Course
     course = metadata.get("class_name") or "Unknown Context"
