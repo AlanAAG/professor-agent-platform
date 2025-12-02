@@ -8,6 +8,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from imageio_ffmpeg import get_ffmpeg_exe
 import requests
 from requests.exceptions import RequestException
 from bs4 import BeautifulSoup
@@ -579,6 +580,7 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                 if "zoom.us" in original_url:
                     zoom_selectors = [
                         "a.download-key",
+                        "[download]",
                         "//a[contains(@href, '/rec/download')]",
                         "//div[@role='button' and contains(., 'Download')]"
                     ]
@@ -650,7 +652,7 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
 
             if download_button:
                 logging.info("      Found download button via Selenium. Clicking...")
-                download_button.click()
+                driver.execute_script("arguments[0].click();", download_button)
 
                 # 3. Wait for file to appear in download directory
                 # We need to watch the downloads directory for a new file.
@@ -664,9 +666,10 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                 # Since we don't know the name, we look for the most recent file.
 
                 # Wait loop
-                wait_time = 60 # seconds
+                wait_time = 300 # seconds
                 start_wait = time.time()
                 new_file = None
+                last_log_time = start_wait
 
                 # We should probably know the download directory.
                 # If `target_dir` is used for requests, does Selenium use it?
@@ -711,6 +714,12 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                             os.rename(found_path, final_path)
                             logging.info(f"      Selenium download successful: {final_path}")
                             return final_path
+
+                    now = time.time()
+                    if now - last_log_time >= 30:
+                        elapsed = int(now - start_wait)
+                        logging.info(f"      Waiting for download... {elapsed} seconds elapsed")
+                        last_log_time = now
 
                     time.sleep(1)
 
@@ -809,7 +818,7 @@ def _transcribe_with_gemini(file_path: str) -> str:
         except Exception as e:
             logging.warning(f"   MoviePy failed to read duration: {e}. Trying ffmpeg...")
             try:
-                result = subprocess.run(["ffmpeg", "-i", file_path], stderr=subprocess.PIPE, text=True)
+                result = subprocess.run([get_ffmpeg_exe(), "-i", file_path], stderr=subprocess.PIPE, text=True)
                 # Parse output
                 match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", result.stderr)
                 if match:
