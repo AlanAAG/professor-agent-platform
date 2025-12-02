@@ -34,7 +34,6 @@ def cors_test_client(monkeypatch) -> TestClient:
 
     utils_stub.cohere_rerank = lambda query, documents: documents
     utils_stub.retrieve_rag_documents = _empty
-    utils_stub.retrieve_rag_documents_keyword_fallback = _empty
     utils_stub._get_supabase_client = lambda: None
 
     sys.modules["src.shared.utils"] = utils_stub
@@ -46,6 +45,50 @@ def cors_test_client(monkeypatch) -> TestClient:
 
     sys.modules["google"] = google_package
     sys.modules["google.generativeai"] = genai_stub
+
+    # Mock google.ai which is used by langchain_google_genai
+    google_ai_package = types.ModuleType("google.ai")
+    google_package.ai = google_ai_package
+    sys.modules["google.ai"] = google_ai_package
+
+    # Mock google.ai.generativelanguage_v1beta used by langchain_google_genai
+    google_ai_genlang_package = types.ModuleType("google.ai.generativelanguage_v1beta")
+    google_ai_package.generativelanguage_v1beta = google_ai_genlang_package
+    sys.modules["google.ai.generativelanguage_v1beta"] = google_ai_genlang_package
+
+    # Mock SafetySetting class and attributes
+    class SafetySetting:
+        class HarmBlockThreshold:
+            pass
+        class HarmCategory:
+            pass
+    google_ai_genlang_package.SafetySetting = SafetySetting
+    google_ai_genlang_package.HarmCategory = SafetySetting.HarmCategory
+
+    class GenerationConfig:
+        class Modality:
+            pass
+        class MediaResolution:
+            pass
+    google_ai_genlang_package.GenerationConfig = GenerationConfig
+
+    # Mock google.protobuf
+    google_protobuf_package = types.ModuleType("google.protobuf")
+    google_package.protobuf = google_protobuf_package
+    sys.modules["google.protobuf"] = google_protobuf_package
+
+    # Mock descriptor_pb2
+    descriptor_pb2 = types.ModuleType("google.protobuf.descriptor_pb2")
+    google_protobuf_package.descriptor_pb2 = descriptor_pb2
+    sys.modules["google.protobuf.descriptor_pb2"] = descriptor_pb2
+
+    # Mock rag_core to avoid importing langchain and google dependencies
+    rag_core_stub = types.ModuleType("src.app.rag_core")
+    rag_core_stub.classify_subject = lambda *args, **kwargs: "Startup"
+    rag_core_stub.PROFESSOR_PERSONAS = {}
+    rag_core_stub.DEFAULT_PERSONA_KEY = "Startup"
+    rag_core_stub._get_fallback_persona = lambda: {}
+    sys.modules["src.app.rag_core"] = rag_core_stub
 
     app_module = importlib.import_module("api_server")
 
