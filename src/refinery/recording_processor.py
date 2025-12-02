@@ -21,6 +21,7 @@ from selenium.common.exceptions import (
 )
 from selenium import webdriver
 from urllib.parse import urlparse, urlsplit, urljoin
+from moviepy import VideoFileClip
 
 try:
     from google import genai
@@ -417,7 +418,7 @@ def _resolve_zoom_download_url(driver: webdriver.Chrome, url: str) -> Optional[s
 def _extract_drive_file_id(url: str) -> Optional[str]:
     if not url:
         return None
-    match = re.search(r"/file/d/([^/]+)/", url)
+    match = re.search(r"/file/d/([^/&?]+)", url)
     if match:
         return match.group(1)
     match = re.search(r"[?&]id=([^&]+)", url)
@@ -464,7 +465,7 @@ def _resolve_drive_download_url(driver: webdriver.Chrome, url: str) -> Optional[
     return None
 
 
-def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Optional[str]:
+def _download_recording_media(driver: webdriver.Chrome, download_url: str, original_url: Optional[str] = None) -> Optional[str]:
     if not download_url:
         return None
     session = _build_session_from_driver(driver)
@@ -481,6 +482,10 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
     filename = f"recording_{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(target_dir, filename)
     max_bytes = int(_FALLBACK_MAX_DOWNLOAD_MB * 1024 * 1024)
+
+    # Track if API/Request method failed with HTML response
+    api_download_failed = False
+
     try:
         resp = session.get(download_url, stream=True, timeout=(15, 300))
         resp.raise_for_status()
@@ -505,46 +510,45 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
                 resp = session.get(confirm_href, stream=True, timeout=(15, 300))
                 resp.raise_for_status()
             else:
-                logging.error("   Download returned HTML but no confirmation token found.")
-                return None
+                logging.warning("   Download returned HTML but no confirmation token found.")
+                api_download_failed = True
 
         # Check again in case the retry also returned HTML
-        if "text/html" in resp.headers.get("Content-Type", "").lower():
-            logging.error("   Download (or retry) returned HTML content; aborting.")
+        if not api_download_failed and "text/html" in resp.headers.get("Content-Type", "").lower():
+            logging.warning("   Download (or retry) returned HTML content.")
             resp.close()
-            return None
+            api_download_failed = True
 
-        with resp:
-            written = 0
-            with open(file_path, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    fh.write(chunk)
-                    written += len(chunk)
-                    if written > max_bytes:
-                        logging.error(
-                            "   Recording download exceeded %s MB limit; aborting fallback.",
-                            _FALLBACK_MAX_DOWNLOAD_MB,
-                        )
-                        fh.close()
-                        os.remove(file_path)
-                        return None
+        if not api_download_failed:
+            with resp:
+                written = 0
+                with open(file_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        fh.write(chunk)
+                        written += len(chunk)
+                        if written > max_bytes:
+                            logging.error(
+                                "   Recording download exceeded %s MB limit; aborting fallback.",
+                                _FALLBACK_MAX_DOWNLOAD_MB,
+                            )
+                            fh.close()
+                            os.remove(file_path)
+                            return None
 
-        # Verify file validity (size check)
-        if os.path.getsize(file_path) < 10 * 1024:  # 10KB
-            logging.error("   Downloaded file is too small (<10KB); treating as failure.")
-            os.remove(file_path)
-            return None
+            # Verify file validity (size check)
+            if os.path.getsize(file_path) < 10 * 1024:  # 10KB
+                logging.error("   Downloaded file is too small (<10KB); treating as failure.")
+                os.remove(file_path)
+                return None
+
+            # If we got here, download was successful
+            return file_path
 
     except RequestException as exc:
         logging.error("   Failed to download recording for fallback: %s", exc)
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except OSError:
-            pass
-        return None
+        api_download_failed = True
     except OSError as exc:
         logging.error("   Failed to persist recording for fallback: %s", exc)
         try:
@@ -554,24 +558,163 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str) -> Op
             pass
         return None
 
-    return file_path
+    # Selenium Fallback (Plan C)
+    if api_download_failed and original_url:
+        logging.info("   Attempting Selenium fallback for download (Plan C)...")
+        try:
+            # 1. Navigate to the original URL
+            driver.get(original_url)
+
+            # 2. Locate the download button
+            # Look for aria-label="Download" or icon="download" or similar
+            download_button = None
+            try:
+                # Wait briefly for page load
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+                )
+
+                # Heuristics for finding download button
+                potential_selectors = [
+                    "div[aria-label='Download']",
+                    "div[data-tooltip='Download']",
+                    "div[role='button'][aria-label='Download']",
+                    "div[role='button'] svg[href*='download']", # Not standard SVG usage but sometimes...
+                    # Drive specific structure often involves divs acting as buttons
+                    "div[role='button'][data-tooltip='Download']",
+                ]
+
+                for selector in potential_selectors:
+                    try:
+                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for el in elements:
+                            if el.is_displayed():
+                                download_button = el
+                                break
+                        if download_button:
+                            break
+                    except Exception:
+                        continue
+
+                if not download_button:
+                    # Try looking for icon name "download" in Material Icons if used?
+                    # Or try searching by text?
+                    # This part is tricky without specific DOM knowledge, but following instructions:
+                    # "Use driver.find_element to locate the download button (look for aria-label="Download" or icon="download")."
+                    xpath_selectors = [
+                        "//*[@aria-label='Download']",
+                        "//*[contains(@aria-label, 'Download')]",
+                    ]
+                    for xpath in xpath_selectors:
+                         try:
+                            elements = driver.find_elements(By.XPATH, xpath)
+                            for el in elements:
+                                if el.is_displayed():
+                                    download_button = el
+                                    break
+                            if download_button:
+                                break
+                         except Exception:
+                             continue
+
+            except Exception as e:
+                logging.debug(f"      Selenium search for download button failed: {e}")
+
+            if download_button:
+                logging.info("      Found download button via Selenium. Clicking...")
+                download_button.click()
+
+                # 3. Wait for file to appear in download directory
+                # We need to watch the downloads directory for a new file.
+                # Assuming config.SETTINGS.downloads_dir is where Chrome downloads to.
+                # NOTE: Chrome downloads to user's default download dir unless configured otherwise.
+                # If the driver was configured to download to config.SETTINGS.downloads_dir, we check there.
+                # Otherwise this might be flaky if we don't know where it downloads.
+                # Assuming the driver setup configured the download directory.
+
+                # Check for new file appearance
+                # Since we don't know the name, we look for the most recent file.
+
+                # Wait loop
+                wait_time = 60 # seconds
+                start_wait = time.time()
+                new_file = None
+
+                # We should probably know the download directory.
+                # If `target_dir` is used for requests, does Selenium use it?
+                # Usually Selenium driver is configured with a download dir.
+                # Let's assume `TEMP_DIR` or `config.SETTINGS.downloads_dir` is the one.
+                # The prompt implies we should wait for the file.
+
+                # Since we can't easily change where the browser downloads on the fly without re-init,
+                # we rely on the pre-configured download dir.
+                # We'll check `config.SETTINGS.downloads_dir` or `target_dir` (which is subdir).
+
+                # Actually, let's try to detect ANY new file in the likely download location.
+                # `config.SETTINGS.downloads_dir` seems to be the root.
+
+                monitor_dir = config.SETTINGS.downloads_dir
+                initial_files = set(os.listdir(monitor_dir))
+
+                while time.time() - start_wait < wait_time:
+                    current_files = set(os.listdir(monitor_dir))
+                    new_files = current_files - initial_files
+
+                    # Filter out .crdownload or .tmp files
+                    valid_new_files = [f for f in new_files if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+
+                    if valid_new_files:
+                        # Grab the first one
+                        downloaded_filename = valid_new_files[0]
+                        # Move it to our target path `file_path`
+                        found_path = os.path.join(monitor_dir, downloaded_filename)
+
+                        # Wait for size to stabilize?
+                        # If .crdownload is gone, it should be done.
+
+                        # Verify size
+                        if os.path.getsize(found_path) > 10 * 1024:
+                            # Move/Rename to our target `file_path`
+                            # But `file_path` has an extension based on URL, the download might have different extension.
+                            # We should trust the download extension.
+                            _, down_ext = os.path.splitext(downloaded_filename)
+                            final_path = os.path.splitext(file_path)[0] + down_ext
+
+                            os.rename(found_path, final_path)
+                            logging.info(f"      Selenium download successful: {final_path}")
+                            return final_path
+
+                    time.sleep(1)
+
+                logging.warning("      Selenium download timed out or file not found.")
+            else:
+                 logging.warning("      Selenium fallback: Could not locate download button.")
+
+        except Exception as e:
+            logging.error(f"      Selenium fallback failed: {e}")
+
+    # Cleanup if everything failed
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError:
+        pass
+
+    return None
 
 
-def _transcribe_with_gemini(file_path: str) -> str:
-    if not _can_attempt_gemini_fallback():
-        return ""
-
-    logging.info("   Gemini fallback: uploading audio/video to Gemini...")
-    client = genai.Client(api_key=_GEMINI_API_KEY)
+def _transcribe_single_chunk(client, file_path: str) -> str:
+    """Helper to transcribe a single file/chunk."""
     video_file = None
     try:
+        logging.info(f"   Gemini fallback: uploading chunk {os.path.basename(file_path)}...")
         # Upload the file
         video_file = client.files.upload(file=file_path)
 
         # Wait for processing
         logging.info("   Gemini fallback: waiting for file processing...")
         # Add simple timeout mechanism to avoid infinite loops
-        max_retries = 60  # Wait up to 2 minutes (60 * 2s)
+        max_retries = 180  # Wait up to 6 minutes for large chunks
         retries = 0
 
         # Check state. Handle both string and enum cases for safety across SDK versions
@@ -606,9 +749,8 @@ def _transcribe_with_gemini(file_path: str) -> str:
         )
 
         return response.text if response.text else ""
-
     except Exception as exc:
-        logging.error("   Gemini transcription failed: %s", exc)
+        logging.error(f"   Gemini chunk transcription failed for {file_path}: {exc}")
         return ""
     finally:
         # Cleanup file on Gemini side
@@ -618,6 +760,88 @@ def _transcribe_with_gemini(file_path: str) -> str:
                 client.files.delete(name=video_file.name)
             except Exception as e:
                 logging.warning("   Failed to delete remote file on Gemini: %s", e)
+
+
+def _transcribe_with_gemini(file_path: str) -> str:
+    if not _can_attempt_gemini_fallback():
+        return ""
+
+    logging.info("   Gemini fallback: Checking video duration...")
+    client = genai.Client(api_key=_GEMINI_API_KEY)
+
+    temp_chunks = []
+
+    try:
+        # Check duration using MoviePy
+        try:
+            clip = VideoFileClip(file_path)
+            duration_sec = clip.duration
+            clip.close()
+        except Exception as e:
+            logging.warning(f"   Could not determine video duration with MoviePy: {e}. Proceeding with single upload.")
+            return _transcribe_single_chunk(client, file_path)
+
+        chunk_size_sec = 50 * 60  # 50 minutes
+
+        if duration_sec <= chunk_size_sec:
+             return _transcribe_single_chunk(client, file_path)
+
+        logging.info(f"   Video duration ({duration_sec}s) exceeds 50 mins. Chunking...")
+
+        # Split into chunks
+        base_name, ext = os.path.splitext(file_path)
+        full_transcript = []
+
+        # Re-open clip for sub-clipping (the previous close might have released resources)
+        # Using context manager for safety
+        with VideoFileClip(file_path) as video:
+            num_chunks = int(duration_sec // chunk_size_sec) + 1
+
+            for i in range(num_chunks):
+                start_time = i * chunk_size_sec
+                end_time = min((i + 1) * chunk_size_sec, duration_sec)
+
+                if start_time >= end_time:
+                    break
+
+                chunk_filename = f"{base_name}_chunk_{i}{ext}"
+                temp_chunks.append(chunk_filename)
+
+                logging.info(f"   Creating chunk {i+1}/{num_chunks}: {start_time}-{end_time}s")
+
+                # Write chunk to file
+                new_clip = video.subclipped(start_time, end_time)
+                new_clip.write_videofile(
+                    chunk_filename,
+                    codec="libx264",
+                    audio_codec="aac",
+                    temp_audiofile=f"{base_name}_temp_audio.m4a",
+                    remove_temp=True,
+                    verbose=False,
+                    logger=None
+                )
+
+                # Upload and transcribe chunk immediately
+                chunk_text = _transcribe_single_chunk(client, chunk_filename)
+                if chunk_text:
+                    full_transcript.append(chunk_text)
+                else:
+                    logging.warning(f"   Chunk {i+1} failed to transcribe.")
+
+        return "\n".join(full_transcript)
+
+    except Exception as exc:
+        logging.error("   Gemini transcription (chunked) failed: %s", exc)
+        return ""
+    finally:
+        # Clean up temp chunks
+        for chunk_file in temp_chunks:
+            if os.path.exists(chunk_file):
+                try:
+                    os.remove(chunk_file)
+                    logging.info(f"   Deleted temp chunk: {chunk_file}")
+                except Exception as e:
+                    logging.warning(f"   Failed to delete temp chunk {chunk_file}: {e}")
 
 
 def _attempt_fallback(driver: webdriver.Chrome, url: str, resource_type: str) -> str:
@@ -635,7 +859,8 @@ def _attempt_fallback(driver: webdriver.Chrome, url: str, resource_type: str) ->
     if not download_url:
         logging.warning("   Fallback: unable to determine download URL for %s", url)
         return ""
-    media_path = _download_recording_media(driver, download_url)
+    # Pass original URL to _download_recording_media for Plan C fallback
+    media_path = _download_recording_media(driver, download_url, original_url=url)
     if not media_path:
         return ""
     try:
