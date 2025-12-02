@@ -977,6 +977,7 @@ def retrieve_rag_documents(
     match_count: int = 20,
     match_threshold: float = 0.7,
     query_embedding: List[float] | None = None,
+    enable_hybrid: bool = False,
 ) -> list[dict]:
     """Retrieve documents via Supabase with performance tracking."""
     start_time = time.time()
@@ -1002,32 +1003,60 @@ def retrieve_rag_documents(
             except Exception:
                 return []
 
-        try:
-            response = _invoke_match_documents_rpc(
-                supabase,
-                query_embedding=query_embedding,
-                match_threshold=float(match_threshold),
-                match_count=int(match_count),
-                selected_class=selected_class,
-            )
-        except Exception as rpc_exc:
-            logging.error("Supabase match_documents RPC failed: %s", rpc_exc)
-            raise
-        results = getattr(response, "data", None) or []
+        if enable_hybrid:
+            # Implement Hybrid Path
+            payload = {
+                "query_embedding": query_embedding,
+                "query_text": query,
+                "match_count": int(match_count),
+                "rrf_k": 60,
+            }
+            if selected_class:
+                payload["filter_class"] = selected_class
 
-        duration_ms = (time.time() - start_time) * 1000
+            try:
+                response = supabase.rpc("match_documents_hybrid", payload).execute()
+                results = getattr(response, "data", None) or []
 
-        # Log vector DB performance
-        logging.info(
-            f"VECTOR_DB_QUERY | duration_ms={duration_ms:.2f} "
-            f"results={len(results)} threshold={match_threshold} "
-            f"class_filter={selected_class or 'none'}"
-        )
+                duration_ms = (time.time() - start_time) * 1000
+
+                # Log hybrid DB performance
+                logging.info(
+                    f"HYBRID_SEARCH | duration_ms={duration_ms:.2f} "
+                    f"results={len(results)} "
+                    f"class_filter={selected_class or 'none'}"
+                )
+            except Exception as rpc_exc:
+                logging.error("Supabase match_documents_hybrid RPC failed: %s", rpc_exc)
+                raise
+        else:
+            # Maintain Legacy Path
+            try:
+                response = _invoke_match_documents_rpc(
+                    supabase,
+                    query_embedding=query_embedding,
+                    match_threshold=float(match_threshold),
+                    match_count=int(match_count),
+                    selected_class=selected_class,
+                )
+                results = getattr(response, "data", None) or []
+
+                duration_ms = (time.time() - start_time) * 1000
+
+                # Log vector DB performance
+                logging.info(
+                    f"VECTOR_DB_QUERY | duration_ms={duration_ms:.2f} "
+                    f"results={len(results)} threshold={match_threshold} "
+                    f"class_filter={selected_class or 'none'}"
+                )
+            except Exception as rpc_exc:
+                logging.error("Supabase match_documents RPC failed: %s", rpc_exc)
+                raise
 
         # Alert on slow queries (>1s)
         if duration_ms > 1000 and SENTRY_DSN and sentry_sdk:
             sentry_sdk.capture_message(
-                f"Slow vector DB query: {duration_ms:.0f}ms",
+                f"Slow vector/hybrid DB query: {duration_ms:.0f}ms",
                 level="warning",
             )
 
@@ -1041,103 +1070,6 @@ def retrieve_rag_documents(
         if SENTRY_DSN and sentry_sdk:
             sentry_sdk.capture_exception(e)
         raise
-
-
-def retrieve_rag_documents_keyword_fallback(
-    query: str,
-    selected_class: str | None = None,
-    limit: int = 10,
-) -> list[dict]:
-    """Lightweight keyword fallback against Supabase when embeddings/RPC return nothing.
-
-    Performs a case-insensitive search over `documents.content` and optionally filters
-    by `metadata->>class_name`. This is less precise than vector search but ensures
-    we can still surface relevant material directly from the database when embeddings
-    are unavailable or empty.
-    """
-    try:
-        supabase = _get_supabase_client()
-    except Exception:
-        return []
-
-    # Build a base query once
-    def _base_query():
-        # Request only columns that are guaranteed to exist across deployments;
-        # some tables omit created_at and PostgREST will respond with 400 otherwise.
-        q0 = supabase.table("documents").select("id, content, metadata")
-        if selected_class:
-            q0 = q0.filter("metadata->>class_name", "eq", selected_class)
-        return q0
-
-    # Sanitize and bound the query to reduce chances of 400s due to weird tokens
-    qtext = (query or "").strip()
-    # Cap length to avoid overly long LIKE/FTS payloads
-    if len(qtext) > 200:
-        qtext = qtext[:200]
-
-    # Sanitize aggressively to avoid PostgREST parsing errors (e.g., ?, :, wildcards)
-    sanitized = re.sub(r"[^\w\s]", " ", qtext)
-    sanitized = re.sub(r"\s+", " ", sanitized).strip()
-    like_pattern = f"%{sanitized}%" if sanitized else None
-    # For FTS configs, join tokens with AND to reduce syntax errors
-    fts_query = " "
-    if sanitized:
-        tokens = [t for t in sanitized.split(" ") if t]
-        if tokens:
-            fts_query = " & ".join(tokens)
-    fts_query = fts_query.strip() or sanitized or qtext
-
-    # Try multiple strategies to avoid PostgREST 400s across environments.
-    # Prefer ILIKE first (works on TEXT) before FTS operators that may require tsvector.
-    strategies: list[tuple[str, Callable[[Any], Any]]] = []
-    if like_pattern:
-        strategies.extend([
-            ("ilike_percent",    lambda q: q.ilike("content", like_pattern)),
-            ("filter_ilike_pct", lambda q: q.filter("content", "ilike", like_pattern)),
-            ("ilike_title",      lambda q: q.ilike("metadata->>title", like_pattern)),
-        ])
-    strategies.extend([
-        ("text_search_web",  lambda q: q.text_search("content", fts_query, config="english", type="websearch")),
-        ("filter_phfts",     lambda q: q.filter("content", "phfts", fts_query)),
-        ("filter_fts",       lambda q: q.filter("content", "fts", fts_query)),
-        ("filter_wfts",      lambda q: q.filter("content", "wfts", fts_query)),
-    ])
-
-    for _name, apply_strategy in strategies:
-        try:
-            q = apply_strategy(_base_query())
-            # Some deployments lack a created_at column; order by id to avoid 400s
-            q = q.order("id", desc=True).limit(max(1, int(limit)))
-            resp = q.execute()
-            data = getattr(resp, "data", None) or []
-            if not data:
-                # Try next strategy if empty
-                continue
-
-            # Normalize to match RPC shape as much as possible
-            norm: list[dict] = []
-            for d in data:
-                meta = d.get("metadata") or {}
-                norm.append(
-                    {
-                        "id": d.get("id"),
-                        "content": d.get("content", ""),
-                        "metadata": meta,
-                        "class_name": meta.get("class_name"),
-                        "title": meta.get("title"),
-                        "section": meta.get("section"),
-                        "url": meta.get("url") or meta.get("source_url"),
-                        "similarity": 0.0,
-                    }
-                )
-            return norm
-        except Exception as exc:
-            logging.debug("Keyword fallback strategy %s failed: %s", _name, exc)
-            # Try the next strategy on any error (including HTTP 400)
-            continue
-
-    # If all strategies fail or return empty, return []
-    return []
 
 
 def _to_langchain_documents(raw_docs: list[dict]) -> list[Document]:

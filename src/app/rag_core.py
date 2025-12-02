@@ -16,7 +16,6 @@ from src.shared.utils import (
     cohere_rerank,
     EMBEDDING_MODEL_NAME,
     retrieve_rag_documents,
-    retrieve_rag_documents_keyword_fallback,
     _to_langchain_documents,
 )
 
@@ -95,18 +94,9 @@ except Exception as e:
 
 # --- Constants ---
 INITIAL_RETRIEVAL_K = 20 # Number of chunks to fetch initially from vector store
-RELAXED_RETRIEVAL_K = int(os.environ.get("RAG_RELAXED_MATCH_COUNT", INITIAL_RETRIEVAL_K * 2))
 FINAL_CONTEXT_K = 7    # Number of chunks to send to LLM after re-ranking (for specific questions)
 MAP_REDUCE_RETRIEVAL_K = 10 # Number of chunks to retrieve per topic in Map step
 CLASS_HINT_SCORE_BONUS = 8  # Additional score applied when a class hint is present
-REDIRECT_MIN_SCORE = 9  # Minimum raw keyword score to trigger a redirect to another course
-STRICT_MATCH_THRESHOLD = float(os.environ.get("RAG_STRICT_MATCH_THRESHOLD", "0.55"))
-RELAXED_MATCH_THRESHOLD = float(os.environ.get("RAG_RELAXED_MATCH_THRESHOLD", "0.35"))
-KEYWORD_FALLBACK_LIMIT = max(
-    FINAL_CONTEXT_K * 2,
-    RELAXED_RETRIEVAL_K,
-    12,
-)
 
 SUBJECT_KEYWORDS: Dict[str, List[str]] = {
     "AIML": ["ai", "artificial intelligence", "machine learning", "ml", "copilot", "azure", "power bi", "dynamics 365"],
@@ -448,84 +438,6 @@ def _rerank_documents(query: str, documents: list) -> list:
     return reranked
 
 
-def _retrieve_documents_with_backoff(
-    query: str,
-    subject: str,
-) -> List[dict]:
-    """
-    Retrieve documents using progressively more permissive strategies:
-    1. Strict vector similarity.
-    2. Relaxed vector similarity with higher recall.
-    3. Keyword fallback directly against Supabase.
-    """
-    attempts = (
-        ("strict", INITIAL_RETRIEVAL_K, STRICT_MATCH_THRESHOLD),
-        ("relaxed", RELAXED_RETRIEVAL_K, RELAXED_MATCH_THRESHOLD),
-    )
-
-    for label, match_count, threshold in attempts:
-        if match_count <= 0:
-            continue
-        try:
-            docs = retrieve_rag_documents(
-                query=query,
-                selected_class=subject,
-                match_count=match_count,
-                match_threshold=threshold,
-            )
-        except Exception as exc:
-            logging.error(
-                "   %s retrieval attempt failed for subject '%s': %s",
-                label.capitalize(),
-                subject,
-                exc,
-            )
-            continue
-
-        if docs:
-            logging.info(
-                "   %s vector retrieval returned %s chunks for '%s' (threshold=%.2f).",
-                label.capitalize(),
-                len(docs),
-                subject,
-                threshold,
-            )
-            return docs
-
-        logging.info(
-            "   %s vector retrieval returned 0 chunks for '%s' (threshold=%.2f).",
-            label.capitalize(),
-            subject,
-            threshold,
-        )
-
-    try:
-        keyword_docs = retrieve_rag_documents_keyword_fallback(
-            query=query,
-            selected_class=subject,
-            limit=KEYWORD_FALLBACK_LIMIT,
-        )
-    except Exception as exc:
-        logging.error(
-            "   Keyword fallback retrieval failed for '%s': %s",
-            subject,
-            exc,
-        )
-        keyword_docs = []
-
-    if keyword_docs:
-        logging.info(
-            "   Keyword fallback retrieval returned %s chunks for '%s'.",
-            len(keyword_docs),
-            subject,
-        )
-    else:
-        logging.warning(
-            "   Keyword fallback retrieval returned no results for '%s'.",
-            subject,
-        )
-    return keyword_docs
-
 # --- Function to Identify Topics using LLM ---
 def _identify_topics_with_llm(context_text: str, subject: str) -> list[str]:
     """Uses an LLM to extract key topics or themes from general course materials."""
@@ -586,6 +498,7 @@ def _handle_map_reduce_query(
             query=broad_query,
             selected_class=subject,
             match_count=30,
+            enable_hybrid=True,
         )
         # Convert to LangChain documents for easier text processing
         general_docs = _to_langchain_documents(general_docs_raw)
@@ -597,6 +510,7 @@ def _handle_map_reduce_query(
                 query=question,  # Use original question for broad retrieval
                 selected_class=subject,
                 match_count=INITIAL_RETRIEVAL_K * 2,
+                enable_hybrid=True,
             )
             reranked_fallback_docs_raw = _rerank_documents(question, initial_docs_raw)
             final_context_docs = _to_langchain_documents(reranked_fallback_docs_raw[:FINAL_CONTEXT_K * 2])
@@ -629,6 +543,7 @@ def _handle_map_reduce_query(
                 query=question,
                 selected_class=subject,
                 match_count=INITIAL_RETRIEVAL_K * 2,
+                enable_hybrid=True,
             )
             reranked_fallback_docs_raw = _rerank_documents(question, initial_docs_raw)
             final_context_docs = _to_langchain_documents(reranked_fallback_docs_raw[:FINAL_CONTEXT_K * 2])
@@ -672,6 +587,7 @@ def _handle_map_reduce_query(
                 query=f"Detailed explanation, examples, formulas, and key concepts related to {topic_name} in {subject}",
                 selected_class=subject,
                 match_count=MAP_REDUCE_RETRIEVAL_K,
+                enable_hybrid=True,
             )
             # Re-rank the retrieved docs for the topic summary for better focus
             reranked_topic_docs_raw = _rerank_documents(topic_name, topic_docs_raw)
@@ -793,12 +709,14 @@ def get_rag_response(
         logging.info("   Intent: Specific Question")
         final_context_docs: List[Document] = []
         try:
-            initial_docs_raw = _retrieve_documents_with_backoff(
-                condensed_question,
-                active_subject,
+            initial_docs_raw = retrieve_rag_documents(
+                query=condensed_question,
+                selected_class=active_subject,
+                match_count=INITIAL_RETRIEVAL_K,
+                enable_hybrid=True, # ACTIVATE RRF
             )
             logging.info(
-                "   Retrieval pipeline returned %s raw chunks for '%s'.",
+                "   Hybrid retrieval pipeline returned %s raw chunks for '%s'.",
                 len(initial_docs_raw),
                 active_subject,
             )
