@@ -977,9 +977,9 @@ def retrieve_rag_documents(
     match_count: int = 20,
     match_threshold: float = 0.7,
     query_embedding: List[float] | None = None,
-    enable_hybrid: bool = False,
+    enable_hybrid: bool = True,
 ) -> list[dict]:
-    """Retrieve documents via Supabase with performance tracking."""
+    """Retrieve documents via Supabase using Hybrid RRF search."""
     start_time = time.time()
 
     supabase = _get_supabase_client()
@@ -1003,60 +1003,36 @@ def retrieve_rag_documents(
             except Exception:
                 return []
 
-        if enable_hybrid:
-            # Implement Hybrid Path
-            payload = {
-                "query_embedding": query_embedding,
-                "query_text": query,
-                "match_count": int(match_count),
-                "rrf_k": 60,
-            }
-            if selected_class:
-                payload["filter_class"] = selected_class
+        # Hybrid Path (RRF)
+        payload = {
+            "query_embedding": query_embedding,
+            "query_text": query,
+            "match_count": int(match_count),
+            "rrf_k": 60,
+        }
+        if selected_class:
+            payload["filter_class"] = selected_class
 
-            try:
-                response = supabase.rpc("match_documents_hybrid", payload).execute()
-                results = getattr(response, "data", None) or []
+        try:
+            response = supabase.rpc("match_documents_hybrid", payload).execute()
+            results = getattr(response, "data", None) or []
 
-                duration_ms = (time.time() - start_time) * 1000
+            duration_ms = (time.time() - start_time) * 1000
 
-                # Log hybrid DB performance
-                logging.info(
-                    f"HYBRID_SEARCH | duration_ms={duration_ms:.2f} "
-                    f"results={len(results)} "
-                    f"class_filter={selected_class or 'none'}"
-                )
-            except Exception as rpc_exc:
-                logging.error("Supabase match_documents_hybrid RPC failed: %s", rpc_exc)
-                raise
-        else:
-            # Maintain Legacy Path
-            try:
-                response = _invoke_match_documents_rpc(
-                    supabase,
-                    query_embedding=query_embedding,
-                    match_threshold=float(match_threshold),
-                    match_count=int(match_count),
-                    selected_class=selected_class,
-                )
-                results = getattr(response, "data", None) or []
-
-                duration_ms = (time.time() - start_time) * 1000
-
-                # Log vector DB performance
-                logging.info(
-                    f"VECTOR_DB_QUERY | duration_ms={duration_ms:.2f} "
-                    f"results={len(results)} threshold={match_threshold} "
-                    f"class_filter={selected_class or 'none'}"
-                )
-            except Exception as rpc_exc:
-                logging.error("Supabase match_documents RPC failed: %s", rpc_exc)
-                raise
+            # Log hybrid DB performance
+            logging.info(
+                f"HYBRID_SEARCH | duration_ms={duration_ms:.2f} "
+                f"results={len(results)} "
+                f"class_filter={selected_class or 'none'}"
+            )
+        except Exception as rpc_exc:
+            logging.error("Supabase match_documents_hybrid RPC failed: %s", rpc_exc)
+            raise
 
         # Alert on slow queries (>1s)
         if duration_ms > 1000 and SENTRY_DSN and sentry_sdk:
             sentry_sdk.capture_message(
-                f"Slow vector/hybrid DB query: {duration_ms:.0f}ms",
+                f"Slow hybrid DB query: {duration_ms:.0f}ms",
                 level="warning",
             )
 
