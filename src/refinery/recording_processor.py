@@ -23,7 +23,6 @@ from selenium.common.exceptions import (
 )
 from selenium import webdriver
 from urllib.parse import urlparse, urlsplit, urljoin
-from moviepy import VideoFileClip
 
 try:
     from google import genai
@@ -633,7 +632,8 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                         "//*[@aria-label='Download']",
                         "//*[contains(@aria-label, 'Download')]",
                         "//div[@aria-label='Download']",
-                        "//div[text()='Download']"
+                        "//div[text()='Download']",
+                        "//div[@data-tooltip='Download']"
                     ]
                     for xpath in xpath_selectors:
                          try:
@@ -666,7 +666,7 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
                 # Since we don't know the name, we look for the most recent file.
 
                 # Wait loop
-                wait_time = 300 # seconds
+                wait_time = 600 # seconds
                 start_wait = time.time()
                 new_file = None
                 last_log_time = start_wait
@@ -739,8 +739,47 @@ def _download_recording_media(driver: webdriver.Chrome, download_url: str, origi
 
     return None
 
+def _extract_audio(input_path: str) -> Optional[str]:
+    """Extracts audio from video file to mp3 using ffmpeg."""
+    try:
+        base_name, _ = os.path.splitext(input_path)
+        audio_path = f"{base_name}.mp3"
+        logging.info(f"   Extracting audio from {input_path} to {audio_path}...")
 
-def _transcribe_single_chunk(client, file_path: str) -> str:
+        # Command: ffmpeg -i {video_path} -vn -acodec libmp3lame -q:a 4 {audio_path}
+        cmd = [
+            get_ffmpeg_exe(),
+            "-i", input_path,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-q:a", "4",
+            "-y", # Overwrite output file if exists
+            audio_path
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logging.error(f"   ffmpeg audio extraction failed: {result.stderr}")
+            return None
+
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+            logging.info(f"   Audio extracted successfully: {audio_path}")
+            return audio_path
+        else:
+            logging.error("   Audio extraction produced empty or missing file.")
+            return None
+
+    except Exception as e:
+        logging.error(f"   Exception during audio extraction: {e}")
+        return None
+
+def _transcribe_single_chunk(client, file_path: str, prompt: str = None) -> str:
     """Helper to transcribe a single file/chunk."""
     video_file = None
     try:
@@ -778,7 +817,8 @@ def _transcribe_single_chunk(client, file_path: str) -> str:
         logging.info("   Gemini fallback: requesting transcription from %s...", _GEMINI_MODEL_NAME)
 
         # Prompt for transcription
-        prompt = "Transcribe the audio in this file into text. Provide only the transcription, no introductory text."
+        if prompt is None:
+            prompt = "Transcribe the audio in this file into text. Provide only the transcription, no introductory text."
 
         response = client.models.generate_content(
             model=_GEMINI_MODEL_NAME,
@@ -803,95 +843,34 @@ def _transcribe_with_gemini(file_path: str) -> str:
     if not _can_attempt_gemini_fallback():
         return ""
 
-    logging.info("   Gemini fallback: Checking video duration...")
+    logging.info("   Gemini fallback: extracting audio for token optimization...")
     client = genai.Client(api_key=_GEMINI_API_KEY)
 
-    temp_chunks = []
+    audio_path = _extract_audio(file_path)
+    if not audio_path:
+        logging.warning("   Audio extraction failed. Proceeding with original video file (risk of token limit)...")
+        upload_path = file_path
+    else:
+        upload_path = audio_path
 
     try:
-        # Check duration using MoviePy
-        duration_sec = 0.0
-        try:
-            clip = VideoFileClip(file_path)
-            duration_sec = clip.duration
-            clip.close()
-        except Exception as e:
-            logging.warning(f"   MoviePy failed to read duration: {e}. Trying ffmpeg...")
-            try:
-                result = subprocess.run([get_ffmpeg_exe(), "-i", file_path], stderr=subprocess.PIPE, text=True)
-                # Parse output
-                match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", result.stderr)
-                if match:
-                    hours, minutes, seconds = map(float, match.groups())
-                    duration_sec = hours * 3600 + minutes * 60 + seconds
-                else:
-                    raise ValueError("Could not find duration in ffmpeg output")
-            except Exception as ffmpeg_err:
-                logging.error(f"   ffmpeg also failed to determine duration: {ffmpeg_err}")
-                logging.error("   Cannot determine duration. Single upload disabled.")
-                return ""
+        # Prompt Update: "Listen to this lecture audio and transcribe it..."
+        prompt = "Listen to this lecture audio and transcribe it. Provide only the transcription, no introductory text."
 
-        chunk_size_sec = 50 * 60  # 50 minutes
-
-        if duration_sec <= chunk_size_sec:
-             return _transcribe_single_chunk(client, file_path)
-
-        logging.info(f"   Video duration ({duration_sec}s) exceeds 50 mins. Chunking...")
-
-        # Split into chunks
-        base_name, ext = os.path.splitext(file_path)
-        full_transcript = []
-
-        # Re-open clip for sub-clipping (the previous close might have released resources)
-        # Using context manager for safety
-        with VideoFileClip(file_path) as video:
-            num_chunks = int(duration_sec // chunk_size_sec) + 1
-
-            for i in range(num_chunks):
-                start_time = i * chunk_size_sec
-                end_time = min((i + 1) * chunk_size_sec, duration_sec)
-
-                if start_time >= end_time:
-                    break
-
-                chunk_filename = f"{base_name}_chunk_{i}{ext}"
-                temp_chunks.append(chunk_filename)
-
-                logging.info(f"   Creating chunk {i+1}/{num_chunks}: {start_time}-{end_time}s")
-
-                # Write chunk to file
-                new_clip = video.subclipped(start_time, end_time)
-                new_clip.write_videofile(
-                    chunk_filename,
-                    codec="libx264",
-                    audio_codec="aac",
-                    temp_audiofile=f"{base_name}_temp_audio.m4a",
-                    remove_temp=True,
-                    verbose=False,
-                    logger=None
-                )
-
-                # Upload and transcribe chunk immediately
-                chunk_text = _transcribe_single_chunk(client, chunk_filename)
-                if chunk_text:
-                    full_transcript.append(chunk_text)
-                else:
-                    logging.warning(f"   Chunk {i+1} failed to transcribe.")
-
-        return "\n".join(full_transcript)
+        transcript = _transcribe_single_chunk(client, upload_path, prompt=prompt)
+        return transcript
 
     except Exception as exc:
-        logging.error("   Gemini transcription (chunked) failed: %s", exc)
+        logging.error("   Gemini transcription failed: %s", exc)
         return ""
     finally:
-        # Clean up temp chunks
-        for chunk_file in temp_chunks:
-            if os.path.exists(chunk_file):
-                try:
-                    os.remove(chunk_file)
-                    logging.info(f"   Deleted temp chunk: {chunk_file}")
-                except Exception as e:
-                    logging.warning(f"   Failed to delete temp chunk {chunk_file}: {e}")
+        # Clean up audio file if created and it's not the original file
+        if audio_path and audio_path != file_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+                logging.info(f"   Deleted temp audio file: {audio_path}")
+            except Exception as e:
+                logging.warning(f"   Failed to delete temp audio file {audio_path}: {e}")
 
 
 def _attempt_fallback(driver: webdriver.Chrome, url: str, resource_type: str) -> str:
