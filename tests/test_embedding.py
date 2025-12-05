@@ -40,9 +40,9 @@ def test_chunk_and_embed_text(monkeypatch):
     fake_docs = [Doc("Chunk 1"), Doc("Chunk 2"), Doc("Chunk 3")]
     monkeypatch.setattr(embedding.text_splitter, "create_documents", lambda texts: fake_docs)
 
-    # Mock vector_store to observe add_documents call
+    # Mock get_vector_store to return a fake vector store
     fake_vs = MagicMock()
-    monkeypatch.setattr(embedding, "vector_store", fake_vs, raising=True)
+    monkeypatch.setattr(embedding, "get_vector_store", lambda table_name: fake_vs)
 
     # Mock _generate_context_summary to return a fixed string
     monkeypatch.setattr(embedding, "_generate_context_summary", lambda text: "This is a mock summary.")
@@ -106,10 +106,10 @@ def test_url_exists_in_db_sync_true_and_false(monkeypatch):
         def table(self, *_a, **_k):
             return Query(self._count_value)
 
-    # True case
+    # True case: count=1
     monkeypatch.setattr(embedding, "supabase", FakeSupabase(1), raising=True)
     assert embedding.url_exists_in_db_sync("https://example.com/file.pdf") is True
 
-    # False case
+    # False case: count=0
     monkeypatch.setattr(embedding, "supabase", FakeSupabase(0), raising=True)
     assert embedding.url_exists_in_db_sync("https://example.com/file.pdf") is False

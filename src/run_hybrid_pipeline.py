@@ -6,6 +6,7 @@ import logging
 import tempfile
 import json
 import time
+import argparse
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -183,6 +184,7 @@ def process_single_resource(
     class_name: str,
     section_tag: str,
     stats: Dict[str, Any],
+    table_name: str,
 ):
     """
     Handles fetching, processing, cleaning, and embedding for a single resource URL.
@@ -369,20 +371,20 @@ def process_single_resource(
 
                     has_changed = True
                     if DEDUP_BY_URL:
-                        has_changed = embedding.content_has_changed_sync(url, content_hash)
+                        has_changed = embedding.content_has_changed_sync(url, content_hash, table_name=table_name)
 
                     if not has_changed:
                         logging.info(f"   Content unchanged for {url}; skipping embedding.")
                         return False
 
-                    embedding.delete_documents_by_source_url(url)
+                    embedding.delete_documents_by_source_url(url, table_name=table_name)
                     logging.info(f"   Embedding updated PDF content (hash={content_hash[:12]}…)")
 
                     for entry in page_entries:
                         metadata = {**entry["metadata"], "content_hash": content_hash}
                         metadata = {k: v for k, v in metadata.items() if v is not None}
                         logging.info(f"   Embedding PDF page {metadata.get('page_number')}...")
-                        embedding.chunk_and_embed_text(entry["text"], metadata)
+                        embedding.chunk_and_embed_text(entry["text"], metadata, table_name=table_name)
                     # Telemetry: count successfully processed PDF documents (once per file)
                     stats["pdf_documents_processed"] = stats.get("pdf_documents_processed", 0) + 1
 
@@ -408,13 +410,13 @@ def process_single_resource(
 
                 has_changed = True
                 if DEDUP_BY_URL:
-                    has_changed = embedding.content_has_changed_sync(url, content_hash)
+                    has_changed = embedding.content_has_changed_sync(url, content_hash, table_name=table_name)
 
                 if not has_changed:
                     logging.info(f"   Content unchanged for {url}; skipping embedding.")
                     return False
 
-                embedding.delete_documents_by_source_url(url)
+                embedding.delete_documents_by_source_url(url, table_name=table_name)
 
                 metadata = {
                     **metadata_base,
@@ -425,7 +427,7 @@ def process_single_resource(
                 metadata = {k: v for k, v in metadata.items() if v is not None}
 
                 logging.info(f"   Embedding extracted {content_type_tag} content (hash={content_hash[:12]}…)")
-                embedding.chunk_and_embed_text(clean_text, metadata)
+                embedding.chunk_and_embed_text(clean_text, metadata, table_name=table_name)
                 if content_type_tag == "office_document":
                     stats["office_documents_processed"] = stats.get("office_documents_processed", 0) + 1
 
@@ -448,15 +450,56 @@ def process_single_resource(
         raise
 
 
-def main_pipeline(mode="daily"):
+def main_pipeline(mode="daily", cohort_id="2029"):
     """Main orchestration with monitoring and summary generation."""
     with sentry_sdk.start_transaction(op="pipeline", name=f"pipeline_{mode}"):
         start_time = datetime.datetime.now()
         start_epoch = time.time()
         logging.info(
-            f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode})"
+            f"🚀 Hybrid Pipeline Started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Mode: {mode}, Cohort: {cohort_id})"
         )
         
+        # --- Load Cohort Configuration ---
+        if cohort_id not in config.COHORTS:
+            raise ValueError(f"Invalid cohort ID: {cohort_id}. Available: {list(config.COHORTS.keys())}")
+
+        cohort_config = config.COHORTS[cohort_id]
+        table_name = cohort_config["table_name"]
+        course_map = cohort_config["course_map"]
+        cohort_selectors = cohort_config.get("selectors", {})
+
+        # --- Set Cohort Credentials in Env ---
+        # The navigation module (perform_login) looks for COACH_USERNAME/COACH_PASSWORD
+        user_env_key, pass_env_key = cohort_config.get("credentials", ("COACH_USERNAME", "COACH_PASSWORD"))
+        if os.getenv(user_env_key):
+             os.environ["COACH_USERNAME"] = os.environ[user_env_key]
+        if os.getenv(pass_env_key):
+             os.environ["COACH_PASSWORD"] = os.environ[pass_env_key]
+
+        logging.info(f"Loaded configuration for {cohort_config['name']} (Table: {table_name})")
+
+        # --- Inject Cohort Selectors ---
+        # Override config.RESOURCES_TAB_SELECTORS based on cohort config
+        if "resources_tab" in cohort_selectors:
+            # config.RESOURCES_TAB_SELECTORS is a list of tuples.
+            # The selector from cohort_config might be a single tuple or string.
+            res_tab_selector = cohort_selectors["resources_tab"]
+            if isinstance(res_tab_selector, tuple):
+                 config.RESOURCES_TAB_SELECTORS = [res_tab_selector]
+            elif isinstance(res_tab_selector, list):
+                 config.RESOURCES_TAB_SELECTORS = res_tab_selector
+
+        # Override config.COURSE_CARD_FALLBACK_XPATH_TEMPLATE based on cohort config
+        if "course_card" in cohort_selectors:
+            course_card_selector = cohort_selectors["course_card"]
+            if isinstance(course_card_selector, tuple):
+                # Assuming the tuple contains (By.XPATH, "selector_string")
+                # We extract the selector string to update the template variable
+                config.COURSE_CARD_FALLBACK_XPATH_TEMPLATE = course_card_selector[1]
+            elif isinstance(course_card_selector, str):
+                config.COURSE_CARD_FALLBACK_XPATH_TEMPLATE = course_card_selector
+
+
         # Reset course links seen in navigation to handle duplicates correctly.
         navigation.reset_course_tracking()
         
@@ -505,10 +548,10 @@ def main_pipeline(mode="daily"):
                 if course_filter_env:
                     selected_codes = [code.strip() for code in course_filter_env.split(",") if code.strip()]
                     course_items = [
-                        (code, config.COURSE_MAP[code]) for code in selected_codes if code in config.COURSE_MAP
+                        (code, course_map[code]) for code in selected_codes if code in course_map
                     ]
                 else:
-                    course_items = list(config.COURSE_MAP.items())
+                    course_items = list(course_map.items())
 
                 # Update course attempts after filtering
                 stats["courses_attempted"] = len(course_items)
@@ -712,7 +755,7 @@ def main_pipeline(mode="daily"):
 
                                             for key_variant in potential_keys:
                                                 try:
-                                                    if embedding.url_exists_in_db_sync(key_variant):
+                                                    if embedding.url_exists_in_db_sync(key_variant, table_name=table_name):
                                                         is_manually_ingested = True
                                                         matched_key = key_variant
                                                         break
@@ -740,7 +783,7 @@ def main_pipeline(mode="daily"):
                                                 exists_recently = recent_check_cache.get(url)
                                                 if exists_recently is None:
                                                     exists_recently = embedding.check_if_embedded_recently_sync(
-                                                        {"source_url": url}, days=2
+                                                        {"source_url": url}, days=2, table_name=table_name
                                                     )
                                                 recent_check_cache[url] = exists_recently
                                                 should_process = not exists_recently
@@ -775,6 +818,7 @@ def main_pipeline(mode="daily"):
                                                     class_name,
                                                     section_tag,
                                                     stats,
+                                                    table_name,
                                                 )
                                                 if success:
                                                     stats["resources_processed"] += 1
@@ -925,10 +969,15 @@ def main_pipeline(mode="daily"):
 
 # --- Allow running the script directly ---
 if __name__ == "__main__":
-    # --- Default Run (e.g., for GitHub Actions) ---
-    pipeline_mode = os.environ.get("PIPELINE_MODE", "daily").lower()
+    parser = argparse.ArgumentParser(description="Professor Agent Harvester Pipeline")
+    parser.add_argument("--mode", default=os.environ.get("PIPELINE_MODE", "daily").lower(), help="Pipeline mode (daily, backlog)")
+    parser.add_argument("--cohort", default="2029", help="Cohort ID (2028, 2029)")
+
+    args = parser.parse_args()
+
+    pipeline_mode = args.mode
     if pipeline_mode not in ["daily", "backlog"]:
         logging.warning(f"Invalid PIPELINE_MODE '{pipeline_mode}'. Defaulting to 'daily'.")
         pipeline_mode = "daily"
 
-    main_pipeline(mode=pipeline_mode)
+    main_pipeline(mode=pipeline_mode, cohort_id=args.cohort)

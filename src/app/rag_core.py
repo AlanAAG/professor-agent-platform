@@ -20,10 +20,11 @@ from src.shared.utils import (
 )
 
 try:  # pragma: no cover - defensive import
-    from src.harvester.config import COURSE_MAP, LEGACY_COURSE_MAP
+    from src.harvester.config import COURSE_MAP, LEGACY_COURSE_MAP, COHORTS
 except Exception:  # pragma: no cover - fallback when config import fails
     COURSE_MAP = {}
     LEGACY_COURSE_MAP = {}
+    COHORTS = {}
 
 # --- Setup Logging ---
 # Configure logging for better tracking and debugging
@@ -37,7 +38,7 @@ load_dotenv()
 PERSONA_FILE_PATH = Path(__file__).with_name("persona.json")
 
 
-def _load_professor_personas() -> Dict[str, Dict[str, str]]:
+def _load_professor_personas() -> Dict[str, Dict[str, Dict[str, str]]]:
     """Load professor personas from persona.json."""
     try:
         with PERSONA_FILE_PATH.open("r", encoding="utf-8") as persona_file:
@@ -45,7 +46,7 @@ def _load_professor_personas() -> Dict[str, Dict[str, str]]:
             if not isinstance(data, dict):
                 logging.error("Persona file %s does not contain a dictionary. Found %s", PERSONA_FILE_PATH, type(data))
                 return {}
-            logging.info("Loaded %d professor personas from %s", len(data), PERSONA_FILE_PATH)
+            logging.info("Loaded personas for %d cohorts from %s", len(data), PERSONA_FILE_PATH)
             return data
     except FileNotFoundError:
         logging.error("Persona file not found at %s", PERSONA_FILE_PATH)
@@ -56,18 +57,22 @@ def _load_professor_personas() -> Dict[str, Dict[str, str]]:
     return {}
 
 
-PROFESSOR_PERSONAS: Dict[str, Dict[str, str]] = _load_professor_personas()
-DEFAULT_PERSONA_KEY: str = (
-    "Startup"
-    if "Startup" in PROFESSOR_PERSONAS
-    else next(iter(PROFESSOR_PERSONAS), "Startup")
-)
+PROFESSOR_PERSONAS: Dict[str, Dict[str, Dict[str, str]]] = _load_professor_personas()
+
+def get_cohort_personas(cohort_id: str) -> Dict[str, Dict[str, str]]:
+    return PROFESSOR_PERSONAS.get(cohort_id, PROFESSOR_PERSONAS.get("2029", {}))
+
+DEFAULT_PERSONA_KEY: str = "Startup" # Fallback if specific default logic fails
 
 
-def _get_fallback_persona() -> Dict[str, str]:
+def _get_fallback_persona(cohort_id: str = "2029") -> Dict[str, str]:
     """Return a safe default persona."""
-    return PROFESSOR_PERSONAS.get(
-        DEFAULT_PERSONA_KEY,
+    cohort_personas = get_cohort_personas(cohort_id)
+    # Try to find a default key that exists in the cohort, or just pick the first one
+    key = DEFAULT_PERSONA_KEY if DEFAULT_PERSONA_KEY in cohort_personas else next(iter(cohort_personas), "Startup")
+
+    return cohort_personas.get(
+        key,
         {
             "professor_name": "Professor",
             "style_prompt": "Maintain an authoritative, actionable, and business-focused teaching style that prioritizes real-world implementation.",
@@ -98,54 +103,75 @@ FINAL_CONTEXT_K = 7    # Number of chunks to send to LLM after re-ranking (for s
 MAP_REDUCE_RETRIEVAL_K = 10 # Number of chunks to retrieve per topic in Map step
 CLASS_HINT_SCORE_BONUS = 8  # Additional score applied when a class hint is present
 
-SUBJECT_KEYWORDS: Dict[str, List[str]] = {
-    "AIML": ["ai", "artificial intelligence", "machine learning", "ml", "copilot", "azure", "power bi", "dynamics 365"],
-    "Excel": ["excel", "spreadsheet", "worksheet", "pivot table", "vlookup", "xlookup", "formula", "cell reference"],
-    "Statistics": ["statistics", "probability", "distribution", "variance", "hypothesis", "regression", "confidence interval", "law of large numbers"],
-    "Calculus": ["calculus", "derivative", "integral", "differential", "limit", "gradient", "series"],
-    "Dropshipping": ["dropshipping", "drop shipping", "e-commerce", "ecommerce", "online store", "shopify", "fulfillment", "d2c", "digital product"],
-    "PublicSpeaking": ["public speaking", "speech", "presentation", "stage fright", "pitch", "storytelling", "voice"],
-    "Startup": ["startup", "entrepreneur", "entrepreneurship", "innovation", "family business", "incubator", "venture", "business model", "design thinking"],
-    "Networking": ["networking", "referral", "relationship marketing", "word of mouth", "leads", "connections", "business networking"],
-    "OOP": ["object oriented", "o.o.p", "encapsulation", "inheritance", "polymorphism", "software design", "class diagram"],
-    "MarketAnalysis": ["market analysis", "economic", "international trade", "manufacturing", "policy", "valuation of services", "export", "competitiveness", "economics", "trade policy", "service absorption", "international competitiveness", "elasticity", "price elasticity", "elasticity of demand"],
-    "MarketGaps": ["market gap", "market gaps", "unmet need", "white space", "positioning", "differentiation", "competitive gap"],
-    "MetaMarketing": ["meta marketing", "personalization", "pricing strategy", "promotions", "ai-driven pricing", "consumer brand", "voucher", "loyalty"],
-    "CRO": ["cro", "conversion rate", "optimization", "landing page", "a/b test", "funnel", "checkout"],
-    "FinanceBasics": [
-        "finance",
-        "valuation",
-        "npv",
-        "cash flow",
-        "cashflow",
-        "investment",
-        "capital markets",
-        "fundraising",
-        "financial model",
-        "discounted cash",
-        "income statement",
-        "profit and loss",
-        "profit",
-        "profitability",
-        "profit margin",
-        "profit formula",
-        "formula for profit",
-        "financial terminology",
-        "basic financial terminology",
-        "p&l",
-        "balance sheet",
-        "cash flow statement",
-        "financial statement",
-        "financial reporting",
-        "general ledger",
-    ],
-    "HowToDecodeGlobalTrendsAndNavigateEconomicTransformations": ["global trend", "economic transformation", "monetary", "blockchain", "cryptocurrency", "systemic risk", "policy", "regulation", "macro"],
+SUBJECT_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
+    "2029": {
+        "AIML": ["ai", "artificial intelligence", "machine learning", "ml", "copilot", "azure", "power bi", "dynamics 365"],
+        "Excel": ["excel", "spreadsheet", "worksheet", "pivot table", "vlookup", "xlookup", "formula", "cell reference"],
+        "Statistics": ["statistics", "probability", "distribution", "variance", "hypothesis", "regression", "confidence interval", "law of large numbers"],
+        "Calculus": ["calculus", "derivative", "integral", "differential", "limit", "gradient", "series"],
+        "Dropshipping": ["dropshipping", "drop shipping", "e-commerce", "ecommerce", "online store", "shopify", "fulfillment", "d2c", "digital product"],
+        "PublicSpeaking": ["public speaking", "speech", "presentation", "stage fright", "pitch", "storytelling", "voice"],
+        "Startup": ["startup", "entrepreneur", "entrepreneurship", "innovation", "family business", "incubator", "venture", "business model", "design thinking"],
+        "Networking": ["networking", "referral", "relationship marketing", "word of mouth", "leads", "connections", "business networking"],
+        "OOP": ["object oriented", "o.o.p", "encapsulation", "inheritance", "polymorphism", "software design", "class diagram"],
+        "MarketAnalysis": ["market analysis", "economic", "international trade", "manufacturing", "policy", "valuation of services", "export", "competitiveness", "economics", "trade policy", "service absorption", "international competitiveness", "elasticity", "price elasticity", "elasticity of demand"],
+        "MarketGaps": ["market gap", "market gaps", "unmet need", "white space", "positioning", "differentiation", "competitive gap"],
+        "MetaMarketing": ["meta marketing", "personalization", "pricing strategy", "promotions", "ai-driven pricing", "consumer brand", "voucher", "loyalty"],
+        "CRO": ["cro", "conversion rate", "optimization", "landing page", "a/b test", "funnel", "checkout"],
+        "FinanceBasics": [
+            "finance",
+            "valuation",
+            "npv",
+            "cash flow",
+            "cashflow",
+            "investment",
+            "capital markets",
+            "fundraising",
+            "financial model",
+            "discounted cash",
+            "income statement",
+            "profit and loss",
+            "profit",
+            "profitability",
+            "profit margin",
+            "profit formula",
+            "formula for profit",
+            "financial terminology",
+            "basic financial terminology",
+            "p&l",
+            "balance sheet",
+            "cash flow statement",
+            "financial statement",
+            "financial reporting",
+            "general ledger",
+        ],
+        "HowToDecodeGlobalTrendsAndNavigateEconomicTransformations": ["global trend", "economic transformation", "monetary", "blockchain", "cryptocurrency", "systemic risk", "policy", "regulation", "macro"],
+    },
+    "2028": {
+        "Kickstarter": ["kickstarter", "crowdfunding", "campaign", "rewards", "kenneth li"],
+        "Prototyping": ["prototype", "design thinking", "manufacturing", "donn koh"],
+        "FundraisingVideo": ["fundraising video", "campaign video", "script", "storytelling"],
+        "Web3": ["web3", "blockchain", "nft", "dao", "nitin gaur"],
+        "IPLaw": ["patent", "trademark", "ip", "lawyer", "boon tat"],
+        "Strategy": ["porter", "strategy", "five forces", "competitive", "vipin sreekumar"],
+        "InnovationImmersion": ["innovation immersion", "experiential learning", "market trends"],
+        "CapstoneHours": ["capstone", "project management", "milestones"],
+        "PublicSpeaking": ["public speaking", "speech", "presentation"],
+        "Copywriting": ["copywriting", "persuasive writing", "headlines"],
+        "BusinessMetrics": ["kpi", "cac", "ltv", "financial health"],
+        "VCFundraising": ["vc", "venture capital", "fundraising", "term sheet", "valuation"],
+        "PythonAI": ["python", "ai", "coding", "business applications"],
+        "SEAsiaPolicy": ["southeast asia", "policy", "regulatory", "economic"],
+        "Macroeconomics": ["macroeconomics", "inflation", "fiscal policy"],
+        "MarketResearch": ["market research", "consumer insights", "data analysis"],
+    }
 }
 
 
 def _build_display_name_map() -> Dict[str, str]:
     """Create a mapping from nickname subjects to their full course names."""
     mapping: Dict[str, str] = {}
+    # Legacy support (2029)
     for code, legacy_meta in LEGACY_COURSE_MAP.items():
         nickname = (legacy_meta or {}).get("name")
         if not nickname:
@@ -173,6 +199,7 @@ def get_course_display_name(subject: Optional[str]) -> str:
 
 def classify_subject(
     query: str,
+    cohort_id: str = "2029",
     class_hint: Optional[str] = None,
     *,
     return_scores: bool = False,
@@ -181,28 +208,32 @@ def classify_subject(
     Analyze the user's query and return the most relevant professor persona key.
     Performs keyword scoring across predefined subject keywords and persona names.
     """
+    cohort_keywords = SUBJECT_KEYWORDS.get(cohort_id, {})
+    cohort_personas = get_cohort_personas(cohort_id)
+
     if not query:
-        if class_hint and class_hint in PROFESSOR_PERSONAS:
+        if class_hint and class_hint in cohort_personas:
             return class_hint
-        return DEFAULT_PERSONA_KEY
+        # Fallback to first available or default
+        return DEFAULT_PERSONA_KEY if DEFAULT_PERSONA_KEY in cohort_personas else next(iter(cohort_personas), "Startup")
 
     lowered_query = query.lower()
     keyword_scores: Dict[str, int] = {}
 
-    for subject, keywords in SUBJECT_KEYWORDS.items():
+    for subject, keywords in cohort_keywords.items():
         for keyword in keywords:
             if keyword and keyword in lowered_query:
                 keyword_scores[subject] = keyword_scores.get(subject, 0) + len(keyword)
 
     boosted_scores: Dict[str, int] = dict(keyword_scores)
 
-    for subject in PROFESSOR_PERSONAS.keys():
+    for subject in cohort_personas.keys():
         normalized_subject = subject.lower()
         if normalized_subject and normalized_subject in lowered_query:
             keyword_scores[subject] = keyword_scores.get(subject, 0) + len(normalized_subject)
             boosted_scores[subject] = boosted_scores.get(subject, 0) + len(normalized_subject)
 
-    if class_hint and class_hint in PROFESSOR_PERSONAS:
+    if class_hint and class_hint in cohort_personas:
         boosted_scores[class_hint] = boosted_scores.get(class_hint, 0) + CLASS_HINT_SCORE_BONUS
 
     def _finalize(subject: str) -> Union[str, Tuple[str, Dict[str, int], Dict[str, int]]]:
@@ -220,34 +251,35 @@ def classify_subject(
         )
         return _finalize(selected_subject)
 
-    if class_hint and class_hint in PROFESSOR_PERSONAS:
+    if class_hint and class_hint in cohort_personas:
         logging.info("No keyword match found; using provided class hint '%s'.", class_hint)
         boosted_scores[class_hint] = boosted_scores.get(class_hint, 0) + CLASS_HINT_SCORE_BONUS
         return _finalize(class_hint)
 
-    logging.info("No keyword match found; defaulting to '%s'.", DEFAULT_PERSONA_KEY)
-    return _finalize(DEFAULT_PERSONA_KEY)
+    # Fallback logic
+    default_key = DEFAULT_PERSONA_KEY if DEFAULT_PERSONA_KEY in cohort_personas else next(iter(cohort_personas), "Startup")
+    logging.info("No keyword match found; defaulting to '%s'.", default_key)
+    return _finalize(default_key)
 
 
-def _select_active_subject(class_hint: Optional[str], classified_subject: Optional[str]) -> str:
+def _select_active_subject(class_hint: Optional[str], classified_subject: Optional[str], cohort_id: str = "2029") -> str:
     """
     Choose the subject whose materials must be used to answer the current question.
-    Preference order:
-    1. Explicit class hint (current course) when valid.
-    2. Classified subject when it has a persona.
-    3. Default persona key.
-    4. First available persona key (if default missing).
     """
-    if class_hint and class_hint in PROFESSOR_PERSONAS:
+    cohort_personas = get_cohort_personas(cohort_id)
+
+    if class_hint and class_hint in cohort_personas:
         return class_hint
 
-    if classified_subject and classified_subject in PROFESSOR_PERSONAS:
+    if classified_subject and classified_subject in cohort_personas:
         return classified_subject
 
-    if DEFAULT_PERSONA_KEY in PROFESSOR_PERSONAS:
-        return DEFAULT_PERSONA_KEY
+    default_key = DEFAULT_PERSONA_KEY if DEFAULT_PERSONA_KEY in cohort_personas else next(iter(cohort_personas), "Startup")
 
-    return next(iter(PROFESSOR_PERSONAS), DEFAULT_PERSONA_KEY)
+    if default_key in cohort_personas:
+        return default_key
+
+    return next(iter(cohort_personas), default_key)
 
 
 
@@ -429,6 +461,7 @@ def _handle_map_reduce_query(
     subject: str,
     persona: Dict[str, str],
     chat_history: List[Dict[str, str]],
+    rpc_function_name: str,
 ) -> str:
     """Handle broad queries (e.g., study guides) using Map-Reduce without requiring a dedicated syllabus."""
     logging.info("   Intent: Map-Reduce Query (Study Guide / Broad Summary)")
@@ -446,6 +479,7 @@ def _handle_map_reduce_query(
             selected_class=subject,
             match_count=30,
             enable_hybrid=True,
+            rpc_function_name=rpc_function_name,
         )
         # Convert to LangChain documents for easier text processing
         general_docs = _to_langchain_documents(general_docs_raw)
@@ -458,6 +492,7 @@ def _handle_map_reduce_query(
                 selected_class=subject,
                 match_count=INITIAL_RETRIEVAL_K * 2,
                 enable_hybrid=True,
+                rpc_function_name=rpc_function_name,
             )
             reranked_fallback_docs_raw = _rerank_documents(question, initial_docs_raw)
             final_context_docs = _to_langchain_documents(reranked_fallback_docs_raw[:FINAL_CONTEXT_K * 2])
@@ -491,6 +526,7 @@ def _handle_map_reduce_query(
                 selected_class=subject,
                 match_count=INITIAL_RETRIEVAL_K * 2,
                 enable_hybrid=True,
+                rpc_function_name=rpc_function_name,
             )
             reranked_fallback_docs_raw = _rerank_documents(question, initial_docs_raw)
             final_context_docs = _to_langchain_documents(reranked_fallback_docs_raw[:FINAL_CONTEXT_K * 2])
@@ -535,6 +571,7 @@ def _handle_map_reduce_query(
                 selected_class=subject,
                 match_count=MAP_REDUCE_RETRIEVAL_K,
                 enable_hybrid=True,
+                rpc_function_name=rpc_function_name,
             )
             # Re-rank the retrieved docs for the topic summary for better focus
             reranked_topic_docs_raw = _rerank_documents(topic_name, topic_docs_raw)
@@ -596,6 +633,7 @@ def get_rag_response(
     chat_history: Optional[List[Dict[str, str]]] = None,
     class_hint: Optional[str] = None,
     persona_override: Optional[Dict[str, str]] = None,
+    cohort_id: str = "2029",
 ) -> str:
     """
     Handle a user query by selecting the appropriate professor persona, assembling context,
@@ -606,11 +644,14 @@ def get_rag_response(
         logging.error(f"RAG Core: ERROR - {error_msg}")
         return error_msg
 
+    # Determine RPC function based on cohort
+    rpc_function_name = COHORTS.get(cohort_id, {}).get("rpc_function", "match_documents_cohort2")
+
     chat_history = chat_history or []
-    logging.info("RAG Core: Received query: '%s'", question)
+    logging.info("RAG Core: Received query: '%s' (Cohort: %s)", question, cohort_id)
     logging.info("   Chat history length: %s", len(chat_history))
 
-    classification_result = classify_subject(question, class_hint, return_scores=True)
+    classification_result = classify_subject(question, cohort_id=cohort_id, class_hint=class_hint, return_scores=True)
     if isinstance(classification_result, tuple):
         if len(classification_result) == 3:
             classified_subject, subject_scores, raw_subject_scores = classification_result
@@ -622,15 +663,16 @@ def get_rag_response(
         subject_scores, raw_subject_scores = {}, {}
     logging.info("   Classified subject candidate: %s", classified_subject)
 
-    active_subject = _select_active_subject(class_hint, classified_subject)
+    active_subject = _select_active_subject(class_hint, classified_subject, cohort_id=cohort_id)
 
-    persona = persona_override or PROFESSOR_PERSONAS.get(active_subject)
+    cohort_personas = get_cohort_personas(cohort_id)
+    persona = persona_override or cohort_personas.get(active_subject)
     if persona is None:
         logging.warning(
             "   Persona for subject '%s' not found; using fallback persona instructions.",
             active_subject,
         )
-        persona = _get_fallback_persona()
+        persona = _get_fallback_persona(cohort_id)
 
     persona_name = persona.get("professor_name", "Professor")
     logging.info("   Active persona: %s (%s)", persona_name, active_subject)
@@ -651,7 +693,7 @@ def get_rag_response(
 
     if is_map_reduce_request:
         logging.info("   Routing to map-reduce flow.")
-        answer = _handle_map_reduce_query(condensed_question, active_subject, persona, chat_history)
+        answer = _handle_map_reduce_query(condensed_question, active_subject, persona, chat_history, rpc_function_name)
     else:
         logging.info("   Intent: Specific Question")
         final_context_docs: List[Document] = []
@@ -661,6 +703,7 @@ def get_rag_response(
                 selected_class=active_subject,
                 match_count=INITIAL_RETRIEVAL_K,
                 enable_hybrid=True, # ACTIVATE RRF
+                rpc_function_name=rpc_function_name,
             )
             logging.info(
                 "   Hybrid retrieval pipeline returned %s raw chunks for '%s'.",
@@ -761,6 +804,7 @@ if __name__ == "__main__":
                 TEST_QUESTION,
                 chat_history=test_chat_history,
                 class_hint=TEST_CLASS,
+                cohort_id="2029"
             )
 
             print("\n--- TEST RESULT ---")
