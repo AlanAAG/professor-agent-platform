@@ -12,6 +12,8 @@ from src.shared.utils import (
     retrieve_rag_documents,
 )
 from src.app import rag_core
+from src.harvester.config import COHORTS
+
 _genai_import_errors = []
 genai = None
 _GENAI_SDK_FLAVOR = "unknown"
@@ -59,6 +61,8 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+API_COHORT_ID = "2029"
+
 MODE_STYLE_PROMPTS: Dict[str, str] = {
     "study": (
         "Mode: Study Partner.\n"
@@ -98,17 +102,19 @@ def _resolve_course_persona(
     classified_subject: Optional[str] = None,
 ) -> tuple[str, Dict[str, str]]:
     """Choose the most appropriate persona profile based on the query and class hint."""
-    classified = classified_subject or rag_core.classify_subject(query or "", selected_class)
-    if classified in rag_core.PROFESSOR_PERSONAS:
-        persona_key = classified
-    elif selected_class in rag_core.PROFESSOR_PERSONAS:
-        persona_key = selected_class  # type: ignore[assignment]
-    elif rag_core.DEFAULT_PERSONA_KEY in rag_core.PROFESSOR_PERSONAS:
-        persona_key = rag_core.DEFAULT_PERSONA_KEY
-    else:
-        persona_key = next(iter(rag_core.PROFESSOR_PERSONAS), rag_core.DEFAULT_PERSONA_KEY)
+    cohort_id = API_COHORT_ID
+    cohort_personas = rag_core.get_cohort_personas(cohort_id)
 
-    persona_profile = rag_core.PROFESSOR_PERSONAS.get(persona_key) or rag_core._get_fallback_persona()
+    # 1. Classify if not already provided
+    classified = classified_subject
+    if not classified:
+        classified = rag_core.classify_subject(query or "", cohort_id=cohort_id, class_hint=selected_class)
+
+    # 2. Select active subject using logic in rag_core
+    persona_key = rag_core._select_active_subject(selected_class, classified, cohort_id=cohort_id)
+
+    # 3. Retrieve profile
+    persona_profile = cohort_personas.get(persona_key) or rag_core._get_fallback_persona(cohort_id)
     return persona_key, persona_profile
 
 
@@ -925,11 +931,15 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
     _t0 = time.time()
     try:
         params = _get_rag_params()
+        # Determine RPC function based on API_COHORT_ID
+        rpc_function_name = COHORTS.get(API_COHORT_ID, {}).get("rpc_function", "match_documents_cohort2")
+
         documents = retrieve_rag_documents(
             query=payload.query,
             selected_class=payload.selectedClass,
             match_count=params["match_count"],
             match_threshold=params["match_threshold"],
+            rpc_function_name=rpc_function_name,
         )
         documents = cohere_rerank(payload.query, documents)
         
@@ -939,6 +949,7 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
                 selected_class=payload.selectedClass,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
+                rpc_function_name=rpc_function_name,
             )
             documents = cohere_rerank(payload.query, documents)
         
@@ -949,6 +960,7 @@ async def rag_search(request: Request, payload: RAGRequest, api_key: str = Depen
                 selected_class=payload.selectedClass,
                 match_count=params["relaxed_count"],
                 enable_hybrid=True,
+                rpc_function_name=rpc_function_name,
             )
 
         if documents:
@@ -992,9 +1004,17 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
         last_query = user_messages[-1].content if user_messages else ""
 
         params = _get_rag_params()
+
+        # Determine RPC function based on API_COHORT_ID
+        rpc_function_name = COHORTS.get(API_COHORT_ID, {}).get("rpc_function", "match_documents_cohort2")
+
+        # Get cohort personas
+        cohort_personas = rag_core.get_cohort_personas(API_COHORT_ID)
+
         classification_result = rag_core.classify_subject(
             last_query or "",
-            payload.selectedClass,
+            cohort_id=API_COHORT_ID,
+            class_hint=payload.selectedClass,
             return_scores=True,
         )
         if isinstance(classification_result, tuple):
@@ -1012,15 +1032,15 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
 
         redirect_to_other_professor = (
             payload.selectedClass
-            and payload.selectedClass in rag_core.PROFESSOR_PERSONAS
-            and classified_subject in rag_core.PROFESSOR_PERSONAS
+            and payload.selectedClass in cohort_personas
+            and classified_subject in cohort_personas
             and classified_subject != payload.selectedClass
             and selected_class_keyword_score <= 0
-            and classified_subject_keyword_score >= rag_core.REDIRECT_MIN_SCORE
+            and classified_subject_keyword_score >= getattr(rag_core, "REDIRECT_MIN_SCORE", 15)
         )
 
         if redirect_to_other_professor:
-            referred_professor = rag_core.PROFESSOR_PERSONAS[classified_subject].get(
+            referred_professor = cohort_personas[classified_subject].get(
                 "professor_name",
                 "the relevant professor",
             )
@@ -1066,6 +1086,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
             selected_class=persona_key,
             match_count=params["match_count"],
             match_threshold=params["match_threshold"],
+            rpc_function_name=rpc_function_name,
         )
         documents = cohere_rerank(last_query, documents)
         
@@ -1075,6 +1096,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 selected_class=persona_key,
                 match_count=params["relaxed_count"],
                 match_threshold=params["relaxed_threshold"],
+                rpc_function_name=rpc_function_name,
             )
             documents = cohere_rerank(last_query, documents)
         
@@ -1084,6 +1106,7 @@ async def chat_stream(request: Request, payload: ChatRequest, api_key: str = Dep
                 selected_class=persona_key,
                 match_count=params["relaxed_count"],
                 enable_hybrid=True,
+                rpc_function_name=rpc_function_name,
             )
         
         if documents:
