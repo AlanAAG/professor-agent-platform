@@ -273,7 +273,44 @@ def process_single_resource(
                 if document_text:
                     raw_content_data = document_text
                 else:
-                    raise ValueError("Office document extraction yielded no content.")
+                    logging.warning("   Viewer extraction failed or empty. Attempting direct download fallback...")
+                    # Fallback: Download and process locally
+                    try:
+                        # Extract extension from URL or header if possible, else rely on what download_file does or rename
+                        # scraping.download_file uses the filename provided.
+                        # We need to guess extension.
+                        filename_from_url = url.split('/')[-1].split('?')[0]
+                        if not any(filename_from_url.endswith(ext) for ext in ['.docx', '.pptx', '.xlsx', '.doc', '.ppt', '.xls']):
+                             # Try to infer from content_type_header if no extension in URL
+                             if "word" in content_type_header:
+                                 filename_from_url = "downloaded_doc.docx"
+                             elif "presentation" in content_type_header or "powerpoint" in content_type_header:
+                                 filename_from_url = "downloaded_pres.pptx"
+                             elif "spreadsheet" in content_type_header or "excel" in content_type_header:
+                                 filename_from_url = "downloaded_sheet.xlsx"
+                             else:
+                                 filename_from_url = "downloaded_file.bin" # risky
+
+                        temp_office_path = scraping.download_file(url, TEMP_DIR, filename_from_url)
+                        if temp_office_path:
+                            try:
+                                local_text = document_processing.process_local_office_file(temp_office_path)
+                                if local_text:
+                                    raw_content_data = local_text
+                                    logging.info(f"   Successfully extracted text from local office file ({len(local_text)} chars).")
+                                else:
+                                     logging.warning("   Local office extraction yielded no text.")
+                            finally:
+                                if os.path.exists(temp_office_path):
+                                    os.remove(temp_office_path)
+                                    logging.debug(f"   Cleaned up temp office file: {temp_office_path}")
+
+                        if not raw_content_data:
+                             raise ValueError("Both viewer extraction and download fallback failed.")
+
+                    except Exception as fallback_err:
+                        logging.error(f"   Download fallback failed: {fallback_err}")
+                        raise ValueError("Office document extraction yielded no content (viewer and fallback failed).")
 
             else:
                 logging.warning(

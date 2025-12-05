@@ -146,4 +146,6 @@ uvicorn[standard]
 python-multipart
 httpx
 slowapi  # REQUIRED for Rate Limiting
-gunicorn  # For production WSGI server (optional, uvicorn is fine)
+gunicorn  # For production WSGI server (optional, uvicorn is fine)python-docx
+python-pptx
+openpyxl
