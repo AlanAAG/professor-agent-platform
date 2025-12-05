@@ -978,6 +978,7 @@ def retrieve_rag_documents(
     match_threshold: float = 0.7,
     query_embedding: List[float] | None = None,
     enable_hybrid: bool = True,
+    rpc_function_name: str = "match_documents_hybrid",
 ) -> list[dict]:
     """Retrieve documents via Supabase using Hybrid RRF search."""
     start_time = time.time()
@@ -1014,7 +1015,7 @@ def retrieve_rag_documents(
             payload["filter_class"] = selected_class
 
         try:
-            response = supabase.rpc("match_documents_hybrid", payload).execute()
+            response = supabase.rpc(rpc_function_name, payload).execute()
             results = getattr(response, "data", None) or []
 
             duration_ms = (time.time() - start_time) * 1000
@@ -1023,7 +1024,8 @@ def retrieve_rag_documents(
             logging.info(
                 f"HYBRID_SEARCH | duration_ms={duration_ms:.2f} "
                 f"results={len(results)} "
-                f"class_filter={selected_class or 'none'}"
+                f"class_filter={selected_class or 'none'} "
+                f"rpc_function={rpc_function_name}"
             )
         except Exception as rpc_exc:
             logging.error("Supabase match_documents_hybrid RPC failed: %s", rpc_exc)

@@ -53,6 +53,7 @@ COURSE_CARD_FALLBACK_XPATH_TEMPLATE = (
 )
 
 # --- Course Details Page (Resources Tab Navigation) ---
+# Defaults (Legacy/2029) - Kept for reference, but specific cohort logic is in COHORTS
 RESOURCES_TAB_SELECTORS = [
     (
         By.XPATH,
@@ -174,7 +175,7 @@ for subj in _PARTNER_SUBJECTS:
         "group": PARTNER_COURSE_TO_GROUP.get(code),
     }
 
-COURSE_MAP: dict[str, dict] = {}
+COURSE_MAP_2029: dict[str, dict] = {}
 all_codes = set(LEGACY_COURSE_MAP.keys()) | set(_partner_map.keys())
 for code in sorted(all_codes):
     partner_entry = _partner_map.get(code)
@@ -185,10 +186,58 @@ for code in sorted(all_codes):
         "group": (partner_entry or {}).get("group") if partner_entry and partner_entry.get("group") is not None else (legacy_entry or {}).get("group"),
         "full_name": (partner_entry or {}).get("full_name") or (legacy_entry or {}).get("name") or code,
     }
-    COURSE_MAP[code] = merged
+    COURSE_MAP_2029[code] = merged
+
+COURSE_MAP_2028 = {
+    "CAP023": {"name": "Kickstarter", "group": "Management Project - III"},
+    "CAP024": {"name": "Prototyping", "group": "Management Project - III"},
+    "CAP025": {"name": "FundraisingVideo", "group": "Management Project - III"},
+    "CAP301": {"name": "CapstoneHours", "group": "Management Project - III"},
+    "COMM203": {"name": "PublicSpeaking", "group": "Management Project - III"},
+    "STC101": {"name": "Copywriting", "group": "Management Project - III"},
+    "CRBL101": {"name": "Web3", "group": "Entrepreneurship"},
+    "FIFI103": {"name": "BusinessMetrics", "group": "Entrepreneurship"},
+    "FIFI104": {"name": "VCFundraising", "group": "Entrepreneurship"},
+    "LEIP101": {"name": "IPLaw", "group": "Entrepreneurship"},
+    "PRTC204": {"name": "PythonAI", "group": "Entrepreneurship"},
+    "MAST204": {"name": "Strategy", "group": "Management Strategy"},
+    "MAST205": {"name": "InnovationImmersion", "group": "Management Strategy"},
+    "LA103": {"name": "SEAsiaPolicy", "group": "Global Dynamics"},
+    "MAST103": {"name": "Macroeconomics", "group": "Global Dynamics"},
+    "SAMA103": {"name": "MarketResearch", "group": "Market Research"}
+}
+
+# --- Multi-Tenancy COHORTS Configuration ---
+COHORTS = {
+    "2028": {
+        "name": "2028 Batch",
+        "table_name": "documents_cohort1",
+        "rpc_function": "match_documents_cohort1",
+        "credentials": ("COACH_USERNAME_2028", "COACH_PASSWORD_2028"),
+        "selectors": {
+            "resources_tab": (By.XPATH, "//h4[normalize-space(.)='Resources']"),
+            "course_card": (By.XPATH, "//span[contains(@class, 'pIdName')]/ancestor::div[contains(@class, 'sc-eDWCr')]")
+        },
+        "course_map": COURSE_MAP_2028
+    },
+    "2029": {
+        "name": "2029 Batch",
+        "table_name": "documents_cohort2",
+        "rpc_function": "match_documents_cohort2",
+        "credentials": ("COACH_USERNAME_2029", "COACH_PASSWORD_2029"),
+        "selectors": {
+            "resources_tab": (By.XPATH, "//p[normalize-space(.)='Resources']"),
+            "course_card": (By.XPATH, "//a[contains(@href, 'courseCode=')]")
+        },
+        "course_map": COURSE_MAP_2029
+    }
+}
 
 # Default visible courses (from partner script)
 DEFAULT_VISIBLE_COURSES = {"AIML101", "PRTC301"}
+
+# --- Backward Compatibility ---
+COURSE_MAP = COURSE_MAP_2029
 
 # --- Other Settings ---
 # Cutoff date logic handled dynamically in the pipeline
