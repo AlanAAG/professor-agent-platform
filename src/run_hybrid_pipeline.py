@@ -470,11 +470,17 @@ def main_pipeline(mode="daily", cohort_id="2029"):
 
         # --- Set Cohort Credentials in Env ---
         # The navigation module (perform_login) looks for COACH_USERNAME/COACH_PASSWORD
-        user_env_key, pass_env_key = cohort_config.get("credentials", ("COACH_USERNAME", "COACH_PASSWORD"))
-        if os.getenv(user_env_key):
-             os.environ["COACH_USERNAME"] = os.environ[user_env_key]
-        if os.getenv(pass_env_key):
-             os.environ["COACH_PASSWORD"] = os.environ[pass_env_key]
+        user_env_key, pass_env_key = cohort_config["credentials"]
+
+        logging.info(f"Authenticating using credentials from: {user_env_key}")
+
+        if not os.getenv(user_env_key):
+            raise ValueError(f"Missing environment variable: {user_env_key}. Cannot log in for cohort {cohort_id}.")
+        if not os.getenv(pass_env_key):
+            raise ValueError(f"Missing environment variable: {pass_env_key}. Cannot log in for cohort {cohort_id}.")
+
+        os.environ["COACH_USERNAME"] = os.environ[user_env_key]
+        os.environ["COACH_PASSWORD"] = os.environ[pass_env_key]
 
         logging.info(f"Loaded configuration for {cohort_config['name']} (Table: {table_name})")
 

@@ -1,0 +1,27 @@
+{
+  "run_metadata": {
+    "timestamp": "2025-12-05T20:20:22.748629",
+    "mode": "daily",
+    "duration_seconds": 0.01,
+    "duration_human": "0m 0s",
+    "success": true
+  },
+  "statistics": {
+    "courses_attempted": 0,
+    "courses_successful": 0,
+    "resources_discovered": 0,
+    "resources_found": 0,
+    "zoom_transcripts_scraped": 0,
+    "pdf_documents_processed": 0,
+    "resources_processed": 0,
+    "resources_failed": 0
+  },
+  "errors": [
+    {
+      "error_type": "CRITICAL_PIPELINE_FAILURE",
+      "error_message": "Stop execution",
+      "timestamp": "2025-12-05T20:20:22.754769"
+    }
+  ],
+  "error_count": 1
+}
