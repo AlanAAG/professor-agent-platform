@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-12-05T20:20:22.755296",
+  "status": "FAILURE",
+  "runtime_seconds": 0.01,
+  "metrics": {
+    "resources_found": 0,
+    "resources_processed": 0,
+    "zoom_transcripts_scraped": 0,
+    "pdf_documents_processed": 0,
+    "subjects_failed": 0
+  }
+}
