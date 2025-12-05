@@ -1,8 +1,25 @@
 # src/refinery/document_processing.py
 
 import logging
+import os
 from typing import Optional
 from urllib.parse import quote
+
+# Lazy imports for local office file processing to avoid hard dependencies if not used
+try:
+    import docx
+except ImportError:
+    docx = None
+
+try:
+    import pptx
+except ImportError:
+    pptx = None
+
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -150,3 +167,83 @@ def extract_drive_content(driver: webdriver.Chrome, url: str, doc_type: str) -> 
     except Exception as e:
         logging.warning(f"Document extraction routing failed: {e}")
         return None
+
+
+def process_local_office_file(file_path: str) -> str:
+    """
+    Extract text content from a local Office file (.docx, .pptx, .xlsx).
+
+    Args:
+        file_path: Path to the local file.
+
+    Returns:
+        Extracted text content or an empty string if processing fails or format is unsupported.
+    """
+    if not os.path.exists(file_path):
+        logging.error(f"File not found: {file_path}")
+        return ""
+
+    file_ext = os.path.splitext(file_path)[1].lower()
+    text_content = ""
+
+    try:
+        if file_ext == ".docx":
+            if docx is None:
+                logging.error("python-docx is not installed.")
+                return ""
+            try:
+                doc = docx.Document(file_path)
+                # Extract text from paragraphs
+                full_text = []
+                for para in doc.paragraphs:
+                    full_text.append(para.text)
+                text_content = "\n".join(full_text)
+            except Exception as e:
+                logging.error(f"Failed to process DOCX {file_path}: {e}")
+                return ""
+
+        elif file_ext == ".pptx":
+            if pptx is None:
+                logging.error("python-pptx is not installed.")
+                return ""
+            try:
+                prs = pptx.Presentation(file_path)
+                text_runs = []
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text_runs.append(shape.text)
+                text_content = "\n".join(text_runs)
+            except Exception as e:
+                logging.error(f"Failed to process PPTX {file_path}: {e}")
+                return ""
+
+        elif file_ext == ".xlsx":
+            if openpyxl is None:
+                logging.error("openpyxl is not installed.")
+                return ""
+            try:
+                wb = openpyxl.load_workbook(file_path, data_only=True)
+                # Active sheet only? Prompt says "all cells in the active sheet".
+                sheet = wb.active
+                if sheet:
+                    rows = []
+                    for row in sheet.iter_rows(values_only=True):
+                        # Filter None values and join
+                        row_text = "\t".join([str(cell) for cell in row if cell is not None])
+                        if row_text.strip():
+                            rows.append(row_text)
+                    text_content = "\n".join(rows)
+            except Exception as e:
+                logging.error(f"Failed to process XLSX {file_path}: {e}")
+                return ""
+
+        else:
+             logging.warning(f"Unsupported office file extension: {file_ext}")
+             return ""
+
+        return text_content
+
+    except Exception as e:
+         logging.error(f"Unexpected error processing local office file {file_path}: {e}")
+         return ""
