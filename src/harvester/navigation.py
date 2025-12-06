@@ -843,24 +843,30 @@ def perform_login(driver: webdriver.Chrome) -> bool:
                 # Add a small delay: Wait 3 seconds immediately to allow the browser to process any redirects after login.
                 time.sleep(3)
 
-                skip_xpath = "//button[contains(text(), 'Skip for now')]"
-                condition_met = False
                 current_url = driver.current_url or ""
+                skip_btn = None
 
-                # Check Condition: Check if the current URL contains "pending-feedback" OR if a button with the XPath //button[contains(text(), 'Skip for now')] exists.
-                if "pending-feedback" in current_url:
-                    condition_met = True
-                else:
-                    # Check if button exists
-                    if driver.find_elements(By.XPATH, skip_xpath):
-                        condition_met = True
+                # Check if we are on the feedback page
+                is_feedback_url = "pending-feedback" in current_url
 
-                # Action: If the condition is met:
-                if condition_met:
-                    logging.info("Feedback pending page detected.")
+                # Use a longer timeout if we are on the feedback page, otherwise a quick check
+                # User Requirement: Increase WebDriverWait for the button to 8 seconds.
+                timeout = 8 if is_feedback_url else 1.0
 
-                    # Find the "Skip for now" button using that specific XPath and click it using driver.execute_script.
-                    skip_btn = driver.find_element(By.XPATH, skip_xpath)
+                wait = WebDriverWait(driver, timeout)
+
+                # Primary Selector: CSS class
+                try:
+                    skip_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button.skipBtn")))
+                except TimeoutException:
+                    # Fallback Selector: Broad XPath
+                    try:
+                        skip_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[contains(., 'Skip')]")))
+                    except TimeoutException:
+                        pass
+
+                if skip_btn:
+                    logging.info("Feedback pending button detected.")
                     driver.execute_script("arguments[0].click();", skip_btn)
 
                     # Wait: Add a WebDriverWait to ensure the URL changes and no longer contains "pending-feedback" before proceeding.
@@ -868,6 +874,8 @@ def perform_login(driver: webdriver.Chrome) -> bool:
                         lambda d: "pending-feedback" not in (d.current_url or "")
                     )
                     logging.info("Skipped feedback and proceeded.")
+                elif is_feedback_url:
+                    logging.warning("Feedback pending page detected by URL, but 'Skip' button could not be found.")
 
             except Exception as e:
                 # Error Handling: Wrap this in a try/catch block so it logs warnings but doesn't crash the script if the page is not found.
