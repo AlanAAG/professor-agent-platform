@@ -37,7 +37,11 @@ mkdir -p /tmp/harvester_downloads
 PIPELINE_MODE=${1:-daily}
 export PIPELINE_MODE
 
+# Set cohort ID (default to 2029, can override with 2nd argument)
+COHORT_ID=${2:-2029}
+
 echo "📊 Pipeline mode: $PIPELINE_MODE"
+echo "👥 Cohort ID: $COHORT_ID"
 echo "================================"
 echo ""
 
@@ -77,10 +81,10 @@ fi
 set +e
 if [ "${PW_HEADLESS,,}" = "false" ] && command -v xvfb-run >/dev/null 2>&1; then
   echo "🖥️  Running headful under Xvfb..."
-  xvfb-run -a $PYTHON -m src.run_hybrid_pipeline
+  xvfb-run -a $PYTHON -m src.run_hybrid_pipeline --mode "$PIPELINE_MODE" --cohort "$COHORT_ID"
   PIPELINE_EXIT=$?
 else
-  $PYTHON -m src.run_hybrid_pipeline
+  $PYTHON -m src.run_hybrid_pipeline --mode "$PIPELINE_MODE" --cohort "$COHORT_ID"
   PIPELINE_EXIT=$?
 fi
 set -e

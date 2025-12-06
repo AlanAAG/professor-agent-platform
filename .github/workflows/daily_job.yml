@@ -70,8 +70,10 @@ jobs:
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
-          COACH_USERNAME=${{ secrets.COACH_USERNAME }}
-          COACH_PASSWORD=${{ secrets.COACH_PASSWORD }}
+          COACH_USERNAME_2028=${{ secrets.COACH_USERNAME_2028 }}
+          COACH_PASSWORD_2028=${{ secrets.COACH_PASSWORD_2028 }}
+          COACH_USERNAME_2029=${{ secrets.COACH_USERNAME_2029 }}
+          COACH_PASSWORD_2029=${{ secrets.COACH_PASSWORD_2029 }}
           HARVESTER_SELENIUM_HEADLESS=true
           HARVESTER_PAGE_LOAD_TIMEOUT=60
           HARVESTER_WAIT_TIMEOUT=30
@@ -94,12 +96,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          COACH_USERNAME: ${{ secrets.COACH_USERNAME }}
-          COACH_PASSWORD: ${{ secrets.COACH_PASSWORD }}
+          COACH_USERNAME_2028: ${{ secrets.COACH_USERNAME_2028 }}
+          COACH_PASSWORD_2028: ${{ secrets.COACH_PASSWORD_2028 }}
+          COACH_USERNAME_2029: ${{ secrets.COACH_USERNAME_2029 }}
+          COACH_PASSWORD_2029: ${{ secrets.COACH_PASSWORD_2029 }}
           PIPELINE_MODE: ${{ github.event.inputs.mode || 'daily' }}
           HARVESTER_SELENIUM_HEADLESS: 'true'
         run: |
-          bash ./run_daily_job.sh "$PIPELINE_MODE"
+          echo "Processing Cohort 2028..."
+          bash ./run_daily_job.sh "$PIPELINE_MODE" "2028"
+
+          echo "Processing Cohort 2029..."
+          bash ./run_daily_job.sh "$PIPELINE_MODE" "2029"
       
       # Step 9: Upload logs and screenshots (on failure)
       - name: Upload logs and screenshots (on failure)
