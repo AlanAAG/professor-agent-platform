@@ -38,8 +38,8 @@ LOGIN_BUTTON_SELECTORS = [
 
 # Selectors for the "Skip for now" button on the feedback pending page
 FEEDBACK_SKIP_BUTTON_SELECTORS = [
-    (By.CSS_SELECTOR, ".skipBtn"),
-    (By.XPATH, "//button[contains(text(), 'Skip for now')]"),
+    (By.CSS_SELECTOR, "button.skipBtn"),
+    (By.XPATH, "//button[contains(., 'Skip')]"),
 ]
 
 # A generic indicator that we are not on the login page anymore
@@ -47,10 +47,10 @@ DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
 # --- Courses Page (Selenium) ---
 # Group header: div.domainHeader containing p.title == {group_name}
-GROUP_HEADER_XPATH_TEMPLATE = "//p[normalize-space(.)='{group_name}']/ancestor::div[contains(@class, 'domainHeader')][1]"
+GROUP_HEADER_XPATH_TEMPLATE = "//div[contains(@class, 'domainHeader')]//p[contains(@class, 'title')][normalize-space()='{group_name}']"
 
 # Course link: anchor whose visible identifier matches the course code within a stable container
-COURSE_LINK_XPATH_TEMPLATE = "//span[normalize-space(.)='{course_code}']/ancestor::a[1]"
+COURSE_LINK_XPATH_TEMPLATE = "//a[contains(@href, 'courseCode={course_code}')]"
 
 # Fallback course card container (handles layouts where program code sits inside divs under anchor wrappers)
 COURSE_CARD_FALLBACK_XPATH_TEMPLATE = (
@@ -61,22 +61,14 @@ COURSE_CARD_FALLBACK_XPATH_TEMPLATE = (
 # --- Course Details Page (Resources Tab Navigation) ---
 # Defaults (Legacy/2029) - Kept for reference, but specific cohort logic is in COHORTS
 RESOURCES_TAB_SELECTORS = [
-    (
-        By.XPATH,
-        "//div[.//img[contains(@src, 'resources.svg')] and .//p[normalize-space(.)='Resources']]",
-    ),
-    (
-        By.XPATH,
-        "//p[normalize-space(.)='Resources']/ancestor::div[contains(@class, 'sc-kMjNwy')][1]",
-    ),
-    (
-        By.XPATH,
-        "//p[normalize-space(.)='Resources']/ancestor::li[1]",
-    ),
+    (By.XPATH, "//div[contains(@class, 'center-head-cont')]//h4[normalize-space()='Resources']"),
+    (By.XPATH, "//h4[normalize-space()='Resources']/ancestor::div[contains(@class, 'center-head-cont')][1]"),
+    # Fallback to the old one just in case
+    (By.XPATH, "//p[normalize-space(.)='Resources']/ancestor::div[contains(@class, 'sc-kMjNwy')][1]"),
 ]
 
 # Section headers inside resources
-SECTION_HEADER_XPATH_TPL = "//p[contains(@class, 'name') and normalize-space(.)='{section_title}']"
+SECTION_HEADER_XPATH_TPL = "//div[contains(@class, 'leftHeader')]//p[contains(@class, 'name')][normalize-space()='{section_title}']"
 
 PRE_READ_SECTION_TITLE = "Pre-Read Materials"
 IN_CLASS_SECTION_TITLE = "In Class Materials"
@@ -221,7 +213,7 @@ COHORTS = {
         "rpc_function": "match_documents_cohort1",
         "credentials": ("COACH_USERNAME_2028", "COACH_PASSWORD_2028"),
         "selectors": {
-            "resources_tab": (By.XPATH, "//p[normalize-space(.)='Resources']"),
+            "resources_tab": (By.XPATH, "//div[contains(@class, 'center-head-cont')]//h4[normalize-space()='Resources']"),
             "course_card": (By.XPATH, "//a[contains(@href, 'courseCode=')]")
         },
         "course_map": COURSE_MAP_2028
