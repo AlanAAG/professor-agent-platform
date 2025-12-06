@@ -838,6 +838,59 @@ def perform_login(driver: webdriver.Chrome) -> bool:
                 timeout=config.SETTINGS.wait_timeout,
             )
 
+            # --- Handle "Feedback Pending" Interruption ---
+            try:
+                logging.info("Checking for 'Feedback Pending' interruption...")
+
+                def _check_feedback_interruption(d: webdriver.Chrome):
+                    # Check URL for feedback page
+                    url = d.current_url or ""
+                    if "pending-feedback" in url:
+                        return "feedback"
+
+                    # Check for skip button presence
+                    for by, val in config.FEEDBACK_SKIP_BUTTON_SELECTORS:
+                        try:
+                            el = d.find_element(by, val)
+                            if el.is_displayed():
+                                return "feedback"
+                        except (NoSuchElementException, StaleElementReferenceException):
+                            continue
+
+                    # Early exit if we already reached the dashboard
+                    try:
+                        el = d.find_element(By.CSS_SELECTOR, config.DASHBOARD_INDICATOR_CSS)
+                        if el.is_displayed():
+                            return "dashboard"
+                    except (NoSuchElementException, StaleElementReferenceException):
+                        pass
+
+                    return False
+
+                # Wait up to 15 seconds (as requested) for either feedback page or dashboard
+                feedback_result = WebDriverWait(driver, 15).until(_check_feedback_interruption)
+
+                if feedback_result == "feedback":
+                    logging.info("Feedback pending detected. Clicking 'Skip for now'.")
+                    _resilient_click(
+                        driver,
+                        config.FEEDBACK_SKIP_BUTTON_SELECTORS,
+                        "Skip for now button",
+                        timeout=5
+                    )
+                    # Ensure we reach the main dashboard URL before proceeding
+                    WebDriverWait(driver, 15).until(
+                        lambda d: (d.current_url or "").rstrip("/") == config.BASE_URL.rstrip("/")
+                    )
+                    logging.info("Skipped feedback and reached dashboard.")
+                else:
+                    logging.debug("No feedback page detected (Dashboard found or timeout).")
+
+            except TimeoutException:
+                logging.debug("No feedback interruption detected within timeout.")
+            except Exception as e:
+                logging.warning(f"Error handling potential feedback page: {e}")
+
             # --- Use an extended wait for post-login redirection ---
             EXTENDED_WAIT_TIMEOUT = 45
 

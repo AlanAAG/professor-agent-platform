@@ -36,6 +36,12 @@ LOGIN_BUTTON_SELECTORS = [
     (By.XPATH, "//button[@type='submit']"),
 ]
 
+# Selectors for the "Skip for now" button on the feedback pending page
+FEEDBACK_SKIP_BUTTON_SELECTORS = [
+    (By.CSS_SELECTOR, ".skipBtn"),
+    (By.XPATH, "//button[contains(text(), 'Skip for now')]"),
+]
+
 # A generic indicator that we are not on the login page anymore
 DASHBOARD_INDICATOR_CSS = '#gtm-IdDashboard'
 
