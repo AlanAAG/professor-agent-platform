@@ -215,8 +215,8 @@ COHORTS = {
         "rpc_function": "match_documents_cohort1",
         "credentials": ("COACH_USERNAME_2028", "COACH_PASSWORD_2028"),
         "selectors": {
-            "resources_tab": (By.XPATH, "//h4[normalize-space(.)='Resources']"),
-            "course_card": (By.XPATH, "//span[contains(@class, 'pIdName')]/ancestor::div[contains(@class, 'sc-eDWCr')]")
+            "resources_tab": (By.XPATH, "//p[normalize-space(.)='Resources']"),
+            "course_card": (By.XPATH, "//a[contains(@href, 'courseCode=')]")
         },
         "course_map": COURSE_MAP_2028
     },
